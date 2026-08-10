@@ -4,17 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-This project has **no code yet**. The repository contains a single document:
-[CLOUD_CODE_IMPLEMENTATION_SPEC.md](CLOUD_CODE_IMPLEMENTATION_SPEC.md) — a complete, prescriptive
-implementation specification for an autonomous IBKR options-trading system.
+**Milestone 1 of 12 (project skeleton) is complete.** Built and tested: the domain layer
+(models, enums, events, state machine), YAML configuration, the 11 JSON workflow schemas, the
+CLI surface, structured logging, an injectable clock, and 325 passing tests.
 
-That spec is the source of truth for structure, module layout, CLI surface, schemas, testing
-layers, and milestone order. Read the relevant section before creating files rather than inventing
-a design. Everything below is a summary of the load-bearing parts, not a replacement for it.
+**Not built, by design:** IBKR connectivity, data providers, AI agents, order execution, live
+trading. The CLI exposes those commands but they exit `3` naming the milestone that delivers
+them — they never fabricate output. Follow that pattern for anything still pending.
 
-Build order is defined in spec §46 (Milestones 1–12). Milestone 1 is the skeleton: project
-structure, config, domain models, JSON schemas, CLI, logging, tests. Nothing exists yet, so start
-there unless told otherwise.
+[CLOUD_CODE_IMPLEMENTATION_SPEC.md](CLOUD_CODE_IMPLEMENTATION_SPEC.md) remains the source of
+truth for module layout, CLI surface, schemas, testing layers, and milestone order. Read the
+relevant section before creating files rather than inventing a design. Everything below is a
+summary of the load-bearing parts, not a replacement for it.
+
+Build order is spec §46 (Milestones 1–12). **Milestone 2 is next: broker connectivity** — the
+`Broker` abstraction, `SimulatedBroker`, `IBKRBroker`, the read-only connection and portfolio
+tests, and reconciliation.
+
+Package directories for later milestones exist with only a docstring naming their milestone.
+That is deliberate: a stub that pretends to work is worse than an absent module (spec §48.3).
 
 ## The core architectural rule
 
@@ -107,32 +115,29 @@ PostgreSQL remains possible. Do not couple business logic to SQL.
 Every workflow boundary has a JSON schema in `schemas/`. Agent output must validate against it, and
 contract tests verify each producer's output is consumable by the next stage.
 
-## Commands (target contract — not yet implemented)
+## Commands
 
-These are the interfaces the spec requires; implement them to match rather than improvising names.
+Dependencies live in `.venv/` (created with `uv venv`, then `uv pip install -e '.[dev]'`). Prefix
+with `.venv/bin/` or activate first. `make help` lists every target.
 
 ```bash
-pytest                                   # all tests
-pytest tests/unit                        # layer: also risk / allocation / strategies / agents / contract / integration
-pytest tests/agents/test_market_researcher.py     # single file
-pytest tests/agents/test_market_researcher.py::test_name   # single test
+make test                                # whole suite (make check = lint + typecheck + test)
+.venv/bin/pytest tests/unit              # one layer: unit / contract / risk / allocation / …
+.venv/bin/pytest tests/unit/test_state_machine.py             # one file
+.venv/bin/pytest tests/unit/test_state_machine.py::test_name  # one test
+.venv/bin/ruff check src tests && .venv/bin/mypy              # both currently clean
 
-python -m trading_system.cli --help      # must expose: run, test, data, portfolio, positions,
+python -m trading_system.cli --help      # exposes: run, test, data, portfolio, positions,
                                          # research, opportunities, reconcile, reports, health
-
-python -m trading_system.cli run universe | research | opportunities \
-                                | position-monitor | thesis-monitor | reconciliation
-
-python -m trading_system.cli test ibkr-connection   # read-only, must submit zero orders
-python -m trading_system.cli test ibkr-portfolio    # read-only
-python -m trading_system.cli test e2e-dry-run       # full lifecycle, simulator only
-python -m trading_system.cli test e2e-paper         # IBKR Paper, explicitly labeled
+python -m trading_system.cli health      # works today: config + mode + schema check
+python -m trading_system.cli config      # works today: validate and print configuration
 ```
 
-The CLI must visibly distinguish read-only commands from state-mutating ones, and all test commands
-must be discoverable via `--help`. Makefile shortcuts mirror these (`make test`, `make test-risk`,
-`make ibkr-connection`, …). Local infrastructure is Docker Compose with at minimum `ib-gateway`
-(IB Gateway + IBC) and `trading-runtime`.
+Every other command exits `3` until its milestone lands. Command help is tagged `(read-only)` or
+`(mutates state)` — keep that up when adding commands, and note that Rich swallows
+`[square brackets]` in help strings, hence the parentheses. Makefile shortcuts mirror the test
+layout (`make test-risk`, `make ibkr-connection`). `docker-compose.yml` and `Dockerfile` are
+Milestone 2 scaffolding, not yet exercised.
 
 ## Working in this repository
 
@@ -146,10 +151,17 @@ Prefer free data sources during the initial experiment; do not introduce paid pr
 owner's approval. Do not generate placeholder implementations that pretend to connect to IBKR —
 use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clearly distinguished.
 
-### Git hazard
+### Conventions worth keeping
 
-This directory is **not** its own git repository. The enclosing repo is `/home/dmytro/git/`, which
-contains many unrelated projects, currently has **zero commits**, and already has ~60 staged files
-from an unrelated `MCPtest/` project. Never run `git add .` or `git add -A` from here — stage
-explicit paths under `ibkr-ai-trader/` only. Consider asking the owner whether this project should
-be `git init`-ed as its own repository before any commit is made.
+- **Money in YAML must be quoted** (`"0.50"`) or an integer. An unquoted `0.50` is a binary float
+  and `load_config` rejects it — that rejection is tested, not incidental.
+- **Timestamps come from a `Clock`**, never a bare `datetime.now()`. `FixedClock` keeps tests
+  deterministic and lets historical replay run "as of" a past instant.
+- **New config keys need a model field.** Config models are `extra="forbid"`, so a typo in
+  `risk.yaml` fails loudly instead of silently doing nothing.
+- **Version stamps**: bump `config_version` in `config/application.yaml` whenever a change to
+  `config/` would alter a decision — it is recorded in every trade artifact.
+
+This directory is its own git repository (`git init`-ed, one commit: the specification). The
+enclosing `/home/dmytro/git/` is a separate repo full of unrelated projects; nothing here should
+ever be staged into it.
