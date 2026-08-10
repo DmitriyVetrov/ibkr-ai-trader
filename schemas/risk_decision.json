@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/risk_decision.json",
+  "title": "RiskDecision",
+  "description": "Deterministic risk verdict with machine-readable reason codes. No AI agent may override a rejection. APPROVED carries exactly [OK]; REJECTED must not contain OK.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "decision_id",
+    "purchase_card_id",
+    "as_of",
+    "outcome",
+    "reason_codes",
+    "trading_mode",
+    "versions"
+  ],
+  "properties": {
+    "decision_id": { "type": "string", "minLength": 1 },
+    "purchase_card_id": { "type": "string", "minLength": 1 },
+    "as_of": { "type": "string", "format": "date-time" },
+    "outcome": { "enum": ["APPROVED", "REJECTED"] },
+    "reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/reason_code" }
+    },
+    "evaluated_limits": {
+      "description": "Limit name to evaluated value, for audit. Values are strings so exact decimals survive.",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "trading_mode": { "enum": ["DRY_RUN", "PAPER", "LIVE"] },
+    "versions": { "$ref": "#/$defs/system_versions" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "outcome": { "const": "APPROVED" } }, "required": ["outcome"] },
+      "then": {
+        "properties": {
+          "reason_codes": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "const": "OK" } }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "outcome": { "const": "REJECTED" } }, "required": ["outcome"] },
+      "then": {
+        "properties": {
+          "reason_codes": { "type": "array", "items": { "not": { "const": "OK" } } }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "reason_code": {
+      "enum": [
+        "OK",
+        "CAMPAIGN_BUDGET_EXCEEDED",
+        "MAX_ALLOCATION_PER_TRADE_EXCEEDED",
+        "MAX_POSITIONS_EXCEEDED",
+        "MAX_TOTAL_OPEN_RISK_EXCEEDED",
+        "UNDERLYING_CONCENTRATION_EXCEEDED",
+        "STRATEGY_CONCENTRATION_EXCEEDED",
+        "DIRECTIONAL_EXPOSURE_EXCEEDED",
+        "DAILY_LOSS_LIMIT_REACHED",
+        "INSUFFICIENT_LIQUIDITY",
+        "OPTION_PRICE_OUT_OF_RANGE",
+        "SPREAD_TOO_WIDE",
+        "DTE_OUT_OF_RANGE",
+        "BROKER_STATE_UNKNOWN",
+        "RECONCILIATION_ERROR",
+        "STALE_MARKET_DATA",
+        "TRADING_MODE_NOT_PERMITTED",
+        "LIVE_MODE_GUARD_NOT_SATISFIED"
+      ]
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_version", "config_version"],
+      "properties": {
+        "application_version": { "type": "string", "minLength": 1 },
+        "config_version": { "type": "string", "minLength": 1 },
+        "strategy_spec_version": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

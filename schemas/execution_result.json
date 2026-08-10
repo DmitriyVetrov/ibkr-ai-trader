@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/execution_result.json",
+  "title": "ExecutionResult",
+  "description": "Outcome of submitting an OrderIntent. orders_submitted is explicit so read-only broker tests can assert it is zero.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["intent_id", "broker", "status", "last_update_at", "trading_mode"],
+  "properties": {
+    "intent_id": { "type": "string", "minLength": 1 },
+    "broker": {
+      "description": "Which broker adapter produced this: e.g. IBKR or SIMULATOR.",
+      "type": "string",
+      "minLength": 1
+    },
+    "broker_order_id": { "type": ["string", "null"] },
+    "status": {
+      "enum": [
+        "PENDING_SUBMIT",
+        "SUBMITTED",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "CANCELLED",
+        "REJECTED"
+      ]
+    },
+    "orders_submitted": { "type": "integer", "minimum": 0 },
+    "filled_quantity": { "type": "integer", "minimum": 0 },
+    "average_fill_price": { "$ref": "#/$defs/nullable_money" },
+    "fills": { "type": "array", "items": { "$ref": "#/$defs/fill" } },
+    "submitted_at": { "type": ["string", "null"], "format": "date-time" },
+    "last_update_at": { "type": "string", "format": "date-time" },
+    "message": { "type": ["string", "null"] },
+    "trading_mode": { "enum": ["DRY_RUN", "PAPER", "LIVE"] }
+  },
+  "$defs": {
+    "money": { "type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "nullable_money": { "type": ["string", "null"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "fill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fill_id", "leg_index", "quantity", "price", "filled_at"],
+      "properties": {
+        "fill_id": { "type": "string", "minLength": 1 },
+        "leg_index": { "type": "integer", "minimum": 0 },
+        "quantity": { "type": "integer", "minimum": 1 },
+        "price": { "$ref": "#/$defs/money" },
+        "commission": { "$ref": "#/$defs/money" },
+        "filled_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

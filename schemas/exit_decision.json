@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/exit_decision.json",
+  "title": "ExitDecision",
+  "description": "Exit engine verdict. A multi-leg strategy is closed as a unit unless its strategy specification explicitly permits independent leg exits. SELL must always name a reason.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision_id", "position_id", "as_of", "decision", "versions"],
+  "properties": {
+    "decision_id": { "type": "string", "minLength": 1 },
+    "position_id": { "type": "string", "minLength": 1 },
+    "as_of": { "type": "string", "format": "date-time" },
+    "decision": { "enum": ["HOLD", "SELL"] },
+    "reason": { "$ref": "#/$defs/nullable_exit_reason" },
+    "detail": { "type": ["string", "null"] },
+    "close_whole_strategy": { "type": "boolean" },
+    "versions": { "$ref": "#/$defs/system_versions" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "decision": { "const": "SELL" } }, "required": ["decision"] },
+      "then": {
+        "properties": { "reason": { "$ref": "#/$defs/exit_reason" } },
+        "required": ["reason"]
+      }
+    },
+    {
+      "if": { "properties": { "decision": { "const": "HOLD" } }, "required": ["decision"] },
+      "then": { "properties": { "reason": { "type": "null" } } }
+    }
+  ],
+  "$defs": {
+    "exit_reason": {
+      "enum": [
+        "TRAILING_STOP",
+        "EXPIRATION_POLICY",
+        "THESIS_INVALIDATION",
+        "RISK_LIMIT",
+        "BROKER_SAFETY",
+        "EMERGENCY"
+      ]
+    },
+    "nullable_exit_reason": {
+      "enum": [
+        "TRAILING_STOP",
+        "EXPIRATION_POLICY",
+        "THESIS_INVALIDATION",
+        "RISK_LIMIT",
+        "BROKER_SAFETY",
+        "EMERGENCY",
+        null
+      ]
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_version", "config_version"],
+      "properties": {
+        "application_version": { "type": "string", "minLength": 1 },
+        "config_version": { "type": "string", "minLength": 1 },
+        "strategy_spec_version": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

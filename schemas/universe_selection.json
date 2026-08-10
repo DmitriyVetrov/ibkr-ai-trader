@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/universe_selection.json",
+  "title": "UniverseSelection",
+  "description": "Ranked list of candidate underlyings. Contains underlyings only - never option contracts and never a strategy.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["universe_id", "as_of", "candidates", "versions"],
+  "properties": {
+    "universe_id": { "type": "string", "minLength": 1 },
+    "as_of": { "type": "string", "format": "date-time" },
+    "candidates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/universe_candidate" }
+    },
+    "versions": { "$ref": "#/$defs/system_versions" }
+  },
+  "$defs": {
+    "universe_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ticker", "rank", "selection_score"],
+      "properties": {
+        "ticker": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+        "rank": { "type": "integer", "minimum": 1 },
+        "selection_score": { "type": "number", "minimum": 0, "maximum": 100 },
+        "rationale": { "type": ["string", "null"] }
+      }
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_version", "config_version"],
+      "properties": {
+        "application_version": { "type": "string", "minLength": 1 },
+        "config_version": { "type": "string", "minLength": 1 },
+        "strategy_spec_version": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

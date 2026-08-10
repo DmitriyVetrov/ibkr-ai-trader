@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/research_report.json",
+  "title": "ResearchReport",
+  "description": "Structured market research for one underlying. Does not select an option contract. Every cited source must have been actually retrieved.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "report_id",
+    "ticker",
+    "as_of",
+    "hypothesis",
+    "direction",
+    "expected_magnitude",
+    "confidence",
+    "expected_horizon_days",
+    "invalidation_conditions",
+    "versions"
+  ],
+  "properties": {
+    "report_id": { "type": "string", "minLength": 1 },
+    "ticker": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+    "as_of": { "type": "string", "format": "date-time" },
+    "hypothesis": {
+      "description": "A=strong move, direction uncertain; B=bullish; C=bearish; D=event-driven move, direction uncertain; E=other (explanation required)",
+      "enum": ["A", "B", "C", "D", "E"]
+    },
+    "direction": { "enum": ["BULLISH", "BEARISH", "NEUTRAL", "UNCERTAIN"] },
+    "expected_magnitude": { "enum": ["SMALL", "MODERATE", "LARGE", "EXTREME"] },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "expected_horizon_days": { "type": "integer", "minimum": 1, "maximum": 365 },
+    "catalysts": { "type": "array", "items": { "type": "string" } },
+    "invalidation_conditions": {
+      "description": "What would falsify this thesis. Required: a thesis that cannot be invalidated cannot be monitored.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "evidence": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array", "items": { "$ref": "#/$defs/source_reference" } },
+    "explanation": { "type": ["string", "null"] },
+    "versions": { "$ref": "#/$defs/system_versions" }
+  },
+  "$defs": {
+    "source_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_name", "source_url_or_identifier", "source_tier", "retrieved_at"],
+      "properties": {
+        "source_name": { "type": "string", "minLength": 1 },
+        "source_url_or_identifier": { "type": "string", "minLength": 1 },
+        "source_tier": { "enum": ["TIER_1", "TIER_2", "TIER_3", "TIER_4"] },
+        "published_at": { "type": ["string", "null"], "format": "date-time" },
+        "retrieved_at": { "type": "string", "format": "date-time" },
+        "relevance": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_version", "config_version"],
+      "properties": {
+        "application_version": { "type": "string", "minLength": 1 },
+        "config_version": { "type": "string", "minLength": 1 },
+        "strategy_spec_version": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/position_snapshot.json",
+  "title": "PositionSnapshot",
+  "description": "Point-in-time view of a position. 'source' records where the numbers came from; broker-sourced snapshots outrank internally derived ones during reconciliation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "position_id",
+    "as_of",
+    "state",
+    "underlying",
+    "strategy_type",
+    "legs",
+    "quantity",
+    "source"
+  ],
+  "properties": {
+    "position_id": { "type": "string", "minLength": 1 },
+    "purchase_card_id": { "type": ["string", "null"] },
+    "as_of": { "type": "string", "format": "date-time" },
+    "state": { "$ref": "#/$defs/position_state" },
+    "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+    "strategy_type": { "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"] },
+    "legs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/option_leg" } },
+    "quantity": { "type": "integer" },
+    "average_entry_price": { "$ref": "#/$defs/nullable_money" },
+    "market_value_eur": { "$ref": "#/$defs/nullable_money" },
+    "unrealized_pnl_eur": { "$ref": "#/$defs/nullable_money" },
+    "realized_pnl_eur": { "$ref": "#/$defs/nullable_money" },
+    "days_to_expiration": { "type": ["integer", "null"] },
+    "thesis_status": { "enum": ["VALID", "WEAKENING", "INVALIDATED", "UNKNOWN"] },
+    "source": {
+      "description": "Origin of these numbers, e.g. IBKR or SIMULATOR.",
+      "type": "string",
+      "minLength": 1
+    },
+    "data_quality": { "enum": ["OK", "DEGRADED", "STALE", "UNUSABLE"] }
+  },
+  "$defs": {
+    "money": { "type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "nullable_money": { "type": ["string", "null"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "position_state": {
+      "enum": [
+        "DISCOVERED",
+        "RESEARCHED",
+        "STRATEGY_SELECTED",
+        "CONTRACT_SELECTED",
+        "ALLOCATED",
+        "RISK_APPROVED",
+        "ORDER_SUBMITTED",
+        "PARTIALLY_FILLED",
+        "OPEN",
+        "MONITORING",
+        "EXIT_TRIGGERED",
+        "CLOSING",
+        "CLOSED",
+        "NO_TRADE",
+        "REJECTED",
+        "CANCELLED",
+        "FAILED",
+        "EXPIRED"
+      ]
+    },
+    "option_leg": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["underlying", "right", "strike", "expiration", "action"],
+      "properties": {
+        "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+        "right": { "enum": ["CALL", "PUT"] },
+        "strike": { "$ref": "#/$defs/money" },
+        "expiration": { "type": "string", "format": "date" },
+        "action": { "enum": ["BUY", "SELL"] },
+        "ratio": { "type": "integer", "minimum": 1 },
+        "multiplier": { "type": "integer", "minimum": 1 },
+        "occ_symbol": { "type": ["string", "null"] },
+        "broker_contract_id": { "type": ["integer", "null"] }
+      }
+    }
+  }
+}

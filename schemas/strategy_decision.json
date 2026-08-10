@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/strategy_decision.json",
+  "title": "StrategyDecision",
+  "description": "Options strategy agent output. BUY carries a strategy_type; NO_TRADE must not. The agent selects a strategy, never a contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision_id", "ticker", "research_report_id", "as_of", "action", "rationale", "versions"],
+  "properties": {
+    "decision_id": { "type": "string", "minLength": 1 },
+    "ticker": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+    "research_report_id": { "type": "string", "minLength": 1 },
+    "as_of": { "type": "string", "format": "date-time" },
+    "action": { "enum": ["BUY", "NO_TRADE"] },
+    "strategy_type": {
+      "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE", null]
+    },
+    "rationale": {
+      "description": "Why the selected strategy matches the hypothesis, or why no trade is warranted.",
+      "type": "string",
+      "minLength": 1
+    },
+    "versions": { "$ref": "#/$defs/system_versions" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "action": { "const": "BUY" } }, "required": ["action"] },
+      "then": {
+        "properties": {
+          "strategy_type": {
+            "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"]
+          }
+        },
+        "required": ["strategy_type"]
+      }
+    },
+    {
+      "if": { "properties": { "action": { "const": "NO_TRADE" } }, "required": ["action"] },
+      "then": { "properties": { "strategy_type": { "type": "null" } } }
+    }
+  ],
+  "$defs": {
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_version", "config_version"],
+      "properties": {
+        "application_version": { "type": "string", "minLength": 1 },
+        "config_version": { "type": "string", "minLength": 1 },
+        "strategy_spec_version": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/trade_snapshot.json",
+  "title": "TradeSnapshot",
+  "description": "Immutable end-of-life record of a trade. The artifact ids let the full decision chain be reconstructed from trades/closed/<trade_id>/ without consulting model memory.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "trade_id",
+    "underlying",
+    "strategy_type",
+    "final_state",
+    "purchase_card_id",
+    "research_report_id",
+    "strategy_decision_id",
+    "allocation_id",
+    "risk_decision_id",
+    "versions"
+  ],
+  "properties": {
+    "trade_id": { "type": "string", "minLength": 1 },
+    "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+    "strategy_type": { "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"] },
+    "opened_at": { "type": ["string", "null"], "format": "date-time" },
+    "closed_at": { "type": ["string", "null"], "format": "date-time" },
+    "final_state": { "$ref": "#/$defs/position_state" },
+
+    "purchase_card_id": { "type": "string", "minLength": 1 },
+    "research_report_id": { "type": "string", "minLength": 1 },
+    "strategy_decision_id": { "type": "string", "minLength": 1 },
+    "allocation_id": { "type": "string", "minLength": 1 },
+    "risk_decision_id": { "type": "string", "minLength": 1 },
+    "order_intent_id": { "type": ["string", "null"] },
+    "exit_decision_id": { "type": ["string", "null"] },
+
+    "realized_pnl_eur": { "$ref": "#/$defs/nullable_money" },
+    "r_multiple": { "type": ["number", "null"] },
+    "max_favorable_excursion_eur": { "$ref": "#/$defs/nullable_money" },
+    "max_adverse_excursion_eur": { "$ref": "#/$defs/nullable_money" },
+    "exit_reason": {
+      "enum": [
+        "TRAILING_STOP",
+        "EXPIRATION_POLICY",
+        "THESIS_INVALIDATION",
+        "RISK_LIMIT",
+        "BROKER_SAFETY",
+        "EMERGENCY",
+        null
+      ]
+    },
+    "versions": { "$ref": "#/$defs/system_versions" }
+  },
+  "$defs": {
+    "nullable_money": { "type": ["string", "null"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "position_state": {
+      "enum": [
+        "DISCOVERED",
+        "RESEARCHED",
+        "STRATEGY_SELECTED",
+        "CONTRACT_SELECTED",
+        "ALLOCATED",
+        "RISK_APPROVED",
+        "ORDER_SUBMITTED",
+        "PARTIALLY_FILLED",
+        "OPEN",
+        "MONITORING",
+        "EXIT_TRIGGERED",
+        "CLOSING",
+        "CLOSED",
+        "NO_TRADE",
+        "REJECTED",
+        "CANCELLED",
+        "FAILED",
+        "EXPIRED"
+      ]
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_version", "config_version"],
+      "properties": {
+        "application_version": { "type": "string", "minLength": 1 },
+        "config_version": { "type": "string", "minLength": 1 },
+        "strategy_spec_version": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

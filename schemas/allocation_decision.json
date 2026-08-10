@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/allocation_decision.json",
+  "title": "AllocationDecision",
+  "description": "Deterministic split of the campaign budget. Identical inputs must produce an identical decision. allocated_eur + reserve_eur must equal total_budget_eur.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "allocation_id",
+    "campaign_id",
+    "as_of",
+    "total_budget_eur",
+    "allocated_eur",
+    "reserve_eur",
+    "entries",
+    "versions"
+  ],
+  "properties": {
+    "allocation_id": { "type": "string", "minLength": 1 },
+    "campaign_id": { "type": "string", "minLength": 1 },
+    "as_of": { "type": "string", "format": "date-time" },
+    "total_budget_eur": { "$ref": "#/$defs/money" },
+    "allocated_eur": { "$ref": "#/$defs/money" },
+    "reserve_eur": {
+      "description": "Deliberately unallocated capital. A non-zero reserve is the normal outcome.",
+      "$ref": "#/$defs/money"
+    },
+    "entries": { "type": "array", "items": { "$ref": "#/$defs/allocation_entry" } },
+    "versions": { "$ref": "#/$defs/system_versions" }
+  },
+  "$defs": {
+    "money": {
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "allocation_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["opportunity_id", "ticker", "rank", "opportunity_score", "allocated_eur"],
+      "properties": {
+        "opportunity_id": { "type": "string", "minLength": 1 },
+        "ticker": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+        "rank": { "type": "integer", "minimum": 1 },
+        "opportunity_score": { "type": "number", "minimum": 0, "maximum": 100 },
+        "allocated_eur": {
+          "description": "Zero is valid and expected: a ranked opportunity need not be funded.",
+          "$ref": "#/$defs/money"
+        }
+      }
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_version", "config_version"],
+      "properties": {
+        "application_version": { "type": "string", "minLength": 1 },
+        "config_version": { "type": "string", "minLength": 1 },
+        "strategy_spec_version": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

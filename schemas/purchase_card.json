@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/purchase_card.json",
+  "title": "PurchaseCard",
+  "description": "Immutable statement of why the system intends to trade. Written once, never edited, replayed during evaluation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "card_id",
+    "created_at",
+    "underlying",
+    "strategy_type",
+    "contract",
+    "hypothesis",
+    "confidence",
+    "expected_magnitude",
+    "expected_horizon_days",
+    "quantity",
+    "requested_allocation_eur",
+    "thesis_invalidation_conditions",
+    "research_report_id",
+    "strategy_decision_id",
+    "versions"
+  ],
+  "properties": {
+    "card_id": { "type": "string", "minLength": 1 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+    "strategy_type": { "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"] },
+    "contract": { "$ref": "#/$defs/contract_selection" },
+
+    "hypothesis": { "enum": ["A", "B", "C", "D", "E"] },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "expected_magnitude": { "enum": ["SMALL", "MODERATE", "LARGE", "EXTREME"] },
+    "expected_horizon_days": { "type": "integer", "minimum": 1, "maximum": 365 },
+
+    "quantity": { "type": "integer", "minimum": 1 },
+    "requested_allocation_eur": { "$ref": "#/$defs/money" },
+
+    "risk_limits": { "type": "object", "additionalProperties": { "type": "string" } },
+    "entry_conditions": { "type": "array", "items": { "type": "string" } },
+    "exit_policy": { "type": "object", "additionalProperties": { "type": "string" } },
+    "thesis_invalidation_conditions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+
+    "research_report_id": { "type": "string", "minLength": 1 },
+    "strategy_decision_id": { "type": "string", "minLength": 1 },
+    "sources": { "type": "array", "items": { "$ref": "#/$defs/source_reference" } },
+    "versions": { "$ref": "#/$defs/system_versions" }
+  },
+  "$defs": {
+    "money": {
+      "description": "Exact decimal serialised as a string. Never a JSON number: binary floats are not decimal-safe.",
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "option_leg": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["underlying", "right", "strike", "expiration", "action"],
+      "properties": {
+        "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+        "right": { "enum": ["CALL", "PUT"] },
+        "strike": { "$ref": "#/$defs/money" },
+        "expiration": { "type": "string", "format": "date" },
+        "action": { "enum": ["BUY", "SELL"] },
+        "ratio": { "type": "integer", "minimum": 1 },
+        "multiplier": { "type": "integer", "minimum": 1 },
+        "occ_symbol": { "type": ["string", "null"] },
+        "broker_contract_id": { "type": ["integer", "null"] }
+      }
+    },
+    "contract_selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["underlying", "strategy_type", "as_of", "legs", "dte"],
+      "properties": {
+        "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+        "strategy_type": { "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"] },
+        "as_of": { "type": "string", "format": "date-time" },
+        "legs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/option_leg" } },
+        "dte": { "type": "integer", "minimum": 0 },
+        "target_delta": { "type": ["number", "null"], "minimum": -1, "maximum": 1 },
+        "selection_rules_version": { "type": ["string", "null"] }
+      }
+    },
+    "source_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_name", "source_url_or_identifier", "source_tier", "retrieved_at"],
+      "properties": {
+        "source_name": { "type": "string", "minLength": 1 },
+        "source_url_or_identifier": { "type": "string", "minLength": 1 },
+        "source_tier": { "enum": ["TIER_1", "TIER_2", "TIER_3", "TIER_4"] },
+        "published_at": { "type": ["string", "null"], "format": "date-time" },
+        "retrieved_at": { "type": "string", "format": "date-time" },
+        "relevance": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_version", "config_version"],
+      "properties": {
+        "application_version": { "type": "string", "minLength": 1 },
+        "config_version": { "type": "string", "minLength": 1 },
+        "strategy_spec_version": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}
