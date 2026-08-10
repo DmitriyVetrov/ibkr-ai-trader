@@ -1,0 +1,36 @@
+# Deterministic risk limits (specification section 11).
+#
+# These values are the hard boundary of the system. No AI agent may modify,
+# widen or override any limit here at runtime, and no risk rejection may be
+# argued away by an agent.
+#
+# A strategy in config/strategies/ may NARROW the DTE window below, never
+# widen it; loading refuses to start if one tries.
+config_version: "2026.08.10-1"
+
+# --- capital ---------------------------------------------------------------
+max_allocation_per_trade_eur: "1500"
+max_open_positions: 5
+max_total_open_risk_eur: "4000"
+max_daily_loss_eur: "750"
+
+# --- concentration (percent of campaign budget) ----------------------------
+max_underlying_concentration_pct: 30.0
+max_strategy_concentration_pct: 50.0
+max_directional_exposure_pct: 70.0
+
+# --- instrument quality ----------------------------------------------------
+min_option_price_eur: "0.30"
+max_option_price_eur: "25.00"
+max_bid_ask_spread_pct: 10.0
+min_open_interest: 500
+min_daily_volume: 100
+
+# --- maturity window (calendar days to expiration) -------------------------
+dte_min: 14
+dte_max: 30
+
+# --- data and broker safety ------------------------------------------------
+# Market data older than this is treated as stale: stale data means no trade.
+max_market_data_age_seconds: 300
+block_new_positions_on_reconciliation_error: true

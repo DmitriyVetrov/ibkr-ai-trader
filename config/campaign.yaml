@@ -1,0 +1,22 @@
+# Campaign capital.
+#
+# This budget is INDEPENDENT of IBKR account buying power. The paper account
+# holds a large simulated balance; that balance is not permission to spend.
+#
+# Monetary values are quoted strings or integers so they parse as exact
+# decimals. An unquoted 0.50 would be a binary float and is rejected.
+campaign_id: campaign-001
+currency: EUR
+
+budget_eur: "5000"
+
+# Fraction of the budget held back and never allocated. The allocator must not
+# spend the whole budget merely because candidates exist.
+reserve_fraction: 0.20
+
+min_allocation_eur: "250"
+max_allocation_per_trade_eur: "1500"
+max_open_positions: 5
+
+# Opportunities scoring below this never reach allocation.
+min_opportunity_score: 70.0

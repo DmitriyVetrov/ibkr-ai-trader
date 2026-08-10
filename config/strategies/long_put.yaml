@@ -1,0 +1,33 @@
+# Long Put — directional bearish.
+name: long_put
+strategy_type: LONG_PUT
+spec_version: "1.0.0"
+enabled: true
+description: >-
+  Single long put. Used when research concludes a predominantly bearish move
+  within the campaign horizon.
+
+applicable_hypotheses:
+  - C
+
+dte_min: 14
+dte_max: 30
+# Negative: put deltas run from 0 to -1.
+target_delta: -0.60
+
+min_option_price_eur: "0.50"
+max_option_price_eur: "25.00"
+min_implied_volatility: 0.15
+max_implied_volatility: 1.20
+
+liquidity:
+  min_open_interest: 500
+  min_daily_volume: 100
+  max_bid_ask_spread_pct: 8.0
+
+exit_policy:
+  trailing_stop_pct: 30.0
+  take_profit_pct: 100.0
+  max_loss_pct: 50.0
+  close_at_dte: 7
+  allow_independent_leg_exit: false

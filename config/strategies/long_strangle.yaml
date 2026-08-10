@@ -1,0 +1,38 @@
+# Long Strangle — large move expected, direction uncertain, cheaper than a
+# straddle but needs a bigger move to pay.
+#
+# Managed as ONE position (specification section 17A).
+name: long_strangle
+strategy_type: LONG_STRANGLE
+spec_version: "1.0.0"
+enabled: true
+description: >-
+  Out-of-the-money long call plus long put on the same expiration, strikes
+  offset either side of spot.
+
+applicable_hypotheses:
+  - A
+  - D
+
+dte_min: 14
+dte_max: 30
+target_delta: 0.30
+# Each leg placed this far out of the money, as a percentage of spot.
+strike_offset_pct: 5.0
+
+min_option_price_eur: "0.30"
+max_option_price_eur: "20.00"
+min_implied_volatility: 0.15
+max_implied_volatility: 0.90
+
+liquidity:
+  min_open_interest: 750
+  min_daily_volume: 150
+  max_bid_ask_spread_pct: 6.0
+
+exit_policy:
+  trailing_stop_pct: 40.0
+  take_profit_pct: 150.0
+  max_loss_pct: 60.0
+  close_at_dte: 10
+  allow_independent_leg_exit: false

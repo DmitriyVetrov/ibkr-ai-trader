@@ -1,0 +1,38 @@
+# Long Call — directional bullish.
+#
+# The allow-list is authoritative: a StrategyType with no file here is not
+# tradeable, regardless of what an agent proposes.
+name: long_call
+strategy_type: LONG_CALL
+spec_version: "1.0.0"
+enabled: true
+description: >-
+  Single long call. Used when research concludes a predominantly bullish move
+  within the campaign horizon.
+
+# Hypotheses this strategy is permitted to answer. The strategy agent must
+# justify the match; this list makes the mapping reviewable rather than
+# implicit in a prompt.
+applicable_hypotheses:
+  - B
+
+dte_min: 14
+dte_max: 30
+target_delta: 0.60
+
+min_option_price_eur: "0.50"
+max_option_price_eur: "25.00"
+min_implied_volatility: 0.15
+max_implied_volatility: 1.20
+
+liquidity:
+  min_open_interest: 500
+  min_daily_volume: 100
+  max_bid_ask_spread_pct: 8.0
+
+exit_policy:
+  trailing_stop_pct: 30.0
+  take_profit_pct: 100.0
+  max_loss_pct: 50.0
+  close_at_dte: 7
+  allow_independent_leg_exit: false

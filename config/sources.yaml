@@ -1,0 +1,35 @@
+# Research source trust policy (specification section 6).
+#
+# Tier ordering is a trust ranking, not a search ranking. A tier-4 result is
+# not authoritative merely because it appeared first in a search.
+#
+# Entries are matched against the source domain/identifier recorded on each
+# SourceReference. A source that was not actually retrieved may never be cited.
+config_version: "2026.08.10-1"
+
+tier_1:
+  - sec.gov
+  - investor relations
+  - federalreserve.gov
+  - ecb.europa.eu
+  - nasdaq.com
+  - nyse.com
+  - cboe.com
+
+tier_2:
+  - reuters.com
+  - ft.com
+  - bloomberg.com
+  - wsj.com
+  - apnews.com
+
+tier_3:
+  - barrons.com
+  - marketwatch.com
+  - seekingalpha.com
+
+tier_4:
+  - general web
+
+require_source_attribution: true
+min_sources_per_report: 2

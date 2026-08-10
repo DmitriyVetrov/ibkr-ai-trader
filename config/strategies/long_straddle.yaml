@@ -1,0 +1,40 @@
+# Long Straddle — large move expected, direction uncertain.
+#
+# Managed as ONE position: the trailing stop applies to the combined structure,
+# not to the call and put separately (specification section 17A).
+name: long_straddle
+strategy_type: LONG_STRADDLE
+spec_version: "1.0.0"
+enabled: true
+description: >-
+  At-the-money long call plus long put on the same strike and expiration.
+  Used when a strong move is expected but its direction is not.
+
+applicable_hypotheses:
+  - A
+  - D
+
+dte_min: 14
+dte_max: 30
+# At-the-money: both legs near 0.50 absolute delta.
+target_delta: 0.50
+
+min_option_price_eur: "0.50"
+max_option_price_eur: "25.00"
+# Entering a straddle into already-elevated IV is how these lose money even
+# when the move happens; cap it tighter than the directional strategies.
+min_implied_volatility: 0.15
+max_implied_volatility: 0.90
+
+liquidity:
+  min_open_interest: 750
+  min_daily_volume: 150
+  max_bid_ask_spread_pct: 6.0
+
+exit_policy:
+  trailing_stop_pct: 35.0
+  take_profit_pct: 120.0
+  max_loss_pct: 55.0
+  # Long premium decays fastest near expiry; exit earlier than a directional.
+  close_at_dte: 10
+  allow_independent_leg_exit: false

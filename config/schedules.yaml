@@ -1,0 +1,47 @@
+# Job cadences for the persistent scheduler (specification section 23).
+#
+# Schedules live here and nowhere else — never hard-coded inside an agent.
+# Every job must also be independently runnable from the CLI:
+#   python -m trading_system.cli run <job>
+#
+# Cron expressions are interpreted in the timezone below. Note the deliberate
+# asymmetry: research is slow and expensive, position monitoring is frequent
+# and cheap. Do not run the full research process every few minutes.
+config_version: "2026.08.10-1"
+timezone: America/New_York
+
+jobs:
+  data_collection:
+    cron: "*/30 9-16 * * 1-5"
+    enabled: true
+    description: Collect and persist market/option snapshots during the session.
+
+  universe_refresh:
+    cron: "0 7 * * 1-5"
+    enabled: true
+    description: Rebuild the candidate underlying universe before the open.
+
+  opportunity_scan:
+    cron: "30 10 * * 1-5"
+    enabled: true
+    description: Slow loop - research, strategy, contract, rank, allocate, risk.
+
+  position_monitor:
+    cron: "*/5 9-16 * * 1-5"
+    enabled: true
+    description: Fast loop - reconcile, snapshot, risk, exit policy.
+
+  thesis_monitor:
+    cron: "0 12 * * 1-5"
+    enabled: true
+    description: Re-check whether entry theses still hold. Not run every tick.
+
+  reconciliation:
+    cron: "*/10 * * * *"
+    enabled: true
+    description: Compare internal state against IBKR. Broker state wins.
+
+  end_of_day_report:
+    cron: "0 18 * * 1-5"
+    enabled: true
+    description: Daily performance and decision report.
