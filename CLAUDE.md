@@ -17,12 +17,43 @@ truth for module layout, CLI surface, schemas, testing layers, and milestone ord
 relevant section before creating files rather than inventing a design. Everything below is a
 summary of the load-bearing parts, not a replacement for it.
 
-Build order is spec §46 (Milestones 1–12). **Milestone 2 is next: broker connectivity** — the
-`Broker` abstraction, `SimulatedBroker`, `IBKRBroker`, the read-only connection and portfolio
-tests, and reconciliation.
-
 Package directories for later milestones exist with only a docstring naming their milestone.
 That is deliberate: a stub that pretends to work is worse than an absent module (spec §48.3).
+
+## Next up: Milestone 2 — broker connectivity
+
+Build order is spec §46 (Milestones 1–12). Milestone 2 covers spec §14, §15, §20 and §30:
+
+- `Broker` abstraction (§14) — application code must never touch a raw IBKR call
+- `SimulatedBroker` — the default for tests and dry runs
+- `IBKRBroker` — real adapter over IB Gateway
+- `test ibkr-connection` and `test ibkr-portfolio` (§15) — read-only, must assert
+  `orders_submitted == 0`
+- Reconciliation service (§20) — broker state wins; a mismatch blocks new executions
+- `tests/broker/`, replacing the current skipped placeholder
+
+**Two decisions the owner has not yet made** — the abstraction and simulator can be built without
+either, the `IBKRBroker` cannot:
+
+1. **IBKR client library.** `ib_async` (maintained fork of the abandoned `ib_insync`) versus the
+   official `ibapi`. `ib_async` means far less boilerplate and is async-native, at the cost of
+   depending on a community fork. Ask before choosing.
+2. **Is IB Gateway running with paper credentials?** Not needed to write the adapter, but the
+   read-only connection test cannot be *verified* without it. Do not claim it works unverified.
+
+## Git workflow
+
+`master` is always the last completed, all-green milestone. Work on `milestone-N-<name>`; when the
+milestone is done and the suite passes:
+
+```bash
+git checkout master && git merge --ff-only milestone-N-<name>
+git tag -a milestone-N -m "..." && git branch -d milestone-N-<name>
+```
+
+Linear history, no merge commits; tags mark the boundaries, so `git diff milestone-1..milestone-2`
+answers "what did this milestone actually change". A milestone that goes wrong is thrown away by
+deleting the branch — `master` is never left broken. Commit only when asked.
 
 ## The core architectural rule
 
