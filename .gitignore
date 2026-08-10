@@ -1,0 +1,53 @@
+# ---------------------------------------------------------------------------
+# Secrets — never commit. Only .env.example belongs in Git.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# ---------------------------------------------------------------------------
+# Tooling
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# ---------------------------------------------------------------------------
+# Runtime artifacts.
+#
+# Directory structure is tracked via .gitkeep; contents are not. Trade
+# snapshots and market data are local research artifacts, not source code.
+# ---------------------------------------------------------------------------
+data/raw/*
+data/normalized/*
+data/cache/*
+data/historical/*
+data/snapshots/*
+trades/open/*
+trades/closed/*
+trades/rejected/*
+reports/daily/*
+reports/weekly/*
+reports/evaluation/*
+logs/
+*.db
+*.sqlite3
+
+!**/.gitkeep

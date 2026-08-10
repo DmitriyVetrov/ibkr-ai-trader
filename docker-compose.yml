@@ -1,0 +1,56 @@
+# Local infrastructure (specification section 43).
+#
+# SCAFFOLD ONLY — not exercised until Milestone 2 (broker connectivity).
+# Nothing in Milestone 1 connects to IB Gateway; `docker compose up` is not
+# part of any Milestone 1 workflow or test.
+#
+# Ports and credentials come from the environment. Copy .env.example to .env
+# first. No credential belongs in this file.
+
+services:
+  ib-gateway:
+    # IB Gateway + IBC. Pinned by digest/tag before first real use in M2.
+    image: ${IB_GATEWAY_IMAGE:-ghcr.io/gnzsnz/ib-gateway:stable}
+    restart: unless-stopped
+    environment:
+      # "paper" or "live". Mirrors TRADING_MODE but is a separate switch:
+      # the gateway must not silently follow the application into live mode.
+      TRADING_MODE: ${IB_GATEWAY_MODE:-paper}
+      TWS_USERID: ${IBKR_USERNAME}
+      TWS_PASSWORD: ${IBKR_PASSWORD}
+      READ_ONLY_API: ${IB_GATEWAY_READ_ONLY:-yes}
+      TZ: ${TZ:-Etc/UTC}
+    ports:
+      # Host port is configurable; nothing is hard-coded.
+      - "${IBKR_PORT:-4002}:4002"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 4002 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+
+  trading-runtime:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      ib-gateway:
+        condition: service_healthy
+    environment:
+      TRADING_MODE: ${TRADING_MODE:-PAPER}
+      IBKR_HOST: ib-gateway
+      IBKR_PORT: 4002
+      IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
+      IBKR_ACCOUNT: ${IBKR_ACCOUNT}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      LOG_FORMAT: json
+    volumes:
+      # Research artifacts and trade records outlive the container.
+      - ./data:/app/data
+      - ./trades:/app/trades
+      - ./reports:/app/reports
+    command: ["python", "-m", "trading_system.cli", "health"]
