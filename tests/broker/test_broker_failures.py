@@ -146,6 +146,43 @@ def test_successful_connect_sets_the_market_data_type(
 
 
 @pytest.mark.unit
+def test_connect_does_not_spend_a_live_round_trip_on_its_own_health_check(
+    monkeypatch: pytest.MonkeyPatch, broker_clock: FixedClock
+) -> None:
+    """``connect`` must not probe latency itself.
+
+    Regression test: against a real TWS instance, only the first live
+    request/response round trip on a freshly opened connection is reliably
+    answered — a second one (e.g. a ``reqCurrentTime`` probe issued right
+    after the connection handshake) can go unanswered forever even though
+    the connection itself is healthy. ``connect`` used to call the full
+    ``health_check`` (which issues that probe) on every connection, which
+    burned the connection's one reliable round trip before the caller ever
+    got to do real work. It must now report CONNECTED using only
+    information already available from the handshake (``isConnected``,
+    ``managedAccounts``, ``client.serverVersion``), leaving the live round
+    trip for the caller.
+    """
+
+    class NoCurrentTimeIB(FakeIB):
+        def reqCurrentTime(self) -> None:  # noqa: N802
+            raise AssertionError("connect() must not call reqCurrentTime")
+
+        async def reqCurrentTimeAsync(self) -> None:  # noqa: N802
+            raise AssertionError("connect() must not call reqCurrentTimeAsync")
+
+    ib = NoCurrentTimeIB()
+    monkeypatch.setattr(client_module, "_import_ib_async", lambda: fake_ib_module(ib=ib))
+    broker = make_broker(broker_clock)
+
+    health = broker.connect()
+
+    assert health.is_usable
+    assert health.state.value == "CONNECTED"
+    assert broker.orders_submitted == 0
+
+
+@pytest.mark.unit
 def test_missing_library_is_a_configuration_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """A missing optional dependency must say how to install it."""
     import builtins

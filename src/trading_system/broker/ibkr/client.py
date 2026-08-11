@@ -217,7 +217,15 @@ class IBKRBroker(Broker):
 
         self._last_communication = self._clock.now()
         self._last_error = None
-        return self.health_check()
+        # Do not spend a live round trip on a self-check here: against some
+        # TWS builds, only the first live request/response on a freshly
+        # opened connection is reliably answered (confirmed by direct
+        # ib_async probing — a second request on the same connection can go
+        # unanswered indefinitely even though the socket is fine and the
+        # first request worked). The connection handshake plus the account
+        # lookup above already proves liveness without spending that budget,
+        # leaving it for whatever the caller does next.
+        return self.health_check(probe_latency=False)
 
     def _resolve_account(self, ib: Any) -> str:
         """Determine which account this connection speaks for.
@@ -261,8 +269,19 @@ class IBKRBroker(Broker):
         self._ib = None
         self._account_id = None
 
-    def health_check(self) -> BrokerHealth:
-        """Report connection state. Never raises."""
+    def health_check(self, *, probe_latency: bool = True) -> BrokerHealth:
+        """Report connection state. Never raises.
+
+        ``probe_latency`` issues a live ``reqCurrentTime`` round trip to
+        measure latency and confirm the broker is actually answering, not
+        just that the socket is open. Skip it when the connection has not
+        yet spent its round trip elsewhere (see ``connect``'s use of this
+        with ``probe_latency=False``) — some TWS builds reliably answer only
+        the first live request per connection and leave later ones pending
+        forever, so this must stay opt-out, not opt-in, to avoid silently
+        reintroducing a hang at every call site that checks health after
+        already using the connection for something else.
+        """
         now = self._clock.now()
         if self._ib is None:
             return BrokerHealth(
@@ -308,27 +327,29 @@ class IBKRBroker(Broker):
         latency_ms: float | None = None
         error: str | None = None
         state = BrokerConnectionState.CONNECTED
-        try:
-            started = time.perf_counter()
-            # ib_async's synchronous IB.reqCurrentTime() has no timeout and
-            # can hang indefinitely on a repeat call over the same
-            # connection (observed against a real TWS/Gateway: the first
-            # call on a fresh connection returns, a later call never does).
-            # Where the async form is available, route through it with an
-            # explicit bound so a broken round trip surfaces as ERROR
-            # instead of hanging the whole process.
-            req_current_time_async = getattr(self._ib, "reqCurrentTimeAsync", None)
-            if req_current_time_async is not None:
-                _import_ib_async().util.run(
-                    req_current_time_async(), timeout=self._connect_timeout
-                )
-            else:
-                self._ib.reqCurrentTime()
-            latency_ms = (time.perf_counter() - started) * 1000
-            self._last_communication = self._clock.now()
-        except Exception as exc:
-            state = BrokerConnectionState.ERROR
-            error = str(exc)
+        if probe_latency:
+            try:
+                started = time.perf_counter()
+                # ib_async's synchronous IB.reqCurrentTime() has no timeout
+                # and can hang indefinitely on a repeat call over the same
+                # connection (observed against a real TWS: the first live
+                # request/response on a fresh connection returns, a later
+                # one on that same connection never does). Where the async
+                # form is available, route through it with an explicit
+                # bound so a broken round trip surfaces as ERROR instead of
+                # hanging the whole process.
+                req_current_time_async = getattr(self._ib, "reqCurrentTimeAsync", None)
+                if req_current_time_async is not None:
+                    _import_ib_async().util.run(
+                        req_current_time_async(), timeout=self._connect_timeout
+                    )
+                else:
+                    self._ib.reqCurrentTime()
+                latency_ms = (time.perf_counter() - started) * 1000
+                self._last_communication = self._clock.now()
+            except Exception as exc:
+                state = BrokerConnectionState.ERROR
+                error = str(exc)
 
         return BrokerHealth(
             broker=self.name,
