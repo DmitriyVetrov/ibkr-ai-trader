@@ -1,0 +1,409 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/research_input.json",
+  "title": "ResearchInput",
+  "description": "Everything the Market Researcher agent is given about ONE underlying, and the only thing it may reason from. Assembled point-in-time from the data repository: every item here was actually retrieved by as_of. Carries no repository handle, no provider, no broker and no path. Carries no strike, no expiry date, no right and no contract id either - the option context is aggregate and keyed by days to expiration, so the agent is never shown a contract it could select. Every citable fact has an evidence_id; the agent's response references those ids and cannot invent one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "symbol",
+    "as_of",
+    "horizon",
+    "schema_version",
+    "data_quality_summary",
+    "window",
+    "limits",
+    "source_policy"
+  ],
+  "properties": {
+    "run_id": { "type": "string", "minLength": 1 },
+    "symbol": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+    "as_of": {
+      "description": "The instant the outlook is reconstructed for. No information retrieved after this instant may appear anywhere below.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "horizon": { "$ref": "#/$defs/horizon" },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "universe_run_id": { "type": ["string", "null"] },
+    "universe_snapshot_id": { "type": ["string", "null"] },
+    "data_snapshot_ids": {
+      "description": "Every immutable data snapshot this input was derived from.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "market_snapshot": {
+      "description": "null when no quote was visible at as_of. Absence is a fact, not a price of zero.",
+      "oneOf": [{ "$ref": "#/$defs/market_snapshot" }, { "type": "null" }]
+    },
+    "historical_context": {
+      "oneOf": [{ "$ref": "#/$defs/historical_context" }, { "type": "null" }]
+    },
+    "option_context": {
+      "oneOf": [{ "$ref": "#/$defs/option_context" }, { "type": "null" }]
+    },
+    "market_context": {
+      "oneOf": [{ "$ref": "#/$defs/market_context" }, { "type": "null" }]
+    },
+    "news": {
+      "description": "Articles, already grouped so one syndicated story is one item rather than ten independent catalysts.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/evidence_item" }
+    },
+    "events": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/event_item" }
+    },
+    "regulatory_events": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/evidence_item" }
+    },
+    "fundamentals": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fundamental_item" }
+    },
+    "observations": {
+      "description": "Facts derived from market, historical, option and context data, given ids so a claim about them can be supported rather than merely asserted.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/evidence_item" }
+    },
+    "data_quality_summary": { "$ref": "#/$defs/data_quality_summary" },
+    "window": { "$ref": "#/$defs/window" },
+    "limits": { "$ref": "#/$defs/limits" },
+    "source_policy": { "$ref": "#/$defs/source_policy" }
+  },
+  "$defs": {
+    "horizon": {
+      "description": "The window the question is asked about. A long-term thesis is not an answer to a short-term question.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min_days", "max_days"],
+      "properties": {
+        "min_days": { "type": "integer", "minimum": 1, "maximum": 365 },
+        "max_days": { "type": "integer", "minimum": 1, "maximum": 365 }
+      }
+    },
+    "source_provenance": {
+      "description": "Where a fact came from. provider always names whoever actually produced it; requested_provider records who was asked and did not answer, so a claim can never cite a source that was not consulted. source_tier is resolved against config/sources.yaml.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "source_tier", "retrieved_at", "snapshot_id"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "source_tier": { "enum": ["TIER_1", "TIER_2", "TIER_3", "TIER_4"] },
+        "retrieved_at": { "type": "string", "format": "date-time" },
+        "snapshot_id": { "type": "string", "minLength": 1 },
+        "source_name": { "type": ["string", "null"] },
+        "source_identifier": { "type": ["string", "null"] },
+        "published_at": { "type": ["string", "null"], "format": "date-time" },
+        "source_timestamp": { "type": ["string", "null"], "format": "date-time" },
+        "requested_provider": { "type": ["string", "null"] },
+        "origin": {
+          "enum": [
+            "BROKER_REALTIME",
+            "BROKER_DELAYED",
+            "BROKER_FROZEN",
+            "PROVIDER_REALTIME",
+            "PROVIDER_DELAYED",
+            "HISTORICAL",
+            "CACHED",
+            "SIMULATED",
+            "UNAVAILABLE",
+            null
+          ]
+        },
+        "provider_relevance": {
+          "description": "Provider-supplied relevance, carried through unchanged. Never computed here.",
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "data_quality_summary": {
+      "description": "What the data behind this input was actually like. gaps names what was absent; an absent value is never rendered as zero or false.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["research_usable"],
+      "properties": {
+        "research_usable": { "type": "boolean" },
+        "classification": { "enum": ["OK", "DEGRADED", "STALE", "UNUSABLE"] },
+        "freshness_valid": { "type": "boolean" },
+        "completeness_valid": { "type": "boolean" },
+        "plausibility_valid": { "type": "boolean" },
+        "consistency_valid": { "type": "boolean" },
+        "records_considered": { "type": "integer", "minimum": 0 },
+        "records_research_usable": { "type": "integer", "minimum": 0 },
+        "records_excluded_not_usable": { "type": "integer", "minimum": 0 },
+        "gaps": { "type": "array", "items": { "type": "string" } },
+        "issues": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "evidence_item": {
+      "description": "One retrieved fact, with its provenance and a derived id. States what was retrieved, never what it means: classification is the agent's job and is recorded separately, so the fact and the reading of it never merge.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "kind", "summary", "source"],
+      "properties": {
+        "evidence_id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": [
+            "NEWS",
+            "CORPORATE_EVENT",
+            "MACRO_EVENT",
+            "REGULATORY_FILING",
+            "FUNDAMENTAL",
+            "MARKET_DATA",
+            "HISTORICAL_PRICE",
+            "OPTION_MARKET",
+            "MARKET_CONTEXT"
+          ]
+        },
+        "summary": { "type": "string", "minLength": 1 },
+        "source": { "$ref": "#/$defs/source_provenance" },
+        "occurred_at": { "type": ["string", "null"], "format": "date-time" },
+        "detail": { "type": ["string", "null"] },
+        "duplicate_count": {
+          "description": "Further reports of the same story folded into this item. Corroboration, not additional catalysts.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "duplicate_source_names": { "type": "array", "items": { "type": "string" } },
+        "research_usable": { "type": "boolean" }
+      }
+    },
+    "event_item": {
+      "description": "A dated event that could move the underlying. announced_at is what makes a future-dated event legitimate evidence: it may only be visible to a reconstruction of an instant after it was announced. An event with no announcement time cannot support hypothesis D.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "event_type", "summary", "expected_event_time", "source"],
+      "properties": {
+        "event_id": { "type": "string", "minLength": 1 },
+        "event_type": { "$ref": "#/$defs/market_event_type" },
+        "summary": { "type": "string", "minLength": 1 },
+        "expected_event_time": { "type": "string", "format": "date-time" },
+        "source": { "$ref": "#/$defs/source_provenance" },
+        "announced_at": { "type": ["string", "null"], "format": "date-time" },
+        "confirmed": { "type": "boolean" },
+        "days_until": { "type": ["integer", "null"] },
+        "within_horizon": { "type": "boolean" },
+        "detail": { "type": ["string", "null"] },
+        "evidence_id": { "type": ["string", "null"] }
+      }
+    },
+    "market_event_type": {
+      "enum": [
+        "EARNINGS",
+        "GUIDANCE",
+        "INVESTOR_DAY",
+        "PRODUCT_LAUNCH",
+        "DIVIDEND",
+        "SPLIT",
+        "MERGER_ACQUISITION",
+        "REGULATORY_DECISION",
+        "COURT_DECISION",
+        "REGULATORY_FILING",
+        "CENTRAL_BANK_DECISION",
+        "INFLATION_RELEASE",
+        "MACRO_RELEASE",
+        "ANNOUNCEMENT",
+        "OTHER"
+      ]
+    },
+    "fundamental_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "period_end": { "type": ["string", "null"], "format": "date" },
+        "fiscal_period": { "type": ["string", "null"] },
+        "currency": { "type": ["string", "null"] },
+        "revenue": { "$ref": "#/$defs/nullable_money" },
+        "net_income": { "$ref": "#/$defs/nullable_money" },
+        "eps_basic": { "$ref": "#/$defs/nullable_money" },
+        "eps_diluted": { "$ref": "#/$defs/nullable_money" },
+        "shares_outstanding": { "$ref": "#/$defs/nullable_money" },
+        "market_capitalization": { "$ref": "#/$defs/nullable_money" },
+        "guidance": { "type": ["string", "null"] },
+        "next_earnings_date": { "type": ["string", "null"], "format": "date" },
+        "filing_form": { "type": ["string", "null"] },
+        "filing_filed_at": { "type": ["string", "null"], "format": "date-time" },
+        "source": { "$ref": "#/$defs/source_provenance" },
+        "evidence_id": { "type": ["string", "null"] }
+      }
+    },
+    "market_snapshot": {
+      "description": "The underlying's own market state. Every price is optional: a quote with no bid and no ask is a real outcome outside market hours, and zeros would make an illiquid instrument look tradeable.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol", "as_of", "origin", "source"],
+      "properties": {
+        "symbol": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+        "as_of": { "type": "string", "format": "date-time" },
+        "origin": {
+          "enum": [
+            "BROKER_REALTIME",
+            "BROKER_DELAYED",
+            "BROKER_FROZEN",
+            "PROVIDER_REALTIME",
+            "PROVIDER_DELAYED",
+            "HISTORICAL",
+            "CACHED",
+            "SIMULATED",
+            "UNAVAILABLE"
+          ]
+        },
+        "source": { "$ref": "#/$defs/source_provenance" },
+        "last": { "$ref": "#/$defs/nullable_money" },
+        "close": { "$ref": "#/$defs/nullable_money" },
+        "bid": { "$ref": "#/$defs/nullable_money" },
+        "ask": { "$ref": "#/$defs/nullable_money" },
+        "volume": { "$ref": "#/$defs/nullable_money" },
+        "currency": { "type": ["string", "null"] },
+        "age_seconds": { "type": ["number", "null"], "minimum": 0 },
+        "data_quality": {
+          "oneOf": [{ "$ref": "#/$defs/data_quality_summary" }, { "type": "null" }]
+        }
+      }
+    },
+    "historical_context": {
+      "description": "Descriptive statistics over the configured window. No moving average, no oscillator, no pattern: the research agent is not a technical strategy. realized_volatility carries its own window and annualisation factor so a comparison against an implied volatility over a different horizon is visibly a mismatch.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation_count"],
+      "properties": {
+        "observation_count": { "type": "integer", "minimum": 0 },
+        "period_start": { "type": ["string", "null"], "format": "date-time" },
+        "period_end": { "type": ["string", "null"], "format": "date-time" },
+        "first_close": { "$ref": "#/$defs/nullable_money" },
+        "last_close": { "$ref": "#/$defs/nullable_money" },
+        "high": { "$ref": "#/$defs/nullable_money" },
+        "low": { "$ref": "#/$defs/nullable_money" },
+        "change_pct": { "$ref": "#/$defs/nullable_money" },
+        "max_drawdown_pct": { "$ref": "#/$defs/nullable_money" },
+        "realized_volatility": { "$ref": "#/$defs/nullable_money" },
+        "realized_volatility_window_days": { "type": ["integer", "null"], "minimum": 0 },
+        "realized_volatility_annualization_days": { "type": ["integer", "null"], "minimum": 1 },
+        "snapshot_ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "option_context": {
+      "description": "Aggregate option-market conditions, never a contract. Keyed by days to expiration and carrying no strike, no right and no expiry date, so the agent cannot name an instrument. atm_implied_volatility null means unavailable - never zero.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["underlying", "as_of", "source"],
+      "properties": {
+        "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+        "as_of": { "type": "string", "format": "date-time" },
+        "source": { "$ref": "#/$defs/source_provenance" },
+        "expiration_count": { "type": "integer", "minimum": 0 },
+        "strike_count": { "type": "integer", "minimum": 0 },
+        "nearest_expiration_days": { "type": ["integer", "null"] },
+        "atm_implied_volatility": { "$ref": "#/$defs/nullable_money" },
+        "total_option_volume": { "$ref": "#/$defs/nullable_money" },
+        "total_open_interest": { "$ref": "#/$defs/nullable_money" },
+        "term_structure": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["days_to_expiration"],
+            "properties": {
+              "days_to_expiration": { "type": "integer", "minimum": 0 },
+              "atm_implied_volatility": { "$ref": "#/$defs/nullable_money" },
+              "contract_count": { "type": "integer", "minimum": 0 },
+              "total_volume": { "$ref": "#/$defs/nullable_money" },
+              "total_open_interest": { "$ref": "#/$defs/nullable_money" }
+            }
+          }
+        },
+        "evidence_id": { "type": ["string", "null"] }
+      }
+    },
+    "market_context": {
+      "description": "Broad-market reference, when the store had it. When it did not, available is false and the reason is stated: the research layer never retrieves it itself and never substitutes a remembered value.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available"],
+      "properties": {
+        "broad_index_symbol": { "type": ["string", "null"] },
+        "broad_index": {
+          "oneOf": [{ "$ref": "#/$defs/market_snapshot" }, { "type": "null" }]
+        },
+        "broad_index_history": {
+          "oneOf": [{ "$ref": "#/$defs/historical_context" }, { "type": "null" }]
+        },
+        "reference_snapshots": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/market_snapshot" }
+        },
+        "available": { "type": "boolean" },
+        "unavailable_reason": { "type": ["string", "null"] }
+      }
+    },
+    "window": {
+      "description": "The data windows actually applied, echoed so a stored input explains itself after the configuration changes.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "news_lookback_days",
+        "event_lookahead_days",
+        "event_lookback_days",
+        "historical_lookback_days",
+        "fundamentals_lookback_days",
+        "regulatory_lookback_days",
+        "volatility_annualization_days"
+      ],
+      "properties": {
+        "news_lookback_days": { "type": "integer", "minimum": 0 },
+        "event_lookahead_days": { "type": "integer", "minimum": 0 },
+        "event_lookback_days": { "type": "integer", "minimum": 0 },
+        "historical_lookback_days": { "type": "integer", "minimum": 0 },
+        "fundamentals_lookback_days": { "type": "integer", "minimum": 0 },
+        "regulatory_lookback_days": { "type": "integer", "minimum": 0 },
+        "volatility_annualization_days": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "limits": {
+      "description": "Cost ceilings applied, and which sections they actually truncated. A thin input must never be mistaken for a quiet market.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_evidence_items",
+        "max_news_items",
+        "max_events",
+        "max_regulatory_items",
+        "max_fundamental_periods"
+      ],
+      "properties": {
+        "max_evidence_items": { "type": "integer", "minimum": 0 },
+        "max_news_items": { "type": "integer", "minimum": 0 },
+        "max_events": { "type": "integer", "minimum": 0 },
+        "max_regulatory_items": { "type": "integer", "minimum": 0 },
+        "max_fundamental_periods": { "type": "integer", "minimum": 0 },
+        "truncated": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "source_policy": {
+      "description": "The trust policy in force, read from config/sources.yaml. There is exactly one source-ranking system and this echoes it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["config_version"],
+      "properties": {
+        "config_version": { "type": "string", "minLength": 1 },
+        "require_source_attribution": { "type": "boolean" },
+        "min_sources_per_report": { "type": "integer", "minimum": 0 },
+        "tier_1_count": { "type": "integer", "minimum": 0 },
+        "tier_2_count": { "type": "integer", "minimum": 0 },
+        "tier_3_count": { "type": "integer", "minimum": 0 },
+        "tier_4_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "nullable_money": {
+      "description": "Exact decimal as a string, or null for unavailable. Never a JSON number: binary floating point must not reach an accounting decision. null and 0 are different claims.",
+      "type": ["string", "null"],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][-+]?[0-9]+)?$"
+    }
+  }
+}

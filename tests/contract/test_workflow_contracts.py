@@ -260,6 +260,171 @@ def test_the_universe_result_validates_against_its_own_schema(
 
 
 @pytest.mark.contract
+def test_a_research_run_validates_against_its_own_schema(
+    market_research_run, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    _validator(load_schema("research_run")).validate(_dump(market_research_run))
+
+
+@pytest.mark.contract
+def test_a_research_report_validates_against_its_own_schema(
+    market_research_report, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    _validator(load_schema("market_research_report")).validate(_dump(market_research_report))
+
+
+@pytest.mark.contract
+def test_a_research_input_validates_against_its_own_schema(
+    market_research_input, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    _validator(load_schema("research_input")).validate(_dump(market_research_input))
+
+
+@pytest.mark.contract
+def test_an_agent_output_validates_against_its_own_schema(
+    market_research_agent_output, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    _validator(load_schema("research_agent_output")).validate(_dump(market_research_agent_output))
+
+
+@pytest.mark.contract
+def test_the_agent_output_schema_rejects_e_without_an_explanation(
+    market_research_agent_output, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    payload = _dump(market_research_agent_output)
+    payload["hypothesis"] = "E"
+    payload["direction"] = "NEUTRAL"
+    payload["explanation"] = None
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("research_agent_output")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_agent_output_schema_rejects_d_without_an_event(
+    market_research_agent_output, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """Milestone 5 brief section 13: D without an event is invalid."""
+    payload = _dump(market_research_agent_output)
+    payload["hypothesis"] = "D"
+    payload["direction"] = "UNCERTAIN"
+    payload["key_events"] = []
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("research_agent_output")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_agent_output_schema_rejects_a_direction_contradicting_the_hypothesis(
+    market_research_agent_output, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    payload = _dump(market_research_agent_output)
+    payload["direction"] = "BEARISH"  # hypothesis is still B
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("research_agent_output")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_report_schema_rejects_a_failed_report_carrying_an_outlook(
+    market_research_report, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """A failure is never a market view, in the schema as well as the model."""
+    payload = _dump(market_research_report)
+    payload["status"] = "AI_UNAVAILABLE"  # hypothesis and confidence are still set
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("market_research_report")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_report_schema_requires_an_invalidation_condition_on_success(
+    market_research_report, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    payload = _dump(market_research_report)
+    payload["invalidation_conditions"] = []
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("market_research_report")).validate(payload)
+
+
+@pytest.mark.contract
+def test_a_universe_run_feeds_the_research_input(
+    universe_run_result, market_research_input
+) -> None:
+    """Milestone 4 -> Milestone 5.
+
+    The research input names the universe run and snapshot it descends from, so
+    the chain universe -> research input -> research report is walkable in both
+    directions after the fact.
+    """
+    assert market_research_input.universe_run_id == universe_run_result.run_id
+    assert market_research_input.universe_snapshot_id == universe_run_result.snapshot_id
+    assert market_research_input.symbol in universe_run_result.symbols
+
+
+@pytest.mark.contract
+def test_the_research_input_carries_only_underlying_level_evidence(
+    market_research_input,
+) -> None:
+    """No strike, no expiry, no right crosses into the agent's view."""
+    payload = _dump(market_research_input)
+    option_context = payload.get("option_context") or {}
+
+    for point in option_context.get("term_structure", []):
+        assert set(point) <= {
+            "days_to_expiration",
+            "atm_implied_volatility",
+            "contract_count",
+            "total_volume",
+            "total_open_interest",
+        }
+
+
+@pytest.mark.contract
+def test_a_research_report_projects_onto_the_strategy_boundary(
+    market_research_report, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """Milestone 5 -> Milestone 6.
+
+    The full report is the audit artifact; the strategy stage consumes the
+    narrow ``ResearchReport`` boundary. This asserts the projection actually
+    validates against the schema that stage was built against, rather than
+    merely being convertible.
+    """
+    projected = market_research_report.to_research_report()
+
+    _validator(load_schema("research_report")).validate(_dump(projected))
+    assert projected.report_id == market_research_report.report_id
+    assert projected.ticker == market_research_report.symbol
+    assert projected.hypothesis == market_research_report.hypothesis
+    assert projected.invalidation_conditions
+
+
+@pytest.mark.contract
+def test_a_failed_research_report_cannot_cross_the_boundary(market_research_report) -> None:
+    """There is no way to hand a failed run downstream as though it were a view."""
+    from trading_system.domain.enums import ResearchStatus
+
+    failed = market_research_report.model_copy(
+        update={
+            "status": ResearchStatus.AI_UNAVAILABLE,
+            "hypothesis": None,
+            "confidence": None,
+            "direction": None,
+            "expected_magnitude": None,
+            "thesis": None,
+            "expected_behavior": None,
+            "bullish_catalysts": [],
+            "bearish_catalysts": [],
+        }
+    )
+
+    with pytest.raises(ValueError, match="nothing to hand on"):
+        failed.to_research_report()
+
+
+@pytest.mark.contract
 def test_research_feeds_strategy(
     research_report: ResearchReport, strategy_decision: StrategyDecision
 ) -> None:

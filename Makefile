@@ -4,8 +4,9 @@ PYTEST := .venv/bin/pytest
 CLI := $(PYTHON) -m trading_system.cli
 
 .PHONY: help install test test-unit test-contract test-agents test-universe \
-        test-strategies test-allocation test-risk test-broker test-data \
-        test-integration test-e2e universe-validate universe-run universe-show \
+        test-research test-strategies test-allocation test-risk test-broker \
+        test-data test-integration test-e2e universe-validate universe-run \
+        universe-show research-validate research-run research-show \
         lint format typecheck check health config ibkr-connection ibkr-portfolio clean
 
 help:  ## Show this help
@@ -31,6 +32,9 @@ test-agents:  ## AI agent test suites (Milestone 4+). Needs no API key.
 
 test-universe:  ## Universe selection: config, filters, point-in-time, snapshots
 	$(PYTEST) tests/universe
+
+test-research:  ## Market research: evidence, dedup, point-in-time, validation, CLI
+	$(PYTEST) tests/research
 
 test-strategies:  ## Strategy test suites (Milestone 6)
 	$(PYTEST) tests/strategies
@@ -80,6 +84,15 @@ universe-run:  ## Select the research universe. Submits no orders (Milestone 4)
 
 universe-show:  ## Show the current universe (Milestone 4)
 	$(CLI) universe show
+
+research-validate:  ## Validate research config and data readiness (Milestone 5)
+	$(CLI) research validate
+
+research-run:  ## Research the universe. Submits no orders (Milestone 5)
+	$(CLI) research run
+
+research-show:  ## Show the latest research run (Milestone 5)
+	$(CLI) research show
 
 ibkr-connection:  ## Read-only IBKR connection test (Milestone 2)
 	$(CLI) test ibkr-connection

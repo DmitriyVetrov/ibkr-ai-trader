@@ -1,0 +1,429 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/market_research_report.json",
+  "title": "MarketResearchReport",
+  "description": "The canonical, immutable outlook for ONE underlying at ONE instant. Written once and never rewritten; a later run appends a new report rather than replacing this one, so 'what did the system believe on date T, on what evidence, and was the thesis later invalidated' stays answerable. Distinct from research_report.json, which is the narrow workflow boundary the strategy stage consumes: this is the audit record and it projects onto that boundary. A report whose status is not SUCCESS carries no hypothesis, no confidence and no catalysts - a failure is never a market view. Every evidence item's provenance is copied from the research input, not from the model.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "report_id",
+    "run_id",
+    "symbol",
+    "as_of",
+    "generated_at",
+    "horizon",
+    "status",
+    "schema_version",
+    "data_quality",
+    "window",
+    "limits",
+    "source_policy",
+    "versions"
+  ],
+  "properties": {
+    "report_id": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "symbol": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+    "as_of": { "type": "string", "format": "date-time" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "horizon": { "$ref": "#/$defs/horizon" },
+    "status": {
+      "description": "INSUFFICIENT_EVIDENCE is a success of the process and a valid final answer, not a bearish signal. The failure states are separate because they demand different responses, and none of them may be read as a market view.",
+      "enum": [
+        "SUCCESS",
+        "NO_DATA",
+        "INSUFFICIENT_EVIDENCE",
+        "AI_UNAVAILABLE",
+        "AI_INVALID_OUTPUT",
+        "SEMANTIC_VALIDATION_FAILED",
+        "POINT_IN_TIME_ERROR",
+        "CONFIGURATION_ERROR",
+        "SKIPPED_COST_LIMIT"
+      ]
+    },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "hypothesis": { "enum": ["A", "B", "C", "D", "E", null] },
+    "confidence": {
+      "description": "A band, never a probability.",
+      "enum": ["HIGH", "MEDIUM", "LOW", null]
+    },
+    "direction": { "enum": ["BULLISH", "BEARISH", "NEUTRAL", "UNCERTAIN", null] },
+    "expected_magnitude": { "enum": ["SMALL", "MODERATE", "LARGE", "EXTREME", null] },
+    "horizon_days": { "type": ["integer", "null"], "minimum": 1, "maximum": 365 },
+    "thesis": { "type": ["string", "null"] },
+    "expected_behavior": { "type": ["string", "null"] },
+    "explanation": { "type": ["string", "null"] },
+    "evidence": { "type": "array", "items": { "$ref": "#/$defs/reported_evidence" } },
+    "key_events": { "type": "array", "items": { "$ref": "#/$defs/reported_event" } },
+    "bullish_catalysts": { "type": "array", "items": { "$ref": "#/$defs/catalyst" } },
+    "bearish_catalysts": { "type": "array", "items": { "$ref": "#/$defs/catalyst" } },
+    "risks": { "type": "array", "items": { "$ref": "#/$defs/risk" } },
+    "invalidation_conditions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/invalidation_condition" }
+    },
+    "contradiction_resolution": { "type": ["string", "null"] },
+    "missing_information": { "type": "array", "items": { "type": "string" } },
+    "data_quality": { "$ref": "#/$defs/data_quality_summary" },
+    "window": { "$ref": "#/$defs/window" },
+    "limits": { "$ref": "#/$defs/limits" },
+    "source_policy": { "$ref": "#/$defs/source_policy" },
+    "universe_run_id": { "type": ["string", "null"] },
+    "universe_snapshot_id": { "type": ["string", "null"] },
+    "input_snapshot_ids": { "type": "array", "items": { "type": "string" } },
+    "agent_metadata": {
+      "oneOf": [{ "$ref": "#/$defs/agent_metadata" }, { "type": "null" }]
+    },
+    "versions": { "$ref": "#/$defs/system_versions" },
+    "status_detail": { "type": ["string", "null"] }
+  },
+  "allOf": [
+    {
+      "description": "A SUCCESS report must state a complete outlook, including at least one invalidation condition: a thesis that cannot be falsified cannot be monitored.",
+      "if": { "properties": { "status": { "const": "SUCCESS" } }, "required": ["status"] },
+      "then": {
+        "required": [
+          "hypothesis",
+          "confidence",
+          "direction",
+          "expected_magnitude",
+          "horizon_days",
+          "thesis",
+          "expected_behavior",
+          "invalidation_conditions"
+        ],
+        "properties": {
+          "hypothesis": { "enum": ["A", "B", "C", "D", "E"] },
+          "confidence": { "enum": ["HIGH", "MEDIUM", "LOW"] },
+          "direction": { "enum": ["BULLISH", "BEARISH", "NEUTRAL", "UNCERTAIN"] },
+          "expected_magnitude": { "enum": ["SMALL", "MODERATE", "LARGE", "EXTREME"] },
+          "horizon_days": { "type": "integer" },
+          "thesis": { "type": "string", "minLength": 1 },
+          "expected_behavior": { "type": "string", "minLength": 1 },
+          "invalidation_conditions": { "type": "array", "minItems": 1 }
+        }
+      }
+    },
+    {
+      "description": "Anything other than SUCCESS carries no outlook. An outage is never a trading opinion.",
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "NO_DATA",
+              "INSUFFICIENT_EVIDENCE",
+              "AI_UNAVAILABLE",
+              "AI_INVALID_OUTPUT",
+              "SEMANTIC_VALIDATION_FAILED",
+              "POINT_IN_TIME_ERROR",
+              "CONFIGURATION_ERROR",
+              "SKIPPED_COST_LIMIT"
+            ]
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "hypothesis": { "type": "null" },
+          "confidence": { "type": "null" },
+          "direction": { "type": "null" },
+          "expected_magnitude": { "type": "null" },
+          "thesis": { "type": "null" },
+          "expected_behavior": { "type": "null" },
+          "bullish_catalysts": { "type": "array", "maxItems": 0 },
+          "bearish_catalysts": { "type": "array", "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "description": "Hypothesis E requires a structured explanation.",
+      "if": { "properties": { "hypothesis": { "const": "E" } }, "required": ["hypothesis"] },
+      "then": {
+        "properties": { "explanation": { "type": "string", "minLength": 1 } },
+        "required": ["explanation"]
+      }
+    }
+  ],
+  "$defs": {
+    "horizon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min_days", "max_days"],
+      "properties": {
+        "min_days": { "type": "integer", "minimum": 1, "maximum": 365 },
+        "max_days": { "type": "integer", "minimum": 1, "maximum": 365 }
+      }
+    },
+    "source_provenance": {
+      "description": "Copied from the research input, never from the model. There is no path by which an agent could write a publication date or a URL into a stored report.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "source_tier", "retrieved_at", "snapshot_id"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "source_tier": { "enum": ["TIER_1", "TIER_2", "TIER_3", "TIER_4"] },
+        "retrieved_at": { "type": "string", "format": "date-time" },
+        "snapshot_id": { "type": "string", "minLength": 1 },
+        "source_name": { "type": ["string", "null"] },
+        "source_identifier": { "type": ["string", "null"] },
+        "published_at": { "type": ["string", "null"], "format": "date-time" },
+        "source_timestamp": { "type": ["string", "null"], "format": "date-time" },
+        "requested_provider": { "type": ["string", "null"] },
+        "origin": {
+          "enum": [
+            "BROKER_REALTIME",
+            "BROKER_DELAYED",
+            "BROKER_FROZEN",
+            "PROVIDER_REALTIME",
+            "PROVIDER_DELAYED",
+            "HISTORICAL",
+            "CACHED",
+            "SIMULATED",
+            "UNAVAILABLE",
+            null
+          ]
+        },
+        "provider_relevance": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+      }
+    },
+    "reported_evidence": {
+      "description": "One fact and the agent's reading of it, side by side. 'fact' is the input's own neutral description, preserved verbatim; 'claim' is the agent's sentence about it. Keeping both is what makes 'why did the agent conclude this' answerable without trusting its account of what it was shown.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_id",
+        "kind",
+        "claim",
+        "fact",
+        "direction",
+        "stance",
+        "relevance",
+        "confidence",
+        "source"
+      ],
+      "properties": {
+        "evidence_id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": [
+            "NEWS",
+            "CORPORATE_EVENT",
+            "MACRO_EVENT",
+            "REGULATORY_FILING",
+            "FUNDAMENTAL",
+            "MARKET_DATA",
+            "HISTORICAL_PRICE",
+            "OPTION_MARKET",
+            "MARKET_CONTEXT"
+          ]
+        },
+        "claim": { "type": "string", "minLength": 1 },
+        "fact": { "type": "string", "minLength": 1 },
+        "direction": {
+          "enum": ["SUPPORTS_UP", "SUPPORTS_DOWN", "SUPPORTS_LARGE_MOVE", "NEUTRAL"]
+        },
+        "stance": { "enum": ["SUPPORTS", "CONTRADICTS", "NEUTRAL"] },
+        "relevance": { "enum": ["HIGH", "MEDIUM", "LOW"] },
+        "confidence": { "enum": ["HIGH", "MEDIUM", "LOW"] },
+        "source": { "$ref": "#/$defs/source_provenance" },
+        "occurred_at": { "type": ["string", "null"], "format": "date-time" },
+        "duplicate_count": { "type": "integer", "minimum": 0 },
+        "duplicate_source_names": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "reported_event": {
+      "description": "A material event. Every timing and provenance field comes from the input; an event with no announced_at was never established to be knowable at the research instant and cannot carry hypothesis D.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "event_type",
+        "summary",
+        "expected_event_time",
+        "expected_relevance",
+        "directional_uncertainty",
+        "source"
+      ],
+      "properties": {
+        "event_id": { "type": "string", "minLength": 1 },
+        "event_type": {
+          "enum": [
+            "EARNINGS",
+            "GUIDANCE",
+            "INVESTOR_DAY",
+            "PRODUCT_LAUNCH",
+            "DIVIDEND",
+            "SPLIT",
+            "MERGER_ACQUISITION",
+            "REGULATORY_DECISION",
+            "COURT_DECISION",
+            "REGULATORY_FILING",
+            "CENTRAL_BANK_DECISION",
+            "INFLATION_RELEASE",
+            "MACRO_RELEASE",
+            "ANNOUNCEMENT",
+            "OTHER"
+          ]
+        },
+        "summary": { "type": "string", "minLength": 1 },
+        "expected_event_time": { "type": "string", "format": "date-time" },
+        "announced_at": { "type": ["string", "null"], "format": "date-time" },
+        "confirmed": { "type": "boolean" },
+        "days_until": { "type": ["integer", "null"] },
+        "within_horizon": { "type": "boolean" },
+        "expected_relevance": { "enum": ["HIGH", "MEDIUM", "LOW"] },
+        "directional_uncertainty": { "type": "boolean" },
+        "rationale": { "type": ["string", "null"] },
+        "source": { "$ref": "#/$defs/source_provenance" }
+      }
+    },
+    "catalyst": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "support"],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "evidence_ids": { "type": "array", "items": { "type": "string" } },
+        "support": { "enum": ["SUPPORTED", "UNSUPPORTED"] }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "description", "support"],
+      "properties": {
+        "category": {
+          "enum": [
+            "DIRECTIONAL_RISK",
+            "EVENT_RISK",
+            "MACRO_RISK",
+            "COMPANY_SPECIFIC_RISK",
+            "DATA_RISK"
+          ]
+        },
+        "description": { "type": "string", "minLength": 1 },
+        "evidence_ids": { "type": "array", "items": { "type": "string" } },
+        "support": { "enum": ["SUPPORTED", "UNSUPPORTED"] }
+      }
+    },
+    "invalidation_condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["condition", "support"],
+      "properties": {
+        "condition": { "type": "string", "minLength": 1 },
+        "observable": { "type": ["string", "null"] },
+        "evidence_ids": { "type": "array", "items": { "type": "string" } },
+        "support": { "enum": ["SUPPORTED", "UNSUPPORTED"] }
+      }
+    },
+    "data_quality_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["research_usable"],
+      "properties": {
+        "research_usable": { "type": "boolean" },
+        "classification": { "enum": ["OK", "DEGRADED", "STALE", "UNUSABLE"] },
+        "freshness_valid": { "type": "boolean" },
+        "completeness_valid": { "type": "boolean" },
+        "plausibility_valid": { "type": "boolean" },
+        "consistency_valid": { "type": "boolean" },
+        "records_considered": { "type": "integer", "minimum": 0 },
+        "records_research_usable": { "type": "integer", "minimum": 0 },
+        "records_excluded_not_usable": { "type": "integer", "minimum": 0 },
+        "gaps": { "type": "array", "items": { "type": "string" } },
+        "issues": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "news_lookback_days",
+        "event_lookahead_days",
+        "event_lookback_days",
+        "historical_lookback_days",
+        "fundamentals_lookback_days",
+        "regulatory_lookback_days",
+        "volatility_annualization_days"
+      ],
+      "properties": {
+        "news_lookback_days": { "type": "integer", "minimum": 0 },
+        "event_lookahead_days": { "type": "integer", "minimum": 0 },
+        "event_lookback_days": { "type": "integer", "minimum": 0 },
+        "historical_lookback_days": { "type": "integer", "minimum": 0 },
+        "fundamentals_lookback_days": { "type": "integer", "minimum": 0 },
+        "regulatory_lookback_days": { "type": "integer", "minimum": 0 },
+        "volatility_annualization_days": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_evidence_items",
+        "max_news_items",
+        "max_events",
+        "max_regulatory_items",
+        "max_fundamental_periods"
+      ],
+      "properties": {
+        "max_evidence_items": { "type": "integer", "minimum": 0 },
+        "max_news_items": { "type": "integer", "minimum": 0 },
+        "max_events": { "type": "integer", "minimum": 0 },
+        "max_regulatory_items": { "type": "integer", "minimum": 0 },
+        "max_fundamental_periods": { "type": "integer", "minimum": 0 },
+        "truncated": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "source_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["config_version"],
+      "properties": {
+        "config_version": { "type": "string", "minLength": 1 },
+        "require_source_attribution": { "type": "boolean" },
+        "min_sources_per_report": { "type": "integer", "minimum": 0 },
+        "tier_1_count": { "type": "integer", "minimum": 0 },
+        "tier_2_count": { "type": "integer", "minimum": 0 },
+        "tier_3_count": { "type": "integer", "minimum": 0 },
+        "tier_4_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "agent_metadata": {
+      "description": "Which model produced the outlook. prompt_version is what an operator declared; prompt_fingerprint is what the file actually contained. Both are recorded because a prompt edited without a version bump would otherwise leave no trace.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_provider", "model_name", "prompt_version", "generated_at"],
+      "properties": {
+        "model_provider": { "type": "string", "minLength": 1 },
+        "model_name": { "type": "string", "minLength": 1 },
+        "prompt_version": { "type": "string", "minLength": 1 },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "model_version": { "type": ["string", "null"] },
+        "prompt_fingerprint": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "latency_ms": { "type": ["number", "null"], "minimum": 0 },
+        "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "raw_response": { "type": ["string", "null"] }
+      }
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_version", "config_version"],
+      "properties": {
+        "application_version": { "type": "string", "minLength": 1 },
+        "config_version": { "type": "string", "minLength": 1 },
+        "strategy_spec_version": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

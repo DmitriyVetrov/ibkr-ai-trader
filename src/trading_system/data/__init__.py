@@ -29,6 +29,8 @@ Three rules do most of the work:
 * a record is invisible to any reconstruction of a time before we retrieved it.
 """
 
+from typing import TYPE_CHECKING, Any
+
 from trading_system.data.models import (
     DATA_SCHEMA_VERSION,
     CorporateEvent,
@@ -48,10 +50,44 @@ from trading_system.data.models import (
     RegulatoryEvent,
 )
 from trading_system.data.point_in_time import LookAheadError, assert_no_look_ahead, visible_at
-from trading_system.data.quality import QualityContext, QualityEngine
-from trading_system.data.registry import ProviderRegistry
-from trading_system.data.repository import DataRepository, FilesystemDataRepository
-from trading_system.data.service import DataService
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from trading_system.data.quality import QualityContext, QualityEngine
+    from trading_system.data.registry import ProviderRegistry
+    from trading_system.data.repository import DataRepository, FilesystemDataRepository
+    from trading_system.data.service import DataService
+
+#: Members loaded on first access rather than at import time.
+#:
+#: Importing ``trading_system.data.models`` executes this file, and
+#: ``data.service`` reaches the broker factory. Loading it eagerly therefore
+#: pulled the whole broker package into the import graph of anything that
+#: merely wanted a canonical *value type* — including the AI agents, whose
+#: entire premise is that they cannot reach a broker. The boundary tests in
+#: ``tests/research/test_boundaries.py`` follow package ``__init__`` files
+#: precisely because Python does, and they found this.
+#:
+#: Deferring costs nothing: the public API is unchanged, and the first real
+#: consumer of a repository or a service pays the import then. Do not "tidy"
+#: the ``__getattr__`` away.
+_LAZY = {
+    "DataRepository": "repository",
+    "DataService": "service",
+    "FilesystemDataRepository": "repository",
+    "ProviderRegistry": "registry",
+    "QualityContext": "quality",
+    "QualityEngine": "quality",
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LAZY:
+        from importlib import import_module
+
+        module = import_module(f"trading_system.data.{_LAZY[name]}")
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "DATA_SCHEMA_VERSION",

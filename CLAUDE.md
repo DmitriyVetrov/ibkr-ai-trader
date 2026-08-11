@@ -4,22 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Milestones 1–4 of 12 are complete.** Built and tested: the domain layer (models, enums,
-events, state machine), YAML configuration, the 14 JSON workflow schemas, the CLI surface,
+**Milestones 1–5 of 12 are complete.** Built and tested: the domain layer (models, enums,
+events, state machine), YAML configuration, the 18 JSON workflow schemas, the CLI surface,
 structured logging, an injectable clock, the `Broker` abstraction with `SimulatedBroker` and a
 read-only `IBKRBroker`, the read-only broker diagnostics, the reconciliation foundation, the
 data layer (providers, canonical models, quality engine, point-in-time snapshots,
-append-only history, repository), and **universe selection** — the deterministic pre-filter,
-the first AI agent, and immutable universe runs. 1304 passing tests; ruff, ruff format and
-mypy clean.
+append-only history, repository), **universe selection** — the deterministic pre-filter,
+the first AI agent, and immutable universe runs — and **market research**: point-in-time
+evidence assembly, news deduplication, the market researcher agent, deterministic hypothesis
+and confidence validation, and immutable research reports. 1675 passing tests; ruff, ruff
+format and mypy clean.
 
-**Not built, by design:** research reasoning, strategy selection, contract selection,
-allocation, order execution, autonomous trading, live trading. The CLI exposes those commands
-but they exit `3` naming the milestone that delivers them — they never fabricate output.
-Follow that pattern for anything still pending.
+**Not built, by design:** strategy selection, contract selection, allocation, order execution,
+autonomous trading, live trading. The CLI exposes those commands but they exit `3` naming the
+milestone that delivers them — they never fabricate output. Follow that pattern for anything
+still pending.
 
-**Milestone 5 is next: research** — the market researcher agent, the source trust policy, and
-a structured research report. It consumes the universe; it does not re-select one.
+**Milestone 6 is next: strategy** — the strategy registry, the four long strategies, and the
+*deterministic* contract selector. The strategy agent picks a strategy from a research
+hypothesis; it never picks the contract (spec §8).
 
 [CLOUD_CODE_IMPLEMENTATION_SPEC.md](CLOUD_CODE_IMPLEMENTATION_SPEC.md) remains the source of
 truth for module layout, CLI surface, schemas, testing layers, and milestone order. Read the
@@ -104,6 +107,11 @@ full tree; the boundaries that matter:
   through `DataRepository` only; it constructs no broker and has no reachable order path, so
   "zero orders" is structural rather than checked. `universe/service.py` is the composition
   root the CLI and the future scheduler share.
+- `research/` — the first analytical layer. `universe run → point-in-time evidence → news
+  deduplication → research input → agent → deterministic semantic validation → immutable
+  report`. Same structural properties as `universe/`: repository only, no broker, no order
+  path, one composition root in `research/service.py`. It *consumes* a universe and can never
+  extend one.
 - `risk/`, `allocation/`, `strategies/contract_selector.py` — the deterministic layer.
 - `monitoring/` — position monitor, thesis monitor, reconciliation loop, scheduler.
 
@@ -154,11 +162,55 @@ Runs are immutable and append-only under `data/universe/`, with a content-derive
 a re-run over unchanged inputs is idempotent and "what did we consider on date T, and why"
 stays answerable after the config, the data and the model have all moved on.
 
+## Market research (Milestone 5)
+
+The market researcher answers exactly one question — *given information actually available as
+of T, what is the most defensible expectation for this underlying over the configured
+horizon, and what evidence supports it?* It produces an **outlook**, never a contract: no
+model in `research/` has a field for a strike, an expiry, a right, a delta, a strategy, a
+quantity or an amount of money, and tests assert their absence.
+
+Six rules govern it, each with tests that fail loudly:
+
+- **Evidence is cited by id, so a source cannot be invented.** Every fact in the input carries
+  a derived `evidence_id`; the agent's response references those and has no field for a source
+  name, a URL or a publication date. The report copies provenance from the *input*, so the
+  agent interprets a fact but never gets to describe it. An id the input did not contain is
+  rejected as `SEMANTIC_VALIDATION_FAILED`.
+- **A and D are different claims, and the difference is enforced.** `A` is a regime — a large
+  move with no required catalyst — and its evidence must include something that is not a dated
+  event. `D` is a catalyst and needs a specific event from the input, inside the horizon, with
+  `announced_at` recorded. An `A` naming a highly relevant in-horizon event is rejected as a
+  mislabelled `D`. `B` needs `SUPPORTS_UP` evidence, `C` needs `SUPPORTS_DOWN`, `E` needs an
+  explanation.
+- **Confidence is constrained, not declared.** `HIGH` is refused — never quietly downgraded —
+  when the evidence count, the cited source tiers, the data-quality verdict or an unresolved
+  contradiction do not license it. Thresholds are in `config/research.yaml`. A confidence is
+  a band; there is no percentage anywhere in a report.
+- **Failure is never a market view.** A report whose status is not `SUCCESS` carries no
+  hypothesis, no confidence and no catalysts — enforced by a model validator, a JSON-schema
+  conditional, and a `to_research_report()` that refuses to project one. There is deliberately
+  **no deterministic fallback**: a universe can be ordered without a model, but an outlook
+  synthesised in place of one would be a fabricated view wearing a report's clothes.
+- **One story is one piece of evidence.** News is grouped before the agent sees it (normalised
+  headline similarity within a publication window), arriving as one item with a
+  `duplicate_count`. Ten syndicated copies are corroboration, not ten catalysts.
+- **`direction` and `stance` are separate axes.** What a fact points at
+  (`SUPPORTS_UP` / `SUPPORTS_DOWN` / `SUPPORTS_LARGE_MOVE` / `NEUTRAL`) is not how it relates
+  to the stated thesis (`SUPPORTS` / `CONTRADICTS` / `NEUTRAL`). Contradicting evidence is
+  preserved; hiding it is what the confidence policy exists to catch.
+
+`support` on a catalyst, risk or invalidation condition is **derived** from whether it cited
+anything and any supplied value is discarded — an unsupported claim is labelled, never deleted.
+
 **Configuration over hardcoding.** Schedules live in `config/schedules.yaml`, risk in `risk.yaml`,
-strategies in `config/strategies/*.yaml`, data policy in `data.yaml`, and the candidate pool,
-eligibility filters and ranking policy in `universe.yaml`. DTE policy is per-strategy, not one
-universal number. Ports come from config. If a requirement is ambiguous, add a documented config
-option rather than a hidden assumption.
+strategies in `config/strategies/*.yaml`, data policy in `data.yaml`, the candidate pool,
+eligibility filters and ranking policy in `universe.yaml`, and the research horizon, data
+windows, cost ceilings, deduplication and confidence policy in `research.yaml`. Source trust
+lives in `sources.yaml` and **nowhere else** — `research/sources.py` reads it, it does not
+define a second ranking. DTE policy is per-strategy, not one universal number. Ports come from
+config. If a requirement is ambiguous, add a documented config option rather than a hidden
+assumption.
 
 ## Data and persistence layout
 
@@ -247,17 +299,37 @@ python -m trading_system.cli universe history
 python -m trading_system.cli universe explain --run-id <ID> [--symbol SPY]
 python -m trading_system.cli run universe                # the scheduled job, once
 
-pytest -m "not ibkr"                            # default: no gateway needed
+# Market research. Read-only with respect to the broker; submits 0 orders.
+python -m trading_system.cli research validate           # config + data readiness
+python -m trading_system.cli research validate --run-id <ID>   # re-check a stored run
+python -m trading_system.cli research run --dry-run      # full pipeline, persists nothing
+python -m trading_system.cli research run
+python -m trading_system.cli research run --as-of 2026-08-10T14:30:00+00:00
+python -m trading_system.cli research run --symbol NVDA  # a subset of the universe
+python -m trading_system.cli research show [--run-id <ID>] [--symbol NVDA]
+python -m trading_system.cli research explain --symbol NVDA [--run-id <ID>]
+python -m trading_system.cli research history [--symbol NVDA]
+python -m trading_system.cli run research                # the scheduled job, once
+
+pytest -m "not ibkr and not llm"                # default: no gateway, no API key needed
 pytest tests/universe                           # filters, point-in-time, snapshots, CLI
+pytest tests/research                           # evidence, dedup, validation, snapshots, CLI
 pytest tests/agents/test_universe_selector.py   # agent contract; needs no API key
+pytest tests/agents/test_research_agent.py      # agent contract; needs no API key
 ALLOW_LIVE_TESTS=true pytest -m ibkr            # requires a running IB Gateway
 ALLOW_LIVE_TESTS=true pytest -m ibkr tests/data # data layer against IBKR Paper
-ALLOW_LIVE_TESTS=true pytest -m llm             # opt-in: one real model call, no trades
+ALLOW_LIVE_TESTS=true ANTHROPIC_API_KEY=... pytest -m llm   # one real model call, no trades
 ```
 
 `universe run` reads stored data only — it never collects and never opens a broker connection,
 so run `data collect` first if the store is empty. It reports `DATA_UNAVAILABLE` rather than
 inventing candidates.
+
+`research run` consumes the latest universe run plus stored data, and never re-selects: a
+`--symbol` the universe did not choose is refused with `CONFIGURATION_ERROR` rather than
+researched. Each underlying gets its own isolated model context — never one merged answer for
+several assets — and each failure is recorded per symbol, so one unreachable call does not
+stop the rest.
 
 Every other command exits `3` until its milestone lands. Command help is tagged `(read-only)` or
 `(mutates state)` — keep that up when adding commands, and note that Rich swallows
@@ -356,11 +428,31 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   imports the universe contract models, and an eager re-export closes that loop. Do not "tidy"
   the `__getattr__` away; moving the contract models out of the universe package would put a
   universe artifact somewhere it does not belong.
+- **A package `__init__` is part of an agent's import graph, because Python executes it.**
+  `import trading_system.research.models` runs `research/__init__.py`, so anything eager there
+  is reachable from the agent. `data/__init__.py` used to import `data.service` eagerly, which
+  pulled the entire broker package in behind every agent that merely wanted a canonical value
+  type — invisible to an AST test that only reads direct imports. `data/__init__.py`,
+  `research/__init__.py` and `universe/__init__.py` therefore defer everything that touches a
+  repository, a provider or a broker via `__getattr__`, and
+  `tests/research/test_boundaries.py` walks the closure *through* `__init__` files (skipping
+  `if TYPE_CHECKING:` bodies, which never execute) to keep it that way.
 - **Agent prompts ship inside the package**, at `agents/prompts/*.md`, because the container
   installs the package and has no checkout to read from. Each prompt is fingerprinted on load
   and the hash is stored on every run, so a prompt edited without a `prompt_version` bump still
-  leaves a trace. `.claude/agents/universe_selector.md` mirrors the same boundaries for
-  development use, and a test asserts the two cannot drift on the safety-critical statements.
+  leaves a trace. `.claude/agents/universe_selector.md` and `.claude/agents/market_researcher.md`
+  mirror the same boundaries for development use, and a test asserts each pair cannot drift on
+  the safety-critical statements.
+- **`schemas/research_report.json` is the *narrow* Milestone 1 boundary the strategy stage
+  consumes; `schemas/market_research_report.json` is the Milestone 5 audit record.** The two
+  are deliberately different artifacts, exactly as `universe_selection.json` and
+  `universe_selection_result.json` are, and `MarketResearchReport.to_research_report()`
+  projects one onto the other. Do not merge them: the narrow one is a completed milestone's
+  contract, and rewriting it would break the chain the contract tests walk.
+- **The projected `confidence` float is a band representative, not a probability.** The M1
+  boundary types it as a float, so `CONFIDENCE_BAND_VALUE` maps LOW/MEDIUM/HIGH onto fixed
+  values. No calibration has been measured and none is claimed; the only property downstream
+  code may rely on is the ordering. Never introduce a percentage into a research artifact.
 - **The market calendar is transcribed, not derived.** Holidays come from the NYSE calendar at
   <https://www.nyse.com/markets/hours-calendars>. Observance has edge cases and the early-close
   list does not follow from them at all: 2027 has no Christmas Eve early close because 24

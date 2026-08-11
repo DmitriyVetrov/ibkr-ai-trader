@@ -10,11 +10,12 @@ not reachable by configuration alone — see [Trading modes](#trading-modes).
 
 ## Status
 
-**Milestone 4 of 12 — universe selection.** What exists today:
+**Milestone 5 of 12 — market research.** What exists today:
 
 - domain models, enums, events and the position state machine;
-- YAML configuration for campaign, risk, schedules, sources, strategies and data;
-- the 14 JSON schemas for the workflow boundaries;
+- YAML configuration for campaign, risk, schedules, sources, strategies, data,
+  universe and research;
+- the 18 JSON schemas for the workflow boundaries;
 - structured logging and an injectable clock;
 - a `Broker` abstraction with a deterministic `SimulatedBroker` and a
   **read-only** `IBKRBroker` over IB Gateway;
@@ -26,12 +27,15 @@ not reachable by configuration alone — see [Trading modes](#trading-modes).
 - **universe selection**: a configurable candidate pool, a deterministic
   eligibility pre-filter, the first AI agent, deterministic validation of what
   it returns, and immutable append-only universe runs;
+- **market research**: point-in-time evidence assembly with news deduplication,
+  the Market Researcher agent, deterministic hypothesis and confidence
+  validation, and immutable append-only research reports;
 - the CLI surface, with every command tagged read-only or state-mutating.
 
-What deliberately does **not** exist yet: research reasoning, strategy
-selection, contract selection, allocation, order execution, autonomous trading
-and any form of live trading. Commands covering those exist in the CLI but exit
-`3` naming the milestone that delivers them. They never fabricate output.
+What deliberately does **not** exist yet: strategy selection, contract
+selection, allocation, order execution, autonomous trading and any form of live
+trading. Commands covering those exist in the CLI but exit `3` naming the
+milestone that delivers them. They never fabricate output.
 
 **No code path in this repository can submit an order.** See
 [Safety properties](#safety-properties).
@@ -129,6 +133,29 @@ is structural rather than a check performed at the end.
 so run `data collect` first if the store is empty. It reports
 `DATA_UNAVAILABLE` rather than inventing candidates.
 
+### Market research
+
+```bash
+python -m trading_system.cli research validate                # config + data readiness
+python -m trading_system.cli research run --dry-run           # full pipeline, persists nothing
+python -m trading_system.cli research run
+python -m trading_system.cli research run --as-of 2026-08-10T14:30:00+00:00
+python -m trading_system.cli research run --symbol NVDA       # a subset of the universe
+python -m trading_system.cli research show
+python -m trading_system.cli research explain --symbol NVDA
+python -m trading_system.cli research history --symbol NVDA
+python -m trading_system.cli research validate --run-id <ID>  # re-check a stored run
+python -m trading_system.cli run research                     # the scheduled job, once
+```
+
+Every one is read-only with respect to the broker and reports
+`Orders submitted: 0`. The research layer constructs no broker at all, so that
+is structural rather than a check performed at the end.
+
+`research run` consumes the latest universe run and stored data only. It never
+collects, never connects, and never selects its own subjects: a `--symbol` the
+universe did not choose is refused rather than researched.
+
 ## Data architecture
 
 ```
@@ -191,6 +218,62 @@ Three rules do most of the work:
 - an unavailable value is `None`, never `0`;
 - a suspicious value is preserved and flagged, never corrected;
 - a record is invisible to any reconstruction of a time before we retrieved it.
+
+## Market research
+
+```
+UNIVERSE RUN             consumed, never re-selected
+    |
+POINT-IN-TIME EVIDENCE   DataRepository only; retrieval binds
+    |
+NEWS DEDUPLICATION       one story is one item, however often it was told
+    |
+RESEARCH INPUT           bounded, provenance-carrying, every fact has an id
+    |
+MARKET RESEARCHER        one isolated context per underlying
+    |
+DETERMINISTIC VALIDATION rejects a violating outlook in full, never repairs
+    |
+IMMUTABLE REPORT         appended, never overwritten
+```
+
+The output is a **structured outlook** — a hypothesis, the evidence behind it,
+the events that matter, the risks, and what would prove it wrong. It is never
+an option contract, never a strategy, never a position size and never an order.
+
+### The hypotheses
+
+| | Meaning | What the code requires |
+| --- | --- | --- |
+| `A` | Large move likely, **no specific catalyst required**, direction uncertain | `SUPPORTS_LARGE_MOVE` evidence that is *not* a dated event |
+| `B` | Predominantly up | at least one `SUPPORTS_UP` supporting item |
+| `C` | Predominantly down | at least one `SUPPORTS_DOWN` supporting item |
+| `D` | Sharp move around a **specific identified event**, direction uncertain | a real event, inside the horizon, with its announcement recorded |
+| `E` | Other | a structured explanation |
+
+**`A` and `D` are different claims** — a regime versus a catalyst — and the
+difference decides how a position would later be timed. An `A` justified by a
+highly relevant event inside the horizon is rejected as a mislabelled `D`.
+
+Six rules do the work, each with tests that fail loudly:
+
+- **retrieval binds** — `research(as_of=T)` sees only what had been fetched by
+  T; a future-dated *event* is legitimate once it was announced;
+- **evidence is cited by id** — the agent has no field for a source name, a URL
+  or a date, so an invented source is not merely discouraged, it is detectable;
+- **the hypothesis must be earned** — see the table above;
+- **confidence is constrained, not declared** — `HIGH` is refused, never
+  quietly downgraded, when the evidence, the tiers, the data quality or an
+  unresolved contradiction do not license it;
+- **insufficient evidence is a valid outcome** — nothing is forced into `B` or
+  `C`, and no failure is ever a market view;
+- **no contract is expressible** — the agent is shown aggregate option context
+  keyed by days to expiration, never a strike, an expiry or a right.
+
+Source trust comes from `config/sources.yaml` and nowhere else. Where the
+policy recognises a source, the configured tier wins over the provider's own
+claim; an unlisted source keeps the tier it declared rather than being demoted
+by a judgement nobody made.
 
 ## IBKR architecture
 
@@ -289,26 +372,36 @@ make test-unit         # deterministic unit tests
 make test-broker       # broker abstraction, simulator, IBKR adapter
 make test-data         # providers, quality, point-in-time, storage
 make test-universe     # filters, point-in-time, snapshots, reproducibility, CLI
+make test-research     # evidence, deduplication, point-in-time, validation, CLI
 make test-agents       # AI agent contract tests; needs no API key
 make test-contract     # workflow-boundary schema compatibility
 make test-integration  # multi-component, simulated broker
 pytest tests/unit/test_state_machine.py            # one file
 pytest tests/unit/test_state_machine.py::test_name # one test
-pytest -m "not ibkr"                               # explicitly exclude gateway tests
+pytest -m "not ibkr and not llm"                   # exclude gateway and model tests
 make lint typecheck    # ruff + mypy
 ```
 
-`pytest` needs **no** IB Gateway. Tests requiring one are marked `ibkr` (or
-`paper`) and are skipped unless unlocked:
+`pytest` needs **no** IB Gateway and **no** API key. Tests requiring one are
+marked `ibkr` (or `paper`, or `llm`) and are skipped unless unlocked:
 
 ```bash
 ALLOW_LIVE_TESTS=true pytest -m ibkr            # requires a running gateway
 ALLOW_LIVE_TESTS=true pytest -m ibkr tests/data # data layer against IBKR Paper
-ALLOW_LIVE_TESTS=true pytest -m llm             # one real model call; places no trades
+ALLOW_LIVE_TESTS=true ANTHROPIC_API_KEY=... \
+  pytest -m llm tests/agents/test_research_agent.py
 ```
 
 Those tests are read-only and assert `orders_submitted == 0`. They fail loudly
 if the gateway is unreachable — they never fake a pass.
+
+The opt-in `llm` test in `tests/agents/test_research_agent.py` makes **one**
+real model call against the shipped prompt and the shipped schema. It is doubly
+gated (`ALLOW_LIVE_TESTS=true` *and* a key must be present), touches no broker,
+places no order, and asserts only structure — never that the model reached a
+particular conclusion, because that is not a property of the system. A
+validation failure there is the deterministic layer catching a real model's
+real mistake, which is its job.
 
 ## Safety properties
 
@@ -341,9 +434,20 @@ Enforced in code and covered by tests, not left to convention:
   validated contract that cannot express a rejected asset, and everything it
   returns is checked against that contract before storage. It has no field for
   a strike, a direction or an allocation, and no reason code for one either.
+  The research agent has no field for a strike, an expiry, a right, a delta, a
+  strategy, a quantity or a currency amount, and is never shown a contract.
+- **The AI cannot invent a source.** Research cites evidence by an id the input
+  actually carried, and has no field for a source name, a URL or a publication
+  date — those are copied from the input into the report. An unknown id rejects
+  the whole outlook.
 - **An AI failure is never a silent success.** An unreachable model, a refusal,
-  a truncated generation, malformed JSON or a fabricated justification each end
-  the run with a named status and an empty universe.
+  a truncated generation, malformed JSON, a fabricated justification or an
+  unsupported hypothesis each end with a named status and **no view** — no
+  hypothesis, no confidence, no catalysts. There is no deterministic fallback
+  for a market outlook, by design.
+- **Confidence is not the model's to declare.** `HIGH` is refused, never
+  quietly downgraded, when the evidence count, the source tiers, the data
+  quality or an unresolved contradiction do not license it.
 - monetary fields reject binary floats; naive datetimes are rejected; illegal
   state transitions raise; an `APPROVED` risk decision cannot carry a rejection
   reason; `NO_TRADE` is valid at every stage; the allocator's books must
@@ -369,9 +473,10 @@ Two separate concerns, deliberately split:
 - **`.env`** — secrets and deployment switches. Never committed.
 - **`config/*.yaml`** — trading policy: campaign budget, risk limits, schedules,
   source trust tiers, strategy definitions, the data layer's freshness windows,
-  plausibility bounds, research-usability policy and market calendar, and the
-  universe's candidate pool, eligibility filters and ranking policy. Committed
-  and reviewable, so a change to a risk limit shows up in a diff.
+  plausibility bounds, research-usability policy and market calendar, the
+  universe's candidate pool, eligibility filters and ranking policy, and the
+  research horizon, data windows, cost ceilings and confidence policy.
+  Committed and reviewable, so a change to a risk limit shows up in a diff.
 
 Monetary values in YAML are quoted strings or integers (`"0.50"`, `5000`) so
 they parse as exact decimals. An unquoted `0.50` is a binary float and is
@@ -387,6 +492,7 @@ src/
   data/            providers, normalizers, quality, snapshots, repository
   domain/          models, enums, events, state machine (pure, no I/O)
   universe/        candidate pool, pre-filter, ranking, immutable runs
+  research/        point-in-time evidence, hypothesis validation, immutable reports
   agents/          LLM agents and their shipped prompts
   infrastructure/  settings, config loading, logging, clock
 data/              market data, snapshots and caches (contents git-ignored)

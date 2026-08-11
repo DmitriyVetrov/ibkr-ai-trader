@@ -22,6 +22,16 @@ REQUIRED_SCHEMAS = (
     "universe_agent_ranking",
     "universe_selection_result",
     "research_report",
+    # Milestone 5 adds the three research boundaries plus the run record: what
+    # the point-in-time assembler hands the agent, what the agent may return,
+    # the canonical outlook for one underlying, and the record of a whole run.
+    # `research_report` above stays the narrow Milestone 1 boundary the strategy
+    # stage consumes; `market_research_report` is the audit artifact that
+    # projects onto it.
+    "research_input",
+    "research_agent_output",
+    "market_research_report",
+    "research_run",
     "strategy_decision",
     "purchase_card",
     "allocation_decision",

@@ -14,6 +14,7 @@ from enum import StrEnum, unique
 __all__ = [
     "BarInterval",
     "BrokerConnectionState",
+    "ClaimSupport",
     "CollectionOutcome",
     "ConfidenceLevel",
     "CorporateEventType",
@@ -23,11 +24,15 @@ __all__ = [
     "DataType",
     "Direction",
     "DiscrepancyType",
+    "EvidenceDirection",
+    "EvidenceKind",
+    "EvidenceStance",
     "ExitAction",
     "ExitReason",
     "ExpectedMagnitude",
     "LegAction",
     "MarketDataOrigin",
+    "MarketEventType",
     "MarketHypothesis",
     "OptionRight",
     "Optionability",
@@ -37,6 +42,10 @@ __all__ = [
     "PositionState",
     "ReconciliationStatus",
     "RegulatoryFormType",
+    "RelevanceLevel",
+    "ResearchDataGap",
+    "ResearchStatus",
+    "RiskCategory",
     "RiskOutcome",
     "RiskReasonCode",
     "SecurityType",
@@ -104,14 +113,30 @@ class PositionState(StrEnum):
 class MarketHypothesis(StrEnum):
     """Primary market hypothesis assigned by the Market Researcher agent.
 
-    Exactly one hypothesis per underlying (specification section 6).
+    Exactly one hypothesis per underlying (specification section 6). The
+    vocabulary is closed: an outlook that fits none of A-D is ``E`` with a
+    structured explanation, never a sixth category.
+
+    ``A`` and ``D`` are **not** the same claim, and collapsing them would lose
+    the only thing that distinguishes them operationally — whether there is a
+    dated catalyst to position around:
+
+    ``A``
+        A large move is likely and no specific catalyst is required. The
+        evidence is about the *regime*: elevated volatility, conflicting
+        pressures, market structure. Direction cannot be established.
+    ``D``
+        A specific, identifiable, dated future event is expected to produce a
+        sharp move. Without a named event that the supplied data actually
+        contains, ``D`` is invalid — see
+        :mod:`trading_system.research.validation`.
     """
 
-    A = "A"  # Strong move expected in either direction; direction uncertain
+    A = "A"  # Strong move expected, no specific catalyst; direction uncertain
     B = "B"  # Predominantly bullish
     C = "C"  # Predominantly bearish
     D = "D"  # Sharp move expected after a specific event; direction uncertain
-    E = "E"  # Other; free-text explanation required
+    E = "E"  # Other; structured explanation required
 
 
 @unique
@@ -681,6 +706,210 @@ class UniverseSelectionStatus(StrEnum):
     def produced_a_universe(self) -> bool:
         """Whether a downstream stage may consume this run's selection."""
         return self is UniverseSelectionStatus.SUCCESS
+
+
+# ---------------------------------------------------------------------------
+# Research (Milestone 5)
+# ---------------------------------------------------------------------------
+@unique
+class ResearchStatus(StrEnum):
+    """Outcome of researching one underlying, and of a whole research run.
+
+    The failure states are separate because they demand different responses,
+    and because none of them may be read as a market view. A run that could
+    report ``AI_UNAVAILABLE`` while still carrying a hypothesis would have
+    turned an outage into a trading opinion.
+
+    ``INSUFFICIENT_EVIDENCE`` is a success of the process and a valid final
+    answer: the data available at the instant did not support a defensible
+    outlook. It is not a bearish signal, not a bullish one, and not a reason to
+    relax anything.
+    """
+
+    SUCCESS = "SUCCESS"
+    #: Nothing about this underlying was visible at the requested instant.
+    NO_DATA = "NO_DATA"
+    #: Data existed but was too thin, too stale or too degraded to reason from.
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+    AI_UNAVAILABLE = "AI_UNAVAILABLE"
+    #: Malformed, unparseable, or contract-violating model output.
+    AI_INVALID_OUTPUT = "AI_INVALID_OUTPUT"
+    #: Well-formed output that the deterministic semantic rules reject —
+    #: an unsupported hypothesis, a fabricated evidence id, a confidence the
+    #: evidence does not license.
+    SEMANTIC_VALIDATION_FAILED = "SEMANTIC_VALIDATION_FAILED"
+    #: A record that was not knowable at ``as_of`` reached the pipeline. A
+    #: correctness bug in storage or gathering, never a market outcome.
+    POINT_IN_TIME_ERROR = "POINT_IN_TIME_ERROR"
+    #: Beyond the seven states the Milestone 5 brief requires, because the two
+    #: below are real outcomes that would otherwise have to be misreported as
+    #: one of the above.
+    #:
+    #: The configuration or the upstream universe could not be resolved. Not a
+    #: fact about the market, and distinct from NO_DATA for that reason.
+    CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
+    #: Selected by the universe but not researched, because the run's
+    #: configured cost ceiling was already reached. Recorded rather than
+    #: silently omitted: "we did not look" and "we looked and found nothing"
+    #: are different.
+    SKIPPED_COST_LIMIT = "SKIPPED_COST_LIMIT"
+
+    @property
+    def produced_an_outlook(self) -> bool:
+        """Whether a downstream stage may consume this report's hypothesis."""
+        return self is ResearchStatus.SUCCESS
+
+
+@unique
+class EvidenceKind(StrEnum):
+    """What sort of fact a piece of evidence is.
+
+    Load-bearing for the A/D distinction: hypothesis ``A`` claims an elevated
+    move with *no* required catalyst, so it must rest on evidence that is not
+    itself a dated event.
+    """
+
+    NEWS = "NEWS"
+    CORPORATE_EVENT = "CORPORATE_EVENT"
+    MACRO_EVENT = "MACRO_EVENT"
+    REGULATORY_FILING = "REGULATORY_FILING"
+    FUNDAMENTAL = "FUNDAMENTAL"
+    MARKET_DATA = "MARKET_DATA"
+    HISTORICAL_PRICE = "HISTORICAL_PRICE"
+    OPTION_MARKET = "OPTION_MARKET"
+    MARKET_CONTEXT = "MARKET_CONTEXT"
+
+    @property
+    def is_dated_event(self) -> bool:
+        """Whether this kind names a specific scheduled or announced event."""
+        return self in (EvidenceKind.CORPORATE_EVENT, EvidenceKind.MACRO_EVENT)
+
+
+@unique
+class EvidenceDirection(StrEnum):
+    """What a piece of evidence implies about the underlying.
+
+    Separate from :class:`EvidenceStance` on purpose. This says what the fact
+    points at; the stance says how it relates to the thesis actually stated.
+    An item can point up and still contradict a bearish thesis, and both facts
+    have to survive into the record.
+    """
+
+    SUPPORTS_UP = "SUPPORTS_UP"
+    SUPPORTS_DOWN = "SUPPORTS_DOWN"
+    #: Implies an elevated magnitude of movement without implying a direction.
+    SUPPORTS_LARGE_MOVE = "SUPPORTS_LARGE_MOVE"
+    NEUTRAL = "NEUTRAL"
+
+
+@unique
+class EvidenceStance(StrEnum):
+    """How a piece of evidence relates to the thesis the report states.
+
+    ``CONTRADICTS`` items are kept, never dropped. A report that hid its
+    disagreements would look more confident than the evidence warrants, and the
+    confidence policy in :mod:`trading_system.research.validation` reads this
+    field directly.
+    """
+
+    SUPPORTS = "SUPPORTS"
+    CONTRADICTS = "CONTRADICTS"
+    NEUTRAL = "NEUTRAL"
+
+
+@unique
+class RelevanceLevel(StrEnum):
+    """How much a fact bears on the question, as a coarse band.
+
+    Distinct from a provider-supplied numeric relevance, which is a fact about
+    the source and is carried through unchanged.
+    """
+
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
+@unique
+class ClaimSupport(StrEnum):
+    """Whether a stated claim is backed by evidence the input actually carried.
+
+    Derived deterministically from whether the claim names at least one real
+    evidence id — never asserted by the model. An ``UNSUPPORTED`` claim is
+    preserved and labelled rather than deleted: what the agent asserted without
+    backing is itself worth seeing.
+    """
+
+    SUPPORTED = "SUPPORTED"
+    UNSUPPORTED = "UNSUPPORTED"
+
+
+@unique
+class MarketEventType(StrEnum):
+    """Kind of event that could move an underlying within the horizon.
+
+    Wider than :class:`CorporateEventType` because a rate decision or an
+    inflation print is not a corporate action, and narrowing it to the issuer's
+    own calendar would make the macro half of hypothesis ``D`` inexpressible.
+    """
+
+    EARNINGS = "EARNINGS"
+    GUIDANCE = "GUIDANCE"
+    INVESTOR_DAY = "INVESTOR_DAY"
+    PRODUCT_LAUNCH = "PRODUCT_LAUNCH"
+    DIVIDEND = "DIVIDEND"
+    SPLIT = "SPLIT"
+    MERGER_ACQUISITION = "MERGER_ACQUISITION"
+    REGULATORY_DECISION = "REGULATORY_DECISION"
+    COURT_DECISION = "COURT_DECISION"
+    REGULATORY_FILING = "REGULATORY_FILING"
+    CENTRAL_BANK_DECISION = "CENTRAL_BANK_DECISION"
+    INFLATION_RELEASE = "INFLATION_RELEASE"
+    MACRO_RELEASE = "MACRO_RELEASE"
+    ANNOUNCEMENT = "ANNOUNCEMENT"
+    OTHER = "OTHER"
+
+
+@unique
+class RiskCategory(StrEnum):
+    """Risk dimensions a research report must address (brief section 20).
+
+    Not every category will have a finding, but an absent finding is stated
+    explicitly rather than left as a silence a reader could mistake for "no
+    risk".
+    """
+
+    DIRECTIONAL_RISK = "DIRECTIONAL_RISK"
+    EVENT_RISK = "EVENT_RISK"
+    MACRO_RISK = "MACRO_RISK"
+    COMPANY_SPECIFIC_RISK = "COMPANY_SPECIFIC_RISK"
+    DATA_RISK = "DATA_RISK"
+
+
+@unique
+class ResearchDataGap(StrEnum):
+    """Something the research input did not have.
+
+    Recorded explicitly so a report can say "there was no implied volatility"
+    rather than implying zero, and so the confidence policy can see what was
+    missing. ``*_UNAVAILABLE`` never means the value is zero or false.
+    """
+
+    MARKET_DATA_UNAVAILABLE = "MARKET_DATA_UNAVAILABLE"
+    MARKET_DATA_STALE = "MARKET_DATA_STALE"
+    MARKET_DATA_NOT_RESEARCH_USABLE = "MARKET_DATA_NOT_RESEARCH_USABLE"
+    HISTORICAL_CONTEXT_UNAVAILABLE = "HISTORICAL_CONTEXT_UNAVAILABLE"
+    REALIZED_VOLATILITY_UNAVAILABLE = "REALIZED_VOLATILITY_UNAVAILABLE"
+    NEWS_UNAVAILABLE = "NEWS_UNAVAILABLE"
+    EVENTS_UNAVAILABLE = "EVENTS_UNAVAILABLE"
+    FUNDAMENTALS_UNAVAILABLE = "FUNDAMENTALS_UNAVAILABLE"
+    REGULATORY_UNAVAILABLE = "REGULATORY_UNAVAILABLE"
+    OPTION_CONTEXT_UNAVAILABLE = "OPTION_CONTEXT_UNAVAILABLE"
+    IMPLIED_VOLATILITY_UNAVAILABLE = "IMPLIED_VOLATILITY_UNAVAILABLE"
+    OPTION_VOLUME_UNAVAILABLE = "OPTION_VOLUME_UNAVAILABLE"
+    OPEN_INTEREST_UNAVAILABLE = "OPEN_INTEREST_UNAVAILABLE"
+    MARKET_CONTEXT_UNAVAILABLE = "MARKET_CONTEXT_UNAVAILABLE"
+    SUSPICIOUS_VALUES_PRESENT = "SUSPICIOUS_VALUES_PRESENT"
 
 
 #: States from which no further transition is possible.

@@ -31,6 +31,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from trading_system.domain.enums import (
     MarketHypothesis,
     SecurityType,
+    SourceTier,
     StrategyType,
     TradingMode,
     UniverseSourceKind,
@@ -46,14 +47,23 @@ __all__ = [
     "CollectionConfig",
     "ConfigError",
     "DataConfig",
+    "DeduplicationConfig",
     "ExitPolicyConfig",
     "FreshnessConfig",
     "LiquidityConfig",
     "MarketCalendarConfig",
+    "MarketContextConfig",
     "OptionabilityPolicy",
     "PlausibilityConfig",
     "ProvidersConfig",
+    "ResearchAgentConfig",
+    "ResearchConfidenceConfig",
+    "ResearchConfig",
+    "ResearchEvidenceConfig",
+    "ResearchHorizonConfig",
+    "ResearchLimitsConfig",
     "ResearchUsabilityConfig",
+    "ResearchWindowConfig",
     "RiskConfig",
     "ScheduleJob",
     "SchedulesConfig",
@@ -678,12 +688,169 @@ class UniverseConfig(_ConfigModel):
     ai_ranking: AiRankingConfig
 
 
+# ---------------------------------------------------------------------------
+# Research policy (Milestone 5)
+# ---------------------------------------------------------------------------
+class ResearchHorizonConfig(_ConfigModel):
+    """The window the research question is asked about.
+
+    Configurable rather than fixed at 14-31 days because the horizon is the
+    question: an outlook over three weeks and one over three years are
+    different claims about the same asset, and the agent must be told which it
+    is being asked for.
+    """
+
+    min_days: int = Field(ge=1, le=365)
+    max_days: int = Field(ge=1, le=365)
+
+    @model_validator(mode="after")
+    def _range_is_ordered(self) -> ResearchHorizonConfig:
+        if self.min_days > self.max_days:
+            raise ValueError("research horizon: min_days must not exceed max_days")
+        return self
+
+    def contains(self, days: int) -> bool:
+        return self.min_days <= days <= self.max_days
+
+
+class ResearchWindowConfig(_ConfigModel):
+    """How much history and calendar the agent is shown.
+
+    Bounded deliberately: unlimited history is neither affordable nor useful,
+    and the stored input records the windows that were applied so a past report
+    explains what it could and could not see.
+    """
+
+    news_lookback_days: int = Field(default=14, ge=0)
+    event_lookahead_days: int = Field(default=45, ge=0)
+    event_lookback_days: int = Field(default=14, ge=0)
+    historical_lookback_days: int = Field(default=90, ge=0)
+    fundamentals_lookback_days: int = Field(default=400, ge=0)
+    regulatory_lookback_days: int = Field(default=120, ge=0)
+
+    min_observations_for_volatility: int = Field(default=20, ge=2)
+    volatility_annualization_days: int = Field(default=252, ge=1)
+
+
+class ResearchLimitsConfig(_ConfigModel):
+    """Cost ceilings. Every one truncates deterministically and visibly."""
+
+    max_assets_per_run: int = Field(default=10, ge=0)
+    max_evidence_items: int = Field(default=40, ge=1)
+    max_news_items: int = Field(default=25, ge=0)
+    max_events: int = Field(default=15, ge=0)
+    max_regulatory_items: int = Field(default=10, ge=0)
+    max_fundamental_periods: int = Field(default=4, ge=0)
+    max_input_characters: int = Field(default=120_000, ge=1000)
+
+
+class DeduplicationConfig(_ConfigModel):
+    """News grouping policy (Milestone 5 brief section 31).
+
+    Deliberately shallow. The objective is that one event syndicated ten times
+    is not ten independent catalysts — not a semantic clustering engine.
+    """
+
+    enabled: bool = True
+    headline_similarity: float = Field(default=0.8, ge=0.0, le=1.0)
+    publication_window_hours: int = Field(default=48, ge=0)
+    stopwords: list[str] = Field(default_factory=list)
+
+
+class ResearchConfidenceConfig(_ConfigModel):
+    """When the evidence licenses a stated confidence band.
+
+    Confidence is not purely the model's decision (brief section 56). These are
+    the deterministic constraints; a report that violates one is rejected, not
+    downgraded — silently rewriting the band would store a judgement the agent
+    never made.
+    """
+
+    require_research_usable_for_high: bool = True
+    min_evidence_items_for_high: int = Field(default=3, ge=0)
+    min_source_tier_for_high: SourceTier = SourceTier.TIER_2
+    require_contradiction_resolution_for_high: bool = True
+    min_evidence_items_for_medium: int = Field(default=1, ge=0)
+    max_data_gaps_for_high: int = Field(default=3, ge=0)
+
+
+class ResearchEvidenceConfig(_ConfigModel):
+    """What a report must rest on before it is worth producing."""
+
+    min_evidence_items: int = Field(default=1, ge=0)
+    require_research_usable_evidence: bool = True
+    min_distinct_sources: int = Field(default=1, ge=0)
+
+
+class MarketContextConfig(_ConfigModel):
+    """Broad-market references the agent may be shown, when the store has them.
+
+    Read point-in-time like any other symbol. Absence is reported as
+    ``MARKET_CONTEXT_UNAVAILABLE``; the research layer never fetches it itself
+    and never substitutes a remembered value (brief section 21).
+    """
+
+    broad_index_symbol: str | None = None
+    reference_symbols: list[str] = Field(default_factory=list)
+
+
+class ResearchAgentConfig(_ConfigModel):
+    """How the research agent is invoked, and what happens when it cannot be.
+
+    There is deliberately no ``allow_deterministic_fallback`` here, unlike
+    :class:`AiRankingConfig`. A universe can be ordered without a model; a
+    market outlook cannot be formed without one, and anything this layer
+    synthesised in place of an unreachable model would be a fabricated view.
+
+    No credential appears here. ``ANTHROPIC_API_KEY`` comes from the
+    environment, like every other secret.
+    """
+
+    enabled: bool = True
+    model_provider: str = Field(default="ANTHROPIC", alias="provider", min_length=1)
+    model_name: str = Field(default="claude-opus-5", alias="model", min_length=1)
+    prompt_version: str = Field(min_length=1)
+    timeout_seconds: float = Field(default=180.0, gt=0)
+    max_output_tokens: int = Field(default=12000, ge=1)
+    effort: str = "high"
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _effort_is_known(self) -> ResearchAgentConfig:
+        allowed = {"low", "medium", "high", "xhigh", "max"}
+        if self.effort not in allowed:
+            raise ValueError(
+                f"research agent.effort {self.effort!r} is not one of {sorted(allowed)}"
+            )
+        return self
+
+
+class ResearchConfig(_ConfigModel):
+    """All market-research policy (``config/research.yaml``).
+
+    Source trust is deliberately absent: it lives in ``config/sources.yaml``
+    and is read from there, so there is exactly one source-ranking system.
+    """
+
+    config_version: str
+    horizon: ResearchHorizonConfig
+    window: ResearchWindowConfig = Field(default_factory=ResearchWindowConfig)
+    limits: ResearchLimitsConfig = Field(default_factory=ResearchLimitsConfig)
+    deduplication: DeduplicationConfig = Field(default_factory=DeduplicationConfig)
+    confidence: ResearchConfidenceConfig = Field(default_factory=ResearchConfidenceConfig)
+    evidence: ResearchEvidenceConfig = Field(default_factory=ResearchEvidenceConfig)
+    market_context: MarketContextConfig = Field(default_factory=MarketContextConfig)
+    agent: ResearchAgentConfig
+
+
 class SystemConfig(_ConfigModel):
     """All YAML configuration, loaded and validated together."""
 
     application: ApplicationConfig
     campaign: CampaignConfig
     data: DataConfig
+    research: ResearchConfig
     risk: RiskConfig
     schedules: SchedulesConfig
     sources: SourcesConfig
@@ -743,6 +910,7 @@ def load_config(config_dir: Path | str | None = None) -> SystemConfig:
         "application": _read_yaml(directory / "application.yaml"),
         "campaign": _read_yaml(directory / "campaign.yaml"),
         "data": _read_yaml(directory / "data.yaml"),
+        "research": _read_yaml(directory / "research.yaml"),
         "risk": _read_yaml(directory / "risk.yaml"),
         "schedules": _read_yaml(directory / "schedules.yaml"),
         "sources": _read_yaml(directory / "sources.yaml"),

@@ -44,6 +44,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from trading_system.data.collectors import CollectionReport
     from trading_system.data.service import DataService
     from trading_system.domain.enums import DataType
+    from trading_system.research.service import ResearchService
     from trading_system.universe.service import UniverseSelectionService
 
 __all__ = ["app", "main"]
@@ -86,6 +87,14 @@ universe_app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+research_app = typer.Typer(
+    help=(
+        "Research the selected universe and inspect the resulting outlooks. "
+        "Every command here is read-only with respect to the broker and "
+        "submits zero orders. Research produces a hypothesis, never a contract."
+    ),
+    no_args_is_help=True,
+)
 reports_app = typer.Typer(
     help="Generate and inspect reports. (read-only)",
     no_args_is_help=True,
@@ -95,6 +104,7 @@ app.add_typer(run_app, name="run")
 app.add_typer(test_app, name="test")
 app.add_typer(data_app, name="data")
 app.add_typer(universe_app, name="universe")
+app.add_typer(research_app, name="research")
 app.add_typer(reports_app, name="reports")
 
 
@@ -310,14 +320,6 @@ def positions() -> None:
 
 
 @app.command()
-def research(
-    ticker: Annotated[str | None, typer.Option(help="Restrict to one underlying.")] = None,
-) -> None:
-    """Show the latest stored research reports. (read-only)"""
-    _not_implemented(f"research inspection{f' for {ticker}' if ticker else ''}", "Milestone 5")
-
-
-@app.command()
 def opportunities() -> None:
     """Show the current ranked opportunities. (read-only)"""
     _not_implemented("opportunity ranking", "Milestone 7 (allocation and risk)")
@@ -361,9 +363,23 @@ def run_universe(
 
 
 @run_app.command("research")
-def run_research() -> None:
-    """Run market research for the current universe. (mutates state)"""
-    _not_implemented("market research", "Milestone 5 (research)")
+def run_research(
+    as_of: Annotated[
+        str | None,
+        typer.Option("--as-of", help="ISO-8601 instant; research as of that moment."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Run everything but do not persist the result."),
+    ] = False,
+) -> None:
+    """Research the current universe. (writes research reports; submits no orders)
+
+    Runs the ``opportunity_scan``'s research stage once. It reads stored data
+    only — no broker connection is opened and no data is collected, so run
+    ``data collect`` and ``universe run`` first if the store is empty.
+    """
+    _research_run(as_of=as_of, dry_run=dry_run, symbols=None, universe_run_id=None)
 
 
 @run_app.command("opportunities")
@@ -1282,6 +1298,454 @@ def universe_explain(
         return
 
     console.print(f"[yellow]{wanted} was not considered in run {run_id}.[/yellow]")
+
+
+# ---------------------------------------------------------------------------
+# research
+#
+# Every command here is read-only with respect to the broker. The research
+# service constructs no broker, opens no connection and has no order path: it
+# consumes stored data and a stored universe through repositories, and writes a
+# run record. The zero-order property is therefore structural, not a check
+# performed at the end.
+# ---------------------------------------------------------------------------
+def _research_service() -> ResearchService:
+    """Build the research layer from configuration, or fail with a diagnostic."""
+    from trading_system.research.service import ResearchService
+
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        err_console.print(f"[red]CONFIGURATION ERROR[/red]\n{exc}")
+        raise typer.Exit(code=EXIT_ERROR) from exc
+    return ResearchService(settings=settings, config=config)
+
+
+def _research_run(
+    *,
+    as_of: str | None,
+    dry_run: bool,
+    symbols: list[str] | None,
+    universe_run_id: str | None,
+) -> None:
+    """Execute one research run and print its report."""
+    from trading_system.domain.enums import ResearchStatus
+    from trading_system.research.report import render_run
+
+    service = _research_service()
+    instant = _parse_instant(as_of) if as_of else None
+
+    run = service.run(
+        as_of=instant,
+        dry_run=dry_run,
+        symbols=symbols,
+        universe_run_id=universe_run_id,
+    )
+    console.print()
+    console.print(render_run(run.result, verbose=True))
+
+    if dry_run:
+        console.print(
+            "\n[yellow]DRY RUN[/yellow]  Nothing was persisted. Authoritative history is unchanged."
+        )
+        _print_dry_run_inputs(run)
+    else:
+        console.print(f"\n[green]Stored[/green] run {run.result.run_id}")
+
+    if run.result.status is not ResearchStatus.SUCCESS:
+        _fail(
+            f"research ended as {run.result.status.value}; no outlook was produced "
+            f"and no downstream stage may consume this run"
+        )
+
+
+def _print_dry_run_inputs(run: object) -> None:
+    """Show what each underlying was actually shown, for inspection.
+
+    Only on a dry run: the inputs are not persisted inside the run record,
+    because the report already names the snapshots it rests on and a second
+    stored copy of the evidence could drift from the first.
+    """
+    inputs = getattr(run, "inputs", {})
+    if not inputs:
+        return
+    console.print("\n[bold]RESEARCH INPUTS[/bold] (what each underlying was shown)")
+    for symbol, research_input in sorted(inputs.items()):
+        console.print(
+            f"  {symbol:<8} facts={len(research_input.all_evidence)} "
+            f"(usable {research_input.usable_evidence_count}) "
+            f"news={len(research_input.news)} events={len(research_input.events)} "
+            f"filings={len(research_input.regulatory_events)} "
+            f"fundamentals={len(research_input.fundamentals)} "
+            f"snapshots={len(research_input.data_snapshot_ids)}"
+        )
+        gaps = research_input.data_quality_summary.gaps
+        if gaps:
+            console.print(f"           gaps: {', '.join(g.value for g in gaps)}")
+        if research_input.limits.truncated:
+            console.print(f"           truncated: {', '.join(research_input.limits.truncated)}")
+
+
+@research_app.command("run")
+def research_run_command(
+    as_of: Annotated[
+        str | None,
+        typer.Option("--as-of", help="ISO-8601 instant; research as it was then."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Run everything but do not persist. Never reaches a broker either way.",
+        ),
+    ] = False,
+    symbol: Annotated[
+        list[str] | None,
+        typer.Option("--symbol", help="Restrict to these underlyings. Repeatable."),
+    ] = None,
+    universe_run_id: Annotated[
+        str | None,
+        typer.Option("--universe-run-id", help="Research a specific universe run."),
+    ] = None,
+) -> None:
+    """Research the selected universe. (writes research reports; submits no orders)
+
+    Reads stored data and a stored universe run only. It never collects, never
+    connects to a broker and has no reachable order path. ``--symbol`` narrows
+    the run to part of the universe; it cannot widen it, because research
+    consumes a universe rather than selecting one.
+    """
+    _research_run(
+        as_of=as_of,
+        dry_run=dry_run,
+        symbols=list(symbol) if symbol else None,
+        universe_run_id=universe_run_id,
+    )
+
+
+@research_app.command("show")
+def research_show(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="A specific run. Defaults to the most recent."),
+    ] = None,
+    symbol: Annotated[
+        str | None,
+        typer.Option("--symbol", help="Restrict to one underlying."),
+    ] = None,
+) -> None:
+    """Show the latest (or a named) research run. (read-only)"""
+    from trading_system.research.report import render_report, render_run
+
+    service = _research_service()
+    result = service.get(run_id) if run_id else service.latest()
+
+    if result is None:
+        console.print(
+            "[yellow]UNAVAILABLE[/yellow]  "
+            + (
+                f"no research run with id {run_id!r}."
+                if run_id
+                else "no research has been run yet. Run 'research run' first."
+            )
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    if symbol is None:
+        console.print(render_run(result, verbose=True))
+        return
+
+    report = result.report(symbol)
+    if report is None:
+        console.print(
+            f"[yellow]{symbol.strip().upper()} was not researched in run {result.run_id}.[/yellow]"
+        )
+        raise typer.Exit(code=EXIT_OK)
+    console.print(render_report(report))
+
+
+@research_app.command("explain")
+def research_explain(
+    symbol: Annotated[str, typer.Option("--symbol", help="The underlying to explain.")],
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="A specific run. Defaults to the most recent."),
+    ] = None,
+) -> None:
+    """Explain one underlying's outlook and everything it rests on. (read-only)
+
+    Every conclusion is traceable to the exact evidence, source and data
+    snapshot that supported it at the research instant.
+    """
+    from trading_system.research.report import render_report
+
+    service = _research_service()
+    result = service.get(run_id) if run_id else service.latest()
+    if result is None:
+        console.print(
+            "[yellow]UNAVAILABLE[/yellow]  "
+            + (f"no research run with id {run_id!r}." if run_id else "no research run exists yet.")
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    report = result.report(symbol)
+    if report is None:
+        console.print(
+            f"[yellow]{symbol.strip().upper()} was not researched in run {result.run_id}.[/yellow]"
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    console.print(render_report(report))
+
+
+@research_app.command("history")
+def research_history(
+    symbol: Annotated[
+        str | None,
+        typer.Option("--symbol", help="One underlying's report history."),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Maximum entries to show.")] = 20,
+) -> None:
+    """Show past research runs, or one underlying's history. (read-only)
+
+    History is append-only: a report is never overwritten by a later one, so
+    "what did we believe then, and did the view change" stays answerable.
+    """
+    service = _research_service()
+
+    if symbol is not None:
+        entries = service.symbol_history(symbol, limit=limit)
+        if not entries:
+            console.print(
+                f"[yellow]UNAVAILABLE[/yellow]  no research history for {symbol.strip().upper()}."
+            )
+            raise typer.Exit(code=EXIT_OK)
+
+        table = Table(
+            title=f"Research history — {symbol.strip().upper()}",
+            show_header=True,
+            header_style="bold",
+        )
+        for column in ("Generated", "Run id", "As of", "Status", "Hypothesis", "Conf.", "Evidence"):
+            table.add_column(column)
+        for entry in entries:
+            style = "green" if entry.status == "SUCCESS" else "yellow"
+            table.add_row(
+                entry.generated_at.isoformat(timespec="seconds"),
+                entry.run_id,
+                entry.as_of.isoformat(timespec="seconds"),
+                f"[{style}]{entry.status}[/{style}]",
+                entry.hypothesis or "-",
+                entry.confidence or "-",
+                str(entry.evidence_count),
+            )
+        console.print(table)
+        console.print(f"{len(entries)} report(s). Nothing here is ever rewritten.")
+        return
+
+    runs = service.history(limit=limit)
+    if not runs:
+        console.print("[yellow]UNAVAILABLE[/yellow]  no research runs have been recorded yet.")
+        raise typer.Exit(code=EXIT_OK)
+
+    table = Table(title="Research runs", show_header=True, header_style="bold")
+    for column in ("Generated", "Run id", "As of", "Status", "Outlooks", "Failed", "Model"):
+        table.add_column(column)
+    for run in runs:
+        style = "green" if run.status == "SUCCESS" else "yellow"
+        table.add_row(
+            run.generated_at.isoformat(timespec="seconds"),
+            run.run_id,
+            run.as_of.isoformat(timespec="seconds"),
+            f"[{style}]{run.status}[/{style}]",
+            str(run.succeeded),
+            str(run.failed),
+            run.model_name or "-",
+        )
+    console.print(table)
+    console.print(f"{len(runs)} run(s). Nothing here is ever rewritten.")
+
+
+@research_app.command("validate")
+def research_validate(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="Re-check a stored run instead of the configuration."),
+    ] = None,
+) -> None:
+    """Validate the research configuration, or re-check a stored run. (read-only)
+
+    Without ``--run-id`` this checks that the configuration loads, that a
+    universe is available to research, and which of its underlyings actually
+    have data stored. With one, it re-checks the stored run's own invariants:
+    that no report cites a snapshot it does not name, that every successful
+    report carries an invalidation condition, and that no failed report smuggled
+    an outlook through.
+    """
+    if run_id is not None:
+        _research_validate_run(run_id)
+        return
+
+    service = _research_service()
+    settings = _load_settings()
+    config = load_config(settings.config_dir)
+    research = config.research
+
+    console.print("\n[bold]RESEARCH CONFIGURATION[/bold]")
+    console.print(f"Config version : {research.config_version}")
+    console.print(f"Horizon        : {research.horizon.min_days}-{research.horizon.max_days} days")
+    console.print(
+        f"Agent          : {'enabled' if research.agent.enabled else 'disabled'} "
+        f"({research.agent.model_provider}/{research.agent.model_name}, "
+        f"prompt {research.agent.prompt_version})"
+    )
+    console.print(
+        "Fallback       : [green]fail closed[/green] — no outlook is ever synthesised "
+        "in place of an unreachable model"
+    )
+    console.print(
+        f"Source policy  : {config.sources.config_version}, "
+        f"min {config.sources.min_sources_per_report} source(s) per report"
+    )
+
+    table = Table(title="Limits and windows", show_header=True, header_style="bold")
+    table.add_column("Setting")
+    table.add_column("Value")
+    limits, window = research.limits, research.window
+    for name, value in (
+        ("max assets per run", str(limits.max_assets_per_run)),
+        ("max evidence items", str(limits.max_evidence_items)),
+        ("max news items", str(limits.max_news_items)),
+        ("max events", str(limits.max_events)),
+        ("max input characters", str(limits.max_input_characters)),
+        ("news lookback (days)", str(window.news_lookback_days)),
+        ("event lookahead (days)", str(window.event_lookahead_days)),
+        ("historical lookback (days)", str(window.historical_lookback_days)),
+        ("deduplication", "on" if research.deduplication.enabled else "off"),
+        ("HIGH needs evidence items", str(research.confidence.min_evidence_items_for_high)),
+        ("HIGH needs tier", research.confidence.min_source_tier_for_high.value),
+    ):
+        table.add_row(name, value)
+    console.print(table)
+
+    if research.agent.enabled and settings.anthropic_api_key is None:
+        console.print(
+            "[yellow]ANTHROPIC_API_KEY is not set[/yellow]; every symbol would end as "
+            "AI_UNAVAILABLE."
+        )
+
+    universe = service.universe()
+    if universe is None:
+        console.print(
+            "\n[yellow]No universe has been selected yet.[/yellow] "
+            "Research consumes a universe; run 'universe run' first."
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print(
+        f"\nUniverse       : {universe.run_id} ({universe.status.value}), "
+        f"{len(universe.selected_assets)} underlying(s): "
+        f"{', '.join(universe.symbols) or 'none'}"
+    )
+    if universe.symbols:
+        _print_research_readiness(service, universe.symbols)
+    console.print("[green]PASS[/green]  Configuration is valid. No orders were submitted.")
+
+
+def _print_research_readiness(service: ResearchService, symbols: list[str]) -> None:
+    """Which data types each universe symbol actually has stored."""
+    from trading_system.domain.enums import DataType
+
+    table = Table(title="Stored research data", show_header=True, header_style="bold")
+    for column in ("Symbol", "Quote", "News", "Events", "Filings", "Fundamentals", "Chain"):
+        table.add_column(column)
+    kinds = (
+        DataType.MARKET_QUOTE,
+        DataType.NEWS_ARTICLE,
+        DataType.CORPORATE_EVENT,
+        DataType.REGULATORY_EVENT,
+        DataType.FUNDAMENTAL_SNAPSHOT,
+        DataType.OPTION_CHAIN,
+    )
+    for symbol in symbols:
+        cells = []
+        for kind in kinds:
+            snapshot = service.data_repository.get_latest(kind, symbol)
+            cells.append(
+                snapshot.as_of.isoformat(timespec="seconds")
+                if snapshot
+                else "[yellow]none[/yellow]"
+            )
+        table.add_row(symbol, *cells)
+    console.print(table)
+    console.print(
+        "A missing data type is not an error — it is recorded as an explicit gap on the "
+        "report and constrains the confidence the agent is allowed to state."
+    )
+
+
+def _research_validate_run(run_id: str) -> None:
+    """Re-check a stored run's own invariants and report every finding."""
+    from trading_system.domain.enums import ResearchStatus
+
+    service = _research_service()
+    result = service.get(run_id)
+    if result is None:
+        console.print(f"[yellow]UNAVAILABLE[/yellow]  no research run with id {run_id!r}.")
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print(f"\n[bold]VALIDATING[/bold] research run {result.run_id}")
+    problems: list[str] = []
+
+    for report in result.reports:
+        prefix = f"{report.symbol}"
+        if report.status is ResearchStatus.SUCCESS:
+            if not report.invalidation_conditions:
+                problems.append(f"{prefix}: a successful report states no invalidation condition")
+            if not report.evidence:
+                problems.append(f"{prefix}: a successful report cites no evidence")
+            if report.horizon_days is not None and not report.horizon.contains(report.horizon_days):
+                problems.append(
+                    f"{prefix}: horizon_days {report.horizon_days} is outside "
+                    f"{report.horizon.min_days}-{report.horizon.max_days}"
+                )
+        elif report.hypothesis is not None:
+            problems.append(f"{prefix}: a {report.status.value} report carries a hypothesis")
+
+        named = set(report.input_snapshot_ids)
+        for item in report.evidence:
+            if item.source.snapshot_id not in named:
+                problems.append(
+                    f"{prefix}: evidence {item.evidence_id} cites snapshot "
+                    f"{item.source.snapshot_id}, which the report does not list"
+                )
+
+    table = Table(show_header=True, header_style="bold")
+    for column in ("Symbol", "Status", "Hypothesis", "Evidence", "Invalidations", "Snapshots"):
+        table.add_column(column)
+    for report in sorted(result.reports, key=lambda r: r.symbol):
+        style = "green" if report.succeeded else "yellow"
+        table.add_row(
+            report.symbol,
+            f"[{style}]{report.status.value}[/{style}]",
+            report.hypothesis.value if report.hypothesis else "-",
+            str(len(report.evidence)),
+            str(len(report.invalidation_conditions)),
+            str(len(report.input_snapshot_ids)),
+        )
+    console.print(table)
+
+    if problems:
+        for problem in problems:
+            console.print(f"  [red]{problem}[/red]")
+        _fail(f"{len(problems)} problem(s) found in stored run {result.run_id}")
+    console.print(
+        f"[green]PASS[/green]  {len(result.reports)} report(s) satisfy the stored-run "
+        f"invariants. No orders were submitted."
+    )
 
 
 # ---------------------------------------------------------------------------

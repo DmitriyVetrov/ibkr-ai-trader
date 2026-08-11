@@ -147,10 +147,8 @@ def test_config_validates_and_prints() -> None:
     [
         ["portfolio"],
         ["positions"],
-        ["research"],
         ["opportunities"],
         ["reconcile"],
-        ["run", "research"],
         ["run", "opportunities"],
         ["run", "position-monitor"],
         ["run", "thesis-monitor"],
@@ -171,6 +169,10 @@ def test_config_validates_and_prints() -> None:
         # The `universe` group and `run universe` landed in Milestone 4; they
         # are covered by tests/universe/test_cli.py, which repoints the service
         # at tmp_path so no command touches the repository's own data/.
+        # The `research` group and `run research` landed in Milestone 5; they
+        # are covered by tests/research/test_cli.py, which does the same. They
+        # must NOT be invoked here: they now reach the real service, and a
+        # non-dry run would write into the repository's own data/research/.
         ["reports", "daily"],
         ["reports", "performance"],
     ],
@@ -185,10 +187,10 @@ def test_unimplemented_commands_fail_loudly(args: list[str]) -> None:
 
 @pytest.mark.unit
 def test_unimplemented_command_names_its_milestone() -> None:
-    result = runner.invoke(app, ["run", "research"])
+    result = runner.invoke(app, ["run", "opportunities"])
     text = _text(result)
     assert "NOT IMPLEMENTED" in text
-    assert "Milestone 5" in text
+    assert "Milestone 7" in text
     assert "No broker connection was attempted" in text
 
 

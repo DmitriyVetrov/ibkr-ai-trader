@@ -4,7 +4,7 @@
 # replayed against the policy that was actually in force at the time. Bump it
 # whenever any file in config/ changes in a way that affects decisions.
 name: trading-system
-config_version: "2026.08.11-2"
+config_version: "2026.08.11-3"
 
 # Display/scheduling timezone only. All internal timestamps are UTC.
 display_timezone: Europe/Madrid

@@ -1,0 +1,198 @@
+# Market research policy (Milestone 5).
+#
+# What the Market Researcher agent is asked, what it is allowed to see, and
+# what the deterministic layer will accept back. Nothing here is a trading
+# rule: research produces an *outlook*, never a contract, a direction to trade,
+# a position size or an order.
+#
+# Every threshold lives here rather than in code, so a change to how the system
+# forms a view shows up in a diff. Money values are quoted strings or integers
+# so they parse as exact decimals; an unquoted 5.00 is a binary float and is
+# rejected.
+#
+# Source trust is NOT configured here. It lives in config/sources.yaml and is
+# read by the research pipeline — there is exactly one source-ranking system.
+config_version: "2026.08.11-1"
+
+# ---------------------------------------------------------------------------
+# The question being asked.
+#
+# The horizon is short and must stay short: research over a 2-4 week window is
+# a different question from a long-term investment thesis, and an agent that
+# answers the second while being asked the first produces an outlook no option
+# with 14-31 days of life can express.
+# ---------------------------------------------------------------------------
+horizon:
+  min_days: 14
+  max_days: 31
+
+# ---------------------------------------------------------------------------
+# The research data window.
+#
+# Bounded on purpose (brief section 58): unlimited history is neither
+# affordable nor useful, and an agent handed six months of headlines will
+# reason from whatever is most vivid rather than from what is recent and
+# relevant. Everything outside these windows is simply not shown, and the
+# stored input records which windows were applied.
+# ---------------------------------------------------------------------------
+window:
+  # How far back news is read. Two weeks matches the horizon: older news is
+  # already in the price, and this stage has no way to establish otherwise.
+  news_lookback_days: 14
+  # How far ahead the event calendar is read. Deliberately wider than the
+  # maximum horizon, so an event just past the horizon is visible as a reason
+  # NOT to expect the move inside it.
+  event_lookahead_days: 45
+  # Events already past are still evidence (a reaction happened), but only
+  # recently.
+  event_lookback_days: 14
+  historical_lookback_days: 90
+  fundamentals_lookback_days: 400
+  regulatory_lookback_days: 120
+
+  # Below this many price observations no realized volatility is computed.
+  # An unavailable statistic is reported as unavailable, never as zero.
+  min_observations_for_volatility: 20
+  # Trading days per year used to annualise realized volatility. Recorded on
+  # every report so a realized-vs-implied comparison over incompatible
+  # horizons is visible rather than implicit (brief section 24).
+  volatility_annualization_days: 252
+
+# ---------------------------------------------------------------------------
+# Cost control (brief section 59).
+#
+# An unexpectedly large universe or a flood of syndicated news must not turn
+# into an uncontrolled number of, or uncontrollably large, model requests.
+# Every limit truncates deterministically and the truncation is recorded.
+# ---------------------------------------------------------------------------
+limits:
+  # Underlyings researched in one run. Universe assets beyond this are recorded
+  # as SKIPPED_COST_LIMIT — "we did not look" is not "we found nothing".
+  max_assets_per_run: 10
+  max_evidence_items: 40
+  max_news_items: 25
+  max_events: 15
+  max_regulatory_items: 10
+  max_fundamental_periods: 4
+  # Hard ceiling on the serialised input handed to the model. Exceeding it
+  # fails the symbol rather than silently sending a truncated payload the
+  # agent would then reason from as though it were complete.
+  max_input_characters: 120000
+
+# ---------------------------------------------------------------------------
+# News deduplication (brief section 31).
+#
+# Ten syndicated copies of one Reuters story are one piece of evidence, not
+# ten. Grouping is deterministic and deliberately shallow: normalised headline
+# similarity inside a publication window. No semantic clustering, no model
+# call, no embedding.
+# ---------------------------------------------------------------------------
+deduplication:
+  enabled: true
+  # Jaccard similarity of normalised headline tokens. 1.0 means exact match
+  # only. 0.8 groups near-identical rewrites without merging distinct stories.
+  headline_similarity: 0.8
+  # Articles further apart than this are separate events even if the headlines
+  # match — an annual result and last year's have similar headlines.
+  publication_window_hours: 48
+  # Tokens ignored when comparing headlines. Quoted because YAML reads a bare
+  # `on`, `no`, `yes` or `off` as a boolean, which would silently drop the word
+  # from the list and change how headlines are grouped.
+  stopwords:
+    - "a"
+    - "an"
+    - "and"
+    - "as"
+    - "at"
+    - "by"
+    - "for"
+    - "from"
+    - "in"
+    - "into"
+    - "of"
+    - "on"
+    - "or"
+    - "the"
+    - "to"
+    - "with"
+
+# ---------------------------------------------------------------------------
+# Confidence policy (brief sections 17, 55, 56).
+#
+# Confidence is not the model's to declare. It states a band; these rules
+# decide whether the evidence licenses it. A report that fails a constraint is
+# rejected outright rather than quietly downgraded — silently rewriting the
+# agent's stated confidence would store a judgement it did not make.
+#
+# Confidence is a band, never a probability. There is no percentage anywhere in
+# a research report, because no calibration has been measured.
+# ---------------------------------------------------------------------------
+confidence:
+  # HIGH requires the underlying's own market data to be research-usable.
+  require_research_usable_for_high: true
+  # HIGH requires at least this many distinct evidence items.
+  min_evidence_items_for_high: 3
+  # ... at least one of which must be at this tier or better.
+  min_source_tier_for_high: TIER_2
+  # HIGH is refused when contradicting evidence is present and the report does
+  # not say why one side dominates.
+  require_contradiction_resolution_for_high: true
+  # Any confidence above LOW requires at least this many evidence items.
+  min_evidence_items_for_medium: 1
+  # HIGH is refused when this many or more data gaps were recorded.
+  max_data_gaps_for_high: 3
+
+# ---------------------------------------------------------------------------
+# What must be present for a report to be usable at all.
+# ---------------------------------------------------------------------------
+evidence:
+  # Below this, the symbol is reported INSUFFICIENT_EVIDENCE without a model
+  # call. Spending a request to be told "not enough to say" is waste, and an
+  # agent handed nothing tends to fill the gap.
+  min_evidence_items: 1
+  # Only records the data layer marked research-usable may support a
+  # substantive conclusion (brief section 25). Unusable records are still
+  # listed as data-quality facts, never as evidence.
+  require_research_usable_evidence: true
+  # A report must reference at least this many distinct sources, unless
+  # config/sources.yaml sets a higher floor, which wins.
+  min_distinct_sources: 1
+
+# ---------------------------------------------------------------------------
+# Market context (brief section 21).
+#
+# The broad-market reference the agent is shown, when the data layer has it.
+# When it does not, the input says MARKET_CONTEXT_UNAVAILABLE — the research
+# layer never fetches it itself and never substitutes a remembered value.
+# ---------------------------------------------------------------------------
+market_context:
+  broad_index_symbol: SPY
+  # Additional reference symbols, e.g. a sector proxy. Each is read from the
+  # store point-in-time like any other symbol; absence is reported, not filled.
+  reference_symbols: []
+
+# ---------------------------------------------------------------------------
+# The agent.
+#
+# There is deliberately no deterministic fallback. A universe can be ordered
+# without a model; a market outlook cannot be formed without one, and anything
+# this layer synthesised in place of an unreachable model would be a fabricated
+# view wearing a report's clothes. An unavailable model ends the symbol as
+# AI_UNAVAILABLE with no hypothesis.
+#
+# No secret belongs here. ANTHROPIC_API_KEY comes from the environment.
+# ---------------------------------------------------------------------------
+agent:
+  enabled: true
+  provider: ANTHROPIC
+  model: claude-opus-5
+  # Bumped whenever the prompt changes in a way that could alter an outlook.
+  # Stamped into every stored report, so a past thesis traces to the exact
+  # instructions that produced it.
+  prompt_version: "1.0.0"
+  timeout_seconds: 180.0
+  max_output_tokens: 12000
+  # low | medium | high | xhigh | max. Weighing conflicting evidence into a
+  # defensible hypothesis is a reasoning task, unlike ranking a pre-filtered
+  # candidate list.
+  effort: high

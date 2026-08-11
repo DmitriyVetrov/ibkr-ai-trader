@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/research_agent_output.json",
+  "title": "ResearchAgentOutput",
+  "description": "The Market Researcher agent's structured response for ONE underlying. Prose is not a valid response. Evidence and events are cited by id: there is no field here for a source name, a URL or a publication date, because those are copied from the input into the stored report - so a fabricated source is not merely discouraged, it is inexpressible. There is likewise no field for a strike, an expiry, a right, a delta, a strategy, a quantity, an amount of money or a probability. Schema-valid is not the same as acceptable: a well-formed response is still rejected in full if its hypothesis is unsupported, its confidence unlicensed or its citations unknown.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "symbol",
+    "hypothesis",
+    "confidence",
+    "direction",
+    "expected_magnitude",
+    "horizon_days",
+    "thesis",
+    "expected_behavior",
+    "invalidation_conditions"
+  ],
+  "properties": {
+    "run_id": { "type": "string", "minLength": 1 },
+    "symbol": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+    "hypothesis": {
+      "description": "A=strong move likely with no specific catalyst required, direction uncertain; B=predominantly up; C=predominantly down; D=sharp move around a specific identified dated event, direction uncertain; E=other, explanation required. A and D are different claims - a regime versus a catalyst - and the distinction is enforced.",
+      "enum": ["A", "B", "C", "D", "E"]
+    },
+    "confidence": {
+      "description": "A band, never a probability. No percentage appears anywhere in a research report because no calibration has been measured.",
+      "enum": ["HIGH", "MEDIUM", "LOW"]
+    },
+    "direction": { "enum": ["BULLISH", "BEARISH", "NEUTRAL", "UNCERTAIN"] },
+    "expected_magnitude": { "enum": ["SMALL", "MODERATE", "LARGE", "EXTREME"] },
+    "horizon_days": {
+      "description": "Must fall inside the configured horizon. A long-term thesis is not an answer to a short-term question.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 365
+    },
+    "thesis": { "type": "string", "minLength": 1 },
+    "expected_behavior": { "type": "string", "minLength": 1 },
+    "explanation": { "type": ["string", "null"] },
+    "evidence": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/evidence_assessment" }
+    },
+    "key_events": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/event_assessment" }
+    },
+    "bullish_catalysts": { "type": "array", "items": { "$ref": "#/$defs/catalyst" } },
+    "bearish_catalysts": { "type": "array", "items": { "$ref": "#/$defs/catalyst" } },
+    "risks": { "type": "array", "items": { "$ref": "#/$defs/risk" } },
+    "invalidation_conditions": {
+      "description": "What would falsify the thesis. Mandatory: a thesis that cannot be invalidated cannot be monitored, and the position lifecycle consumes these directly.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/invalidation_condition" }
+    },
+    "contradiction_resolution": {
+      "description": "Why one side of a disagreement currently dominates. Required by the confidence policy before HIGH may stand over contradicting evidence.",
+      "type": ["string", "null"]
+    },
+    "missing_information": { "type": "array", "items": { "type": "string" } },
+    "notes": { "type": ["string", "null"] }
+  },
+  "allOf": [
+    {
+      "description": "Hypothesis E requires a structured explanation; 'other' without a reason is not an outlook.",
+      "if": { "properties": { "hypothesis": { "const": "E" } }, "required": ["hypothesis"] },
+      "then": {
+        "properties": { "explanation": { "type": "string", "minLength": 1 } },
+        "required": ["explanation"]
+      }
+    },
+    {
+      "description": "B is a bullish claim; the stated direction must agree with it.",
+      "if": { "properties": { "hypothesis": { "const": "B" } }, "required": ["hypothesis"] },
+      "then": { "properties": { "direction": { "const": "BULLISH" } } }
+    },
+    {
+      "description": "C is a bearish claim; the stated direction must agree with it.",
+      "if": { "properties": { "hypothesis": { "const": "C" } }, "required": ["hypothesis"] },
+      "then": { "properties": { "direction": { "const": "BEARISH" } } }
+    },
+    {
+      "description": "A and D both assert that direction cannot be established, so claiming one contradicts the hypothesis.",
+      "if": {
+        "properties": { "hypothesis": { "enum": ["A", "D"] } },
+        "required": ["hypothesis"]
+      },
+      "then": { "properties": { "direction": { "const": "UNCERTAIN" } } }
+    },
+    {
+      "description": "D requires the report to identify the event. Without one this is normal volatility, which is A.",
+      "if": { "properties": { "hypothesis": { "const": "D" } }, "required": ["hypothesis"] },
+      "then": {
+        "properties": { "key_events": { "type": "array", "minItems": 1 } },
+        "required": ["key_events"]
+      }
+    }
+  ],
+  "$defs": {
+    "evidence_assessment": {
+      "description": "The agent's reading of one supplied fact. direction says what the fact points at; stance says how it relates to the stated thesis. They are separate because an item can point up and still contradict a bearish thesis, and both readings belong in the record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "claim", "direction", "stance", "relevance", "confidence"],
+      "properties": {
+        "evidence_id": {
+          "description": "Must name an item the input actually carried. An unknown id means the model invented a source and rejects the whole response.",
+          "type": "string",
+          "minLength": 1
+        },
+        "claim": { "type": "string", "minLength": 1 },
+        "direction": {
+          "enum": ["SUPPORTS_UP", "SUPPORTS_DOWN", "SUPPORTS_LARGE_MOVE", "NEUTRAL"]
+        },
+        "stance": { "enum": ["SUPPORTS", "CONTRADICTS", "NEUTRAL"] },
+        "relevance": { "enum": ["HIGH", "MEDIUM", "LOW"] },
+        "confidence": { "enum": ["HIGH", "MEDIUM", "LOW"] }
+      }
+    },
+    "event_assessment": {
+      "description": "The agent's reading of one supplied event. Timing, source and announcement are absent by design: they are facts the input carried and the report copies them across, so they cannot be restated incorrectly.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "expected_relevance", "directional_uncertainty"],
+      "properties": {
+        "event_id": { "type": "string", "minLength": 1 },
+        "expected_relevance": { "enum": ["HIGH", "MEDIUM", "LOW"] },
+        "directional_uncertainty": { "type": "boolean" },
+        "rationale": { "type": ["string", "null"] }
+      }
+    },
+    "catalyst": {
+      "description": "Something that could push the underlying. support is derived from whether evidence_ids is non-empty, never declared: a claim that could label itself supported while citing nothing would make the label worthless.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "support"],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "evidence_ids": { "type": "array", "items": { "type": "string" } },
+        "support": { "enum": ["SUPPORTED", "UNSUPPORTED"] }
+      }
+    },
+    "risk": {
+      "description": "One risk in a named category. An unavailable assessment is stated rather than omitted: a silence reads as 'no risk', which is never what the evidence said.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "description", "support"],
+      "properties": {
+        "category": {
+          "enum": [
+            "DIRECTIONAL_RISK",
+            "EVENT_RISK",
+            "MACRO_RISK",
+            "COMPANY_SPECIFIC_RISK",
+            "DATA_RISK"
+          ]
+        },
+        "description": { "type": "string", "minLength": 1 },
+        "evidence_ids": { "type": "array", "items": { "type": "string" } },
+        "support": { "enum": ["SUPPORTED", "UNSUPPORTED"] }
+      }
+    },
+    "invalidation_condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["condition", "support"],
+      "properties": {
+        "condition": { "type": "string", "minLength": 1 },
+        "observable": {
+          "description": "What one would have to look at to decide. The field exists so 'the situation changes' cannot pass as a monitoring instruction.",
+          "type": ["string", "null"]
+        },
+        "evidence_ids": { "type": "array", "items": { "type": "string" } },
+        "support": { "enum": ["SUPPORTED", "UNSUPPORTED"] }
+      }
+    }
+  }
+}

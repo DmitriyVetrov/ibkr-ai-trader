@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/research_run.json",
+  "title": "ResearchRunResult",
+  "description": "The immutable record of one research run: which universe it consumed, which underlyings were researched, how each one ended, and which model answered. One report per underlying, never a single merged answer for several - a shared context lets one asset's story colour another's, and the resulting outlook could not be attributed to either. Appended, never overwritten: a later run produces a new record so 'what did the system believe on date T' stays answerable after the configuration, the data and the model have all moved on.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "as_of",
+    "generated_at",
+    "status",
+    "horizon",
+    "schema_version",
+    "versions"
+  ],
+  "properties": {
+    "run_id": { "type": "string", "minLength": 1 },
+    "as_of": { "type": "string", "format": "date-time" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "status": {
+      "description": "The run's own outcome, distinct from any one symbol's. A run succeeds when it produced at least one outlook; each symbol's own status is always preserved on its own report.",
+      "enum": [
+        "SUCCESS",
+        "NO_DATA",
+        "INSUFFICIENT_EVIDENCE",
+        "AI_UNAVAILABLE",
+        "AI_INVALID_OUTPUT",
+        "SEMANTIC_VALIDATION_FAILED",
+        "POINT_IN_TIME_ERROR",
+        "CONFIGURATION_ERROR",
+        "SKIPPED_COST_LIMIT"
+      ]
+    },
+    "horizon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min_days", "max_days"],
+      "properties": {
+        "min_days": { "type": "integer", "minimum": 1, "maximum": 365 },
+        "max_days": { "type": "integer", "minimum": 1, "maximum": 365 }
+      }
+    },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "universe_run_id": {
+      "description": "The universe this run consumed. Research never selects its own subjects.",
+      "type": ["string", "null"]
+    },
+    "universe_snapshot_id": { "type": ["string", "null"] },
+    "reports": {
+      "description": "One MarketResearchReport per underlying. Validated in full against market_research_report.json; referenced loosely here so the two files stay independently maintainable.",
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "counts": { "$ref": "#/$defs/counts" },
+    "versions": { "$ref": "#/$defs/system_versions" },
+    "status_detail": { "type": ["string", "null"] }
+  },
+  "$defs": {
+    "counts": {
+      "description": "How many underlyings reached each outcome. Elapsed time is deliberately absent: a measured duration is a fact about the machine, not the decision, and storing it inside a content-addressed record would make two otherwise identical runs differ.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "universe_assets": { "type": "integer", "minimum": 0 },
+        "researched": { "type": "integer", "minimum": 0 },
+        "succeeded": { "type": "integer", "minimum": 0 },
+        "insufficient_evidence": { "type": "integer", "minimum": 0 },
+        "no_data": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_version", "config_version"],
+      "properties": {
+        "application_version": { "type": "string", "minLength": 1 },
+        "config_version": { "type": "string", "minLength": 1 },
+        "strategy_spec_version": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -322,6 +322,336 @@ def research_report(versions: SystemVersions, source_reference: SourceReference)
 
 
 @pytest.fixture
+def market_research_input(versions: SystemVersions):
+    """A Milestone 5 research input, as the point-in-time assembler produces one.
+
+    Built by hand rather than by running the builder: the contract tests assert
+    that the *artifact shape* crosses the boundary correctly, and should fail
+    for a schema change rather than for an unrelated pipeline change.
+    """
+    from trading_system.domain.enums import (
+        EvidenceKind,
+        MarketDataOrigin,
+        MarketEventType,
+        ResearchDataGap,
+    )
+    from trading_system.research.models import (
+        EventItem,
+        EvidenceItem,
+        MarketSnapshot,
+        OptionMarketContext,
+        OptionTermPoint,
+        ResearchDataQualitySummary,
+        ResearchHorizon,
+        ResearchInput,
+        ResearchLimitsSnapshot,
+        ResearchSourcePolicySnapshot,
+        ResearchWindowSnapshot,
+        SourceProvenance,
+    )
+
+    news_source = SourceProvenance(
+        provider="FIXTURE_NEWS",
+        source_tier=SourceTier.TIER_2,
+        retrieved_at=FIXED_NOW,
+        snapshot_id="snap-news-nvda",
+        source_name="Reuters",
+        source_identifier="https://www.reuters.com/technology/nvda-2026-08-09/",
+        published_at=datetime(2026, 8, 9, 13, 5, tzinfo=UTC),
+        origin=MarketDataOrigin.HISTORICAL,
+        provider_relevance=0.9,
+    )
+    market_source = SourceProvenance(
+        provider="IBKR",
+        source_tier=SourceTier.TIER_1,
+        retrieved_at=FIXED_NOW,
+        snapshot_id="snap-quote-nvda",
+        source_name="IBKR",
+        source_identifier="ibkr:NVDA",
+        origin=MarketDataOrigin.BROKER_DELAYED,
+    )
+
+    return ResearchInput(
+        run_id="research-run-001",
+        symbol="NVDA",
+        as_of=FIXED_NOW,
+        horizon=ResearchHorizon(min_days=14, max_days=31),
+        universe_run_id="universe-run-001",
+        universe_snapshot_id="universe-snapshot-001",
+        data_snapshot_ids=["snap-chain-nvda", "snap-news-nvda", "snap-quote-nvda"],
+        market_snapshot=MarketSnapshot(
+            symbol="NVDA",
+            as_of=FIXED_NOW,
+            origin=MarketDataOrigin.BROKER_DELAYED,
+            source=market_source,
+            last=Decimal("180.25"),
+            close=Decimal("179.10"),
+            volume=Decimal("240000000"),
+            currency="USD",
+            age_seconds=0.0,
+        ),
+        option_context=OptionMarketContext(
+            underlying="NVDA",
+            as_of=FIXED_NOW,
+            source=SourceProvenance(
+                provider="IBKR",
+                source_tier=SourceTier.TIER_1,
+                retrieved_at=FIXED_NOW,
+                snapshot_id="snap-chain-nvda",
+                source_name="IBKR",
+            ),
+            expiration_count=35,
+            strike_count=491,
+            nearest_expiration_days=11,
+            atm_implied_volatility=Decimal("0.42"),
+            term_structure=[
+                OptionTermPoint(
+                    days_to_expiration=11,
+                    atm_implied_volatility=Decimal("0.42"),
+                    contract_count=2,
+                )
+            ],
+        ),
+        news=[
+            EvidenceItem(
+                evidence_id="ev-news-1",
+                kind=EvidenceKind.NEWS,
+                summary="Nvidia data-centre revenue accelerates, company says",
+                source=news_source,
+                occurred_at=datetime(2026, 8, 9, 13, 5, tzinfo=UTC),
+                duplicate_count=2,
+                duplicate_source_names=["Barrons", "MarketWatch"],
+            )
+        ],
+        observations=[
+            EvidenceItem(
+                evidence_id="ev-market-1",
+                kind=EvidenceKind.MARKET_DATA,
+                summary="NVDA quote: last=180.25 close=179.10 volume=240000000",
+                source=market_source,
+                occurred_at=FIXED_NOW,
+            )
+        ],
+        events=[
+            EventItem(
+                event_id="evt-nvda-q2",
+                event_type=MarketEventType.EARNINGS,
+                summary="Q2 FY2027 results",
+                expected_event_time=datetime(2026, 8, 27, 20, 20, tzinfo=UTC),
+                source=SourceProvenance(
+                    provider="FIXTURE_EVENTS",
+                    source_tier=SourceTier.TIER_1,
+                    retrieved_at=FIXED_NOW,
+                    snapshot_id="snap-events-nvda",
+                    source_name="Company investor relations",
+                ),
+                announced_at=datetime(2026, 8, 6, 12, 0, tzinfo=UTC),
+                confirmed=True,
+                days_until=17,
+                within_horizon=True,
+            )
+        ],
+        data_quality_summary=ResearchDataQualitySummary(
+            research_usable=True,
+            records_considered=2,
+            records_research_usable=2,
+            gaps=[ResearchDataGap.FUNDAMENTALS_UNAVAILABLE],
+        ),
+        window=ResearchWindowSnapshot(
+            news_lookback_days=14,
+            event_lookahead_days=45,
+            event_lookback_days=14,
+            historical_lookback_days=90,
+            fundamentals_lookback_days=400,
+            regulatory_lookback_days=120,
+            volatility_annualization_days=252,
+        ),
+        limits=ResearchLimitsSnapshot(
+            max_evidence_items=40,
+            max_news_items=25,
+            max_events=15,
+            max_regulatory_items=10,
+            max_fundamental_periods=4,
+        ),
+        source_policy=ResearchSourcePolicySnapshot(
+            config_version="2026.08.10-1",
+            min_sources_per_report=2,
+            tier_1_count=7,
+            tier_2_count=5,
+        ),
+    )
+
+
+@pytest.fixture
+def market_research_agent_output():
+    """A well-formed agent response for the input fixture above."""
+    from trading_system.research.models import (
+        AgentEvidenceAssessment,
+        Catalyst,
+        InvalidationCondition,
+        ResearchAgentOutput,
+        RiskAssessment,
+    )
+
+    return ResearchAgentOutput(
+        run_id="research-run-001",
+        symbol="NVDA",
+        hypothesis=MarketHypothesis.B,
+        confidence="MEDIUM",
+        direction=Direction.BULLISH,
+        expected_magnitude=ExpectedMagnitude.MODERATE,
+        horizon_days=21,
+        thesis="Data-centre demand is accelerating into the next set of results.",
+        expected_behavior="A gradual drift higher, with volatility around the results date.",
+        evidence=[
+            AgentEvidenceAssessment(
+                evidence_id="ev-news-1",
+                claim="Reported acceleration supports an upward bias.",
+                direction="SUPPORTS_UP",
+                stance="SUPPORTS",
+                relevance="HIGH",
+                confidence="MEDIUM",
+            )
+        ],
+        bullish_catalysts=[
+            Catalyst(summary="Accelerating segment revenue", evidence_ids=["ev-news-1"])
+        ],
+        risks=[
+            RiskAssessment(
+                category="EVENT_RISK",
+                description="The results could disappoint.",
+                evidence_ids=["ev-news-1"],
+            )
+        ],
+        invalidation_conditions=[
+            InvalidationCondition(
+                condition="Guidance is cut at the 27 August results.",
+                observable="Issuer guidance range in the results release.",
+                evidence_ids=["ev-news-1"],
+            )
+        ],
+    )
+
+
+@pytest.fixture
+def market_research_report(versions: SystemVersions, market_research_input):
+    """A complete Milestone 5 report, feeding the strategy stage."""
+    from trading_system.domain.enums import EvidenceKind, ResearchStatus
+    from trading_system.research.models import (
+        Catalyst,
+        InvalidationCondition,
+        MarketResearchReport,
+        ReportedEvent,
+        ReportedEvidence,
+        ResearchAgentMetadata,
+        RiskAssessment,
+    )
+
+    news = market_research_input.news[0]
+    event = market_research_input.events[0]
+    return MarketResearchReport(
+        report_id="research-001",
+        run_id="research-run-001",
+        symbol="NVDA",
+        as_of=FIXED_NOW,
+        generated_at=FIXED_NOW,
+        horizon=market_research_input.horizon,
+        status=ResearchStatus.SUCCESS,
+        hypothesis=MarketHypothesis.B,
+        confidence="MEDIUM",
+        direction=Direction.BULLISH,
+        expected_magnitude=ExpectedMagnitude.MODERATE,
+        horizon_days=21,
+        thesis="Data-centre demand is accelerating into the next set of results.",
+        expected_behavior="A gradual drift higher, with volatility around the results date.",
+        evidence=[
+            ReportedEvidence(
+                evidence_id=news.evidence_id,
+                kind=EvidenceKind.NEWS,
+                claim="Reported acceleration supports an upward bias.",
+                fact=news.summary,
+                direction="SUPPORTS_UP",
+                stance="SUPPORTS",
+                relevance="HIGH",
+                confidence="MEDIUM",
+                source=news.source,
+                occurred_at=news.occurred_at,
+                duplicate_count=news.duplicate_count,
+                duplicate_source_names=list(news.duplicate_source_names),
+            )
+        ],
+        key_events=[
+            ReportedEvent(
+                event_id=event.event_id,
+                event_type=event.event_type,
+                summary=event.summary,
+                expected_event_time=event.expected_event_time,
+                announced_at=event.announced_at,
+                confirmed=event.confirmed,
+                days_until=event.days_until,
+                within_horizon=event.within_horizon,
+                expected_relevance="HIGH",
+                directional_uncertainty=True,
+                source=event.source,
+            )
+        ],
+        bullish_catalysts=[
+            Catalyst(summary="Accelerating segment revenue", evidence_ids=[news.evidence_id])
+        ],
+        risks=[
+            RiskAssessment(
+                category="EVENT_RISK",
+                description="The results could disappoint.",
+                evidence_ids=[news.evidence_id],
+            )
+        ],
+        invalidation_conditions=[
+            InvalidationCondition(
+                condition="Guidance is cut at the 27 August results.",
+                observable="Issuer guidance range in the results release.",
+                evidence_ids=[news.evidence_id],
+            )
+        ],
+        data_quality=market_research_input.data_quality_summary,
+        window=market_research_input.window,
+        limits=market_research_input.limits,
+        source_policy=market_research_input.source_policy,
+        universe_run_id="universe-run-001",
+        universe_snapshot_id="universe-snapshot-001",
+        input_snapshot_ids=list(market_research_input.data_snapshot_ids),
+        agent_metadata=ResearchAgentMetadata(
+            model_provider="ANTHROPIC",
+            model_name="claude-opus-5",
+            prompt_version="1.0.0",
+            prompt_fingerprint="a" * 32,
+            agent_version="1.0.0+aaaaaaaaaaaa",
+            generated_at=FIXED_NOW,
+        ),
+        versions=versions,
+    )
+
+
+@pytest.fixture
+def market_research_run(versions: SystemVersions, market_research_report):
+    """The immutable record of one research run."""
+    from trading_system.domain.enums import ResearchStatus
+    from trading_system.research.models import ResearchRunCounts, ResearchRunResult
+
+    return ResearchRunResult(
+        run_id="research-run-001",
+        as_of=FIXED_NOW,
+        generated_at=FIXED_NOW,
+        status=ResearchStatus.SUCCESS,
+        horizon=market_research_report.horizon,
+        universe_run_id="universe-run-001",
+        universe_snapshot_id="universe-snapshot-001",
+        reports=[market_research_report],
+        counts=ResearchRunCounts(universe_assets=2, researched=1, succeeded=1),
+        versions=versions,
+    )
+
+
+@pytest.fixture
 def strategy_decision(versions: SystemVersions) -> StrategyDecision:
     return StrategyDecision(
         decision_id="strategy-001",
