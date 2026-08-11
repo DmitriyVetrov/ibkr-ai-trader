@@ -4,56 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Milestone 1 of 12 (project skeleton) is complete.** Built and tested: the domain layer
-(models, enums, events, state machine), YAML configuration, the 11 JSON workflow schemas, the
-CLI surface, structured logging, an injectable clock, and 325 passing tests.
+**Milestones 1–2 of 12 are complete.** Built and tested: the domain layer (models, enums,
+events, state machine), YAML configuration, the 11 JSON workflow schemas, the CLI surface,
+structured logging, an injectable clock, the `Broker` abstraction with `SimulatedBroker` and a
+read-only `IBKRBroker`, the read-only broker diagnostics, and the reconciliation foundation.
+588 passing tests; ruff, ruff format and mypy clean.
 
-**Not built, by design:** IBKR connectivity, data providers, AI agents, order execution, live
+**Not built, by design:** data providers, AI agents, order execution, autonomous trading, live
 trading. The CLI exposes those commands but they exit `3` naming the milestone that delivers
 them — they never fabricate output. Follow that pattern for anything still pending.
+
+**Milestone 3 is next: the data layer** — provider interfaces, free sources, caching,
+normalization, snapshots, data quality.
 
 [CLOUD_CODE_IMPLEMENTATION_SPEC.md](CLOUD_CODE_IMPLEMENTATION_SPEC.md) remains the source of
 truth for module layout, CLI surface, schemas, testing layers, and milestone order. Read the
 relevant section before creating files rather than inventing a design. Everything below is a
 summary of the load-bearing parts, not a replacement for it.
 
-Package directories for later milestones exist with only a docstring naming their milestone.
+Build order is spec §46 (Milestones 1–12). Package directories for later milestones exist with
+only a docstring naming their milestone.
 That is deliberate: a stub that pretends to work is worse than an absent module (spec §48.3).
-
-## Next up: Milestone 2 — broker connectivity
-
-Build order is spec §46 (Milestones 1–12). Milestone 2 covers spec §14, §15, §20 and §30:
-
-- `Broker` abstraction (§14) — application code must never touch a raw IBKR call
-- `SimulatedBroker` — the default for tests and dry runs
-- `IBKRBroker` — real adapter over IB Gateway
-- `test ibkr-connection` and `test ibkr-portfolio` (§15) — read-only, must assert
-  `orders_submitted == 0`
-- Reconciliation service (§20) — broker state wins; a mismatch blocks new executions
-- `tests/broker/`, replacing the current skipped placeholder
-
-**Two decisions the owner has not yet made** — the abstraction and simulator can be built without
-either, the `IBKRBroker` cannot:
-
-1. **IBKR client library.** `ib_async` (maintained fork of the abandoned `ib_insync`) versus the
-   official `ibapi`. `ib_async` means far less boilerplate and is async-native, at the cost of
-   depending on a community fork. Ask before choosing.
-2. **Is IB Gateway running with paper credentials?** Not needed to write the adapter, but the
-   read-only connection test cannot be *verified* without it. Do not claim it works unverified.
-
-## Git workflow
-
-`master` is always the last completed, all-green milestone. Work on `milestone-N-<name>`; when the
-milestone is done and the suite passes:
-
-```bash
-git checkout master && git merge --ff-only milestone-N-<name>
-git tag -a milestone-N -m "..." && git branch -d milestone-N-<name>
-```
-
-Linear history, no merge commits; tags mark the boundaries, so `git diff milestone-1..milestone-2`
-answers "what did this milestone actually change". A milestone that goes wrong is thrown away by
-deleting the branch — `master` is never left broken. Commit only when asked.
 
 ## The core architectural rule
 
@@ -109,7 +80,11 @@ full tree; the boundaries that matter:
 - `agents/` — the six LLM agents (universe selector, market researcher, options strategist, thesis
   monitor, position manager, evaluation analyst). Agents are isolated from broker mutation APIs.
 - `broker/` — a `Broker` abstraction with `IBKRBroker` and `SimulatedBroker` implementations.
-  Application code must never call low-level IBKR APIs directly.
+  Application code must never call low-level IBKR APIs directly. `broker/ibkr/` is the **only**
+  package allowed to import `ib_async`; a test asserts this. The translation modules
+  (`positions`, `orders`, `executions`, `market_data`) are pure functions over duck-typed
+  objects and import nothing from the library, which is what lets them be tested without a
+  gateway.
 - `risk/`, `allocation/`, `strategies/contract_selector.py` — the deterministic layer.
 - `monitoring/` — position monitor, thesis monitor, reconciliation loop, scheduler.
 
@@ -162,13 +137,23 @@ python -m trading_system.cli --help      # exposes: run, test, data, portfolio, 
                                          # research, opportunities, reconcile, reports, health
 python -m trading_system.cli health      # works today: config + mode + schema check
 python -m trading_system.cli config      # works today: validate and print configuration
+
+# Read-only broker diagnostics. Append --simulated to run without a gateway.
+python -m trading_system.cli test ibkr-connection
+python -m trading_system.cli test ibkr-portfolio
+python -m trading_system.cli test ibkr-market-data --symbol SPY
+python -m trading_system.cli test ibkr-option-chain --symbol SPY
+python -m trading_system.cli test reconciliation
+
+pytest -m "not ibkr"                     # default: no gateway needed
+ALLOW_LIVE_TESTS=true pytest -m ibkr     # requires a running IB Gateway
 ```
 
 Every other command exits `3` until its milestone lands. Command help is tagged `(read-only)` or
 `(mutates state)` — keep that up when adding commands, and note that Rich swallows
 `[square brackets]` in help strings, hence the parentheses. Makefile shortcuts mirror the test
-layout (`make test-risk`, `make ibkr-connection`). `docker-compose.yml` and `Dockerfile` are
-Milestone 2 scaffolding, not yet exercised.
+layout (`make test-risk`, `make ibkr-connection`). `docker-compose.yml` and `Dockerfile` build and
+run `trading-runtime`; `ib-gateway` itself has not been started against a real account.
 
 ## Working in this repository
 
@@ -192,6 +177,22 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   `risk.yaml` fails loudly instead of silently doing nothing.
 - **Version stamps**: bump `config_version` in `config/application.yaml` whenever a change to
   `config/` would alter a decision — it is recorded in every trade artifact.
+- **`Broker.place_order` is `@final`.** Subclasses implement `_submit_order` instead, so the
+  read-only check and the submitted-order counter cannot be bypassed. Do not un-final it to make
+  execution "easier" in Milestone 8 — add the hook implementation.
+- **IBKR reports missing numbers as `NaN` or a `DBL_MAX` sentinel, not `None`.** Everything from
+  the broker goes through `broker/ibkr/conversion.py`, which maps those to `None` and converts
+  via `Decimal(str(x))`. A missing value must never become `0`: "no margin data" and "zero
+  margin" are different facts.
+- **`project_root()` must keep working for an installed package**, not just a repo checkout —
+  in the container the package lives in `site-packages` and `config/`/`schemas/` sit at the
+  working directory. `PROJECT_ROOT` overrides it.
+- **`filterwarnings = ["error"]` needs an exemption for `ib_async`'s event-loop
+  `DeprecationWarning`**, or every gateway-backed test dies with a misleading "There is no
+  current event loop" instead of connecting.
+- **Simulated data is stamped `SIMULATED`/`SIMULATOR`** on every snapshot and position. Never
+  let simulated or delayed data be presented as a live broker quote, and never fall back from
+  real data to a synthesized value — raise `MarketDataUnavailableError` instead.
 
 This directory is its own git repository (`git init`-ed, one commit: the specification). The
 enclosing `/home/dmytro/git/` is a separate repo full of unrelated projects; nothing here should
