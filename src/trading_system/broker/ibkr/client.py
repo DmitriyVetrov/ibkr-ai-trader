@@ -310,7 +310,20 @@ class IBKRBroker(Broker):
         state = BrokerConnectionState.CONNECTED
         try:
             started = time.perf_counter()
-            self._ib.reqCurrentTime()
+            # ib_async's synchronous IB.reqCurrentTime() has no timeout and
+            # can hang indefinitely on a repeat call over the same
+            # connection (observed against a real TWS/Gateway: the first
+            # call on a fresh connection returns, a later call never does).
+            # Where the async form is available, route through it with an
+            # explicit bound so a broken round trip surfaces as ERROR
+            # instead of hanging the whole process.
+            req_current_time_async = getattr(self._ib, "reqCurrentTimeAsync", None)
+            if req_current_time_async is not None:
+                _import_ib_async().util.run(
+                    req_current_time_async(), timeout=self._connect_timeout
+                )
+            else:
+                self._ib.reqCurrentTime()
             latency_ms = (time.perf_counter() - started) * 1000
             self._last_communication = self._clock.now()
         except Exception as exc:

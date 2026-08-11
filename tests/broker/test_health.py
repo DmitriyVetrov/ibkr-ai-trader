@@ -7,6 +7,9 @@ connected" from "cannot tell".
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 
 from trading_system.broker.ibkr import IBKRBroker
@@ -106,6 +109,35 @@ def test_health_reports_error_when_the_keepalive_fails(broker_clock: FixedClock)
 
     assert health.state is BrokerConnectionState.ERROR
     assert health.is_usable is False
+
+
+@pytest.mark.unit
+def test_health_check_times_out_instead_of_hanging_forever(
+    broker_clock: FixedClock,
+) -> None:
+    """A keepalive that never responds must fail fast, not hang the process.
+
+    Regression test: against a real TWS/Gateway, a second ``reqCurrentTime``
+    call on the same connection can go unanswered forever (an ``ib_async``
+    request/response mismatch). ``health_check`` must bound the wait using
+    the configured connect timeout rather than blocking indefinitely.
+    """
+
+    class HangingIB(FakeIB):
+        async def reqCurrentTimeAsync(self) -> None:  # noqa: N802
+            await asyncio.sleep(3600)
+
+    broker = connect_fake(
+        make_broker(broker_clock, connect_timeout_seconds=0.2), HangingIB()
+    )
+
+    started = time.monotonic()
+    health = broker.health_check()
+    elapsed = time.monotonic() - started
+
+    assert health.state is BrokerConnectionState.ERROR
+    assert health.is_usable is False
+    assert elapsed < 2.0
 
 
 @pytest.mark.unit
