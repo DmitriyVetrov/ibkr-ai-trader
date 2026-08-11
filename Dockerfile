@@ -1,8 +1,7 @@
 # Trading runtime image.
 #
-# SCAFFOLD ONLY — built and used from Milestone 2 onwards. The runtime is an
-# ordinary Python process: it does not depend on an interactive Claude Code
-# session (specification section 1.1).
+# The runtime is an ordinary Python process: it does not depend on an
+# interactive Claude Code session (specification section 1.1).
 
 FROM python:3.12-slim
 
@@ -15,7 +14,9 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
-RUN pip install --no-cache-dir .
+# The [ibkr] extra pulls in ib_async. Without it the runtime can only use the
+# simulator, which would fail at connect time rather than at build time.
+RUN pip install --no-cache-dir '.[ibkr]'
 
 COPY config/ ./config/
 COPY schemas/ ./schemas/

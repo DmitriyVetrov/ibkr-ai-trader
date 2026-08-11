@@ -1,15 +1,19 @@
 # Local infrastructure (specification section 43).
 #
-# SCAFFOLD ONLY — not exercised until Milestone 2 (broker connectivity).
-# Nothing in Milestone 1 connects to IB Gateway; `docker compose up` is not
-# part of any Milestone 1 workflow or test.
+#   ib-gateway  --(broker API)-->  trading-runtime
 #
 # Ports and credentials come from the environment. Copy .env.example to .env
 # first. No credential belongs in this file.
+#
+# Port reference — these differ and are easy to confuse:
+#   IB Gateway paper 4002   IB Gateway live 4001
+#   TWS paper        7497   TWS live        7496
+# The gateway container always listens on 4002 internally in paper mode; the
+# host port is IBKR_PORT.
 
 services:
   ib-gateway:
-    # IB Gateway + IBC. Pinned by digest/tag before first real use in M2.
+    # IB Gateway + IBC. Pin to a digest before any live use.
     image: ${IB_GATEWAY_IMAGE:-ghcr.io/gnzsnz/ib-gateway:stable}
     restart: unless-stopped
     environment:
@@ -18,17 +22,23 @@ services:
       TRADING_MODE: ${IB_GATEWAY_MODE:-paper}
       TWS_USERID: ${IBKR_USERNAME}
       TWS_PASSWORD: ${IBKR_PASSWORD}
+      # Second line of defence: the gateway rejects order placement on the API
+      # even if the application asks. Milestone 2 is read-only, so leave "yes".
       READ_ONLY_API: ${IB_GATEWAY_READ_ONLY:-yes}
       TZ: ${TZ:-Etc/UTC}
     ports:
       # Host port is configurable; nothing is hard-coded.
       - "${IBKR_PORT:-4002}:4002"
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 4002 || exit 1"]
+      # bash's /dev/tcp needs no extra package in the image, unlike nc.
+      test:
+        ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/4002' || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 90s
+      # IB Gateway logs in and initialises slowly; a short window causes
+      # spurious restarts before it is genuinely ready.
+      start_period: 120s
 
   trading-runtime:
     build:
@@ -40,10 +50,14 @@ services:
         condition: service_healthy
     environment:
       TRADING_MODE: ${TRADING_MODE:-PAPER}
+      # Container-to-container: the service name, and the gateway's internal
+      # port, never the host port.
       IBKR_HOST: ib-gateway
       IBKR_PORT: 4002
       IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
       IBKR_ACCOUNT: ${IBKR_ACCOUNT}
+      IBKR_READ_ONLY: ${IBKR_READ_ONLY:-true}
+      IBKR_MARKET_DATA_TYPE: ${IBKR_MARKET_DATA_TYPE:-3}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
@@ -53,4 +67,13 @@ services:
       - ./data:/app/data
       - ./trades:/app/trades
       - ./reports:/app/reports
-    command: ["python", "-m", "trading_system.cli", "health"]
+    healthcheck:
+      # Offline check: validates configuration and schemas without connecting.
+      test: ["CMD", "python", "-m", "trading_system.cli", "health"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 20s
+    # Milestone 2 is read-only: the runtime reports connectivity and exits.
+    # An autonomous trading loop is not started, and none exists yet.
+    command: ["test", "ibkr-connection"]
