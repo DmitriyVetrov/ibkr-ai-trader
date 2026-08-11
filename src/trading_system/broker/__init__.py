@@ -1,5 +1,35 @@
 """Broker abstraction. Application code never calls a broker API directly.
 
-Implemented in Milestone 2. Empty in Milestone 1 by design: a stub that
-pretends to work is worse than an absent module.
+Import the interface and errors from here; import a concrete implementation
+only where one is actually constructed (the CLI and the broker factory).
+``trading_system.broker.ibkr`` is the only package permitted to know that IBKR
+exists.
 """
+
+from trading_system.broker.base import (
+    Broker,
+    BrokerAuthenticationError,
+    BrokerConfigurationError,
+    BrokerConnectionError,
+    BrokerError,
+    BrokerResponseError,
+    BrokerTimeoutError,
+    MarketDataUnavailableError,
+    OptionChainUnavailableError,
+    OrderSubmissionNotImplementedError,
+    ReadOnlyBrokerError,
+)
+
+__all__ = [
+    "Broker",
+    "BrokerAuthenticationError",
+    "BrokerConfigurationError",
+    "BrokerConnectionError",
+    "BrokerError",
+    "BrokerResponseError",
+    "BrokerTimeoutError",
+    "MarketDataUnavailableError",
+    "OptionChainUnavailableError",
+    "OrderSubmissionNotImplementedError",
+    "ReadOnlyBrokerError",
+]

@@ -1,0 +1,337 @@
+"""Deterministic in-process broker used by tests and dry runs.
+
+Holds a fixed account, positions, orders and executions supplied at
+construction. Nothing here touches the network, and nothing changes unless a
+test changes it, so a test that passes today passes tomorrow.
+
+The default fixture is deliberately *not* empty: an all-zero account would let
+code that mishandles positions or orders pass unnoticed.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date
+from decimal import Decimal
+
+from trading_system.broker.base import (
+    Broker,
+    BrokerConnectionError,
+    MarketDataUnavailableError,
+    OptionChainUnavailableError,
+)
+from trading_system.broker.simulator.market import (
+    SIMULATED_SOURCE,
+    simulated_option_chain,
+    simulated_quote,
+    simulated_reference_price,
+)
+from trading_system.domain.enums import (
+    BrokerConnectionState,
+    OptionRight,
+    OrderSide,
+    OrderStatus,
+    SecurityType,
+    TradingMode,
+)
+from trading_system.domain.models import (
+    BrokerAccount,
+    BrokerContract,
+    BrokerExecution,
+    BrokerHealth,
+    BrokerOrder,
+    BrokerPosition,
+    MarketDataSnapshot,
+    OptionChainSnapshot,
+)
+from trading_system.infrastructure.clock import Clock, SystemClock
+
+__all__ = ["SimulatedBroker", "SimulatedBrokerState", "default_simulated_state"]
+
+DEFAULT_ACCOUNT_ID = "DU0000000"
+
+
+@dataclass
+class SimulatedBrokerState:
+    """Everything the simulated broker will report.
+
+    Mutable so a test can arrange a scenario, but never mutated by the broker
+    itself during Milestone 2 — every operation is read-only.
+    """
+
+    account_id: str = DEFAULT_ACCOUNT_ID
+    currency: str = "EUR"
+    cash: Decimal = Decimal("100000.00")
+    net_liquidation: Decimal = Decimal("100000.00")
+    buying_power: Decimal = Decimal("400000.00")
+    available_funds: Decimal = Decimal("98000.00")
+    initial_margin: Decimal = Decimal("2000.00")
+    maintenance_margin: Decimal = Decimal("1500.00")
+    excess_liquidity: Decimal = Decimal("96500.00")
+    unrealized_pnl: Decimal = Decimal("125.00")
+    realized_pnl: Decimal = Decimal("0.00")
+
+    positions: list[BrokerPosition] = field(default_factory=list)
+    open_orders: list[BrokerOrder] = field(default_factory=list)
+    executions: list[BrokerExecution] = field(default_factory=list)
+
+    #: Symbols the simulator refuses to quote, for exercising the
+    #: "market data unavailable" path without touching a real broker.
+    unquotable_symbols: set[str] = field(default_factory=set)
+    #: Underlyings with no option chain.
+    chainless_symbols: set[str] = field(default_factory=set)
+
+
+def default_simulated_state(
+    clock: Clock, account_id: str = DEFAULT_ACCOUNT_ID
+) -> SimulatedBrokerState:
+    """A small but non-trivial portfolio: one option position and one stock."""
+    now = clock.now()
+    return SimulatedBrokerState(
+        account_id=account_id,
+        positions=[
+            BrokerPosition(
+                account_id=account_id,
+                symbol="NVDA",
+                security_type=SecurityType.OPTION,
+                as_of=now,
+                source=SIMULATED_SOURCE,
+                contract_id=100001,
+                local_symbol="NVDA  260918C00180000",
+                currency="USD",
+                multiplier=100,
+                quantity=Decimal("2"),
+                average_cost=Decimal("595.00"),
+                expiration=date(2026, 9, 18),
+                strike=Decimal("180.00"),
+                right=OptionRight.CALL,
+                market_price=Decimal("6.25"),
+                market_value=Decimal("1250.00"),
+                unrealized_pnl=Decimal("60.00"),
+                realized_pnl=Decimal("0.00"),
+            ),
+            BrokerPosition(
+                account_id=account_id,
+                symbol="SPY",
+                security_type=SecurityType.STOCK,
+                as_of=now,
+                source=SIMULATED_SOURCE,
+                contract_id=100002,
+                local_symbol="SPY",
+                currency="USD",
+                multiplier=1,
+                quantity=Decimal("10"),
+                average_cost=Decimal("500.00"),
+                market_price=Decimal("505.00"),
+                market_value=Decimal("5050.00"),
+                unrealized_pnl=Decimal("50.00"),
+                realized_pnl=Decimal("0.00"),
+            ),
+        ],
+        open_orders=[
+            BrokerOrder(
+                broker_order_id="sim-order-1",
+                account_id=account_id,
+                as_of=now,
+                source=SIMULATED_SOURCE,
+                client_order_id="1",
+                perm_id=900001,
+                contract_id=100001,
+                symbol="NVDA",
+                security_type=SecurityType.OPTION,
+                local_symbol="NVDA  260918C00180000",
+                side=OrderSide.BUY,
+                quantity=Decimal("1"),
+                order_type="LMT",
+                limit_price=Decimal("5.80"),
+                time_in_force="DAY",
+                status=OrderStatus.SUBMITTED,
+                filled_quantity=Decimal("0"),
+                remaining_quantity=Decimal("1"),
+                submitted_at=now,
+                updated_at=now,
+            )
+        ],
+        executions=[
+            BrokerExecution(
+                execution_id="sim-exec-1",
+                broker_order_id="sim-order-0",
+                account_id=account_id,
+                as_of=now,
+                source=SIMULATED_SOURCE,
+                contract_id=100001,
+                symbol="NVDA",
+                security_type=SecurityType.OPTION,
+                side=OrderSide.BUY,
+                quantity=Decimal("2"),
+                price=Decimal("5.95"),
+                executed_at=now,
+                commission=Decimal("1.30"),
+                currency="USD",
+            )
+        ],
+    )
+
+
+class SimulatedBroker(Broker):
+    """An in-process broker backed by fixed state.
+
+    Read-only by default like every other broker in the system. Order
+    submission raises ``NOT_IMPLEMENTED`` even when the read-only flag is
+    cleared, because Milestone 2 has no matching engine to route to.
+    """
+
+    def __init__(
+        self,
+        state: SimulatedBrokerState | None = None,
+        *,
+        clock: Clock | None = None,
+        trading_mode: TradingMode = TradingMode.DRY_RUN,
+        read_only: bool = True,
+        fail_to_connect: bool = False,
+    ) -> None:
+        super().__init__(trading_mode=trading_mode, read_only=read_only)
+        self._clock = clock or SystemClock()
+        self._state = state if state is not None else default_simulated_state(self._clock)
+        self._connected = False
+        self._fail_to_connect = fail_to_connect
+        self._last_communication = None if not self._connected else self._clock.now()
+
+    @property
+    def name(self) -> str:
+        return SIMULATED_SOURCE
+
+    @property
+    def state(self) -> SimulatedBrokerState:
+        return self._state
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    # --- connection --------------------------------------------------------
+    def connect(self) -> BrokerHealth:
+        if self._fail_to_connect:
+            raise BrokerConnectionError("simulated connection failure")
+        self._connected = True
+        self._last_communication = self._clock.now()
+        return self.health_check()
+
+    def disconnect(self) -> None:
+        self._connected = False
+
+    def health_check(self) -> BrokerHealth:
+        return BrokerHealth(
+            broker=self.name,
+            state=(
+                BrokerConnectionState.CONNECTED
+                if self._connected
+                else BrokerConnectionState.DISCONNECTED
+            ),
+            as_of=self._clock.now(),
+            trading_mode=self.trading_mode,
+            host="in-process",
+            port=None,
+            account_id=self._state.account_id if self._connected else None,
+            read_only=self.read_only,
+            latency_ms=0.0,
+            last_successful_communication=self._last_communication,
+        )
+
+    def _require_connection(self) -> None:
+        if not self._connected:
+            raise BrokerConnectionError(f"{self.name} is not connected")
+
+    # --- read-only state ---------------------------------------------------
+    def get_account(self) -> BrokerAccount:
+        self._require_connection()
+        s = self._state
+        return BrokerAccount(
+            account_id=s.account_id,
+            currency=s.currency,
+            as_of=self._clock.now(),
+            source=self.name,
+            cash=s.cash,
+            net_liquidation=s.net_liquidation,
+            buying_power=s.buying_power,
+            available_funds=s.available_funds,
+            initial_margin=s.initial_margin,
+            maintenance_margin=s.maintenance_margin,
+            excess_liquidity=s.excess_liquidity,
+            unrealized_pnl=s.unrealized_pnl,
+            realized_pnl=s.realized_pnl,
+        )
+
+    def get_account_summary(self) -> dict[str, str]:
+        account = self.get_account()
+        return {
+            "AccountId": account.account_id,
+            "Currency": account.currency,
+            "TotalCashValue": str(account.cash),
+            "NetLiquidation": str(account.net_liquidation),
+            "BuyingPower": str(account.buying_power),
+            "AvailableFunds": str(account.available_funds),
+            "FullInitMarginReq": str(account.initial_margin),
+            "FullMaintMarginReq": str(account.maintenance_margin),
+            "ExcessLiquidity": str(account.excess_liquidity),
+            "UnrealizedPnL": str(account.unrealized_pnl),
+            "RealizedPnL": str(account.realized_pnl),
+        }
+
+    def get_positions(self) -> list[BrokerPosition]:
+        self._require_connection()
+        return list(self._state.positions)
+
+    def get_open_orders(self) -> list[BrokerOrder]:
+        self._require_connection()
+        return list(self._state.open_orders)
+
+    def get_executions(self) -> list[BrokerExecution]:
+        self._require_connection()
+        return list(self._state.executions)
+
+    def get_contract(
+        self,
+        symbol: str,
+        security_type: SecurityType = SecurityType.STOCK,
+        *,
+        exchange: str | None = None,
+        currency: str | None = None,
+    ) -> BrokerContract:
+        self._require_connection()
+        return BrokerContract(
+            symbol=symbol.upper(),
+            security_type=security_type,
+            as_of=self._clock.now(),
+            source=self.name,
+            contract_id=abs(hash(symbol.upper())) % 1_000_000,
+            exchange=exchange or "SMART",
+            currency=currency or "USD",
+            local_symbol=symbol.upper(),
+            trading_class=symbol.upper(),
+            multiplier=100 if security_type is SecurityType.OPTION else 1,
+        )
+
+    def get_market_data(
+        self,
+        symbol: str,
+        security_type: SecurityType = SecurityType.STOCK,
+    ) -> MarketDataSnapshot:
+        self._require_connection()
+        if symbol.upper() in self._state.unquotable_symbols:
+            raise MarketDataUnavailableError(
+                f"MARKET_DATA_UNAVAILABLE: simulator has no quote for {symbol.upper()}"
+            )
+        return simulated_quote(symbol, self._clock, security_type)
+
+    def get_option_chain(self, underlying: str) -> OptionChainSnapshot:
+        self._require_connection()
+        if underlying.upper() in self._state.chainless_symbols:
+            raise OptionChainUnavailableError(
+                f"simulator has no option chain for {underlying.upper()}"
+            )
+        return simulated_option_chain(underlying, self._clock)
+
+    def reference_price(self, symbol: str) -> Decimal:
+        """Expose the deterministic reference price used by the simulated quote."""
+        return simulated_reference_price(symbol)
