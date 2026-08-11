@@ -190,6 +190,23 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
 - **`filterwarnings = ["error"]` needs an exemption for `ib_async`'s event-loop
   `DeprecationWarning`**, or every gateway-backed test dies with a misleading "There is no
   current event loop" instead of connecting.
+- **Only the first live, uncached IBKR request/response round trip on a freshly opened
+  connection is reliably answered against the validated TWS environment.** A second explicit
+  request on the same connection (confirmed with `reqCurrentTime`, reproduced at the raw-socket
+  level) can go unanswered forever even though the connection is healthy and the first request
+  worked — this held across a TWS restart, so it is not a stuck/stale-session artifact. Data
+  covered by `ib_async`'s `StartupFetchALL` handshake cache (account summary, positions, open
+  orders, fills) is unaffected, since those calls are served from the cache rather than a fresh
+  round trip. Do not assume arbitrary sequential uncached IBKR requests are reliable. Prefer, in
+  order: (1) `StartupFetchALL`/cache-backed data over a fresh request; (2) batching a connection's
+  distinct data needs into the handshake's cache rather than issuing them one by one; (3)
+  one-purpose connections — open a fresh connection per uncached live call where a second live
+  round trip on one connection can't be avoided; (4) an explicit timeout bound on every broker
+  request (`ib_async`'s sync wrappers default to `RequestTimeout = 0`, i.e. unbounded — see
+  `IBKRBroker.health_check`'s `reqCurrentTimeAsync` + `util.run(timeout=...)` pattern), so a
+  request that never answers fails safe instead of hanging the process. `IBKRBroker.connect()`
+  deliberately does not spend the connection's one reliable round trip on its own health probe —
+  see `health_check(probe_latency=False)`.
 - **Simulated data is stamped `SIMULATED`/`SIMULATOR`** on every snapshot and position. Never
   let simulated or delayed data be presented as a live broker quote, and never fall back from
   real data to a synthesized value — raise `MarketDataUnavailableError` instead.
