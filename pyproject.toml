@@ -21,12 +21,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# IBKR connectivity. Optional so the domain layer, the simulator and the whole
+# unit test suite stay runnable without the broker library installed.
+ibkr = [
+    "ib_async>=2.0",
+]
 dev = [
     "pytest>=8.3",
     "pytest-cov>=5.0",
     "ruff>=0.6",
     "mypy>=1.11",
     "types-PyYAML>=6.0",
+    "ib_async>=2.0",
 ]
 
 [project.scripts]
@@ -52,10 +58,18 @@ markers = [
     "contract: workflow-boundary schema compatibility tests",
     "integration: multi-component tests, simulated broker only",
     "ibkr: requires a reachable IB Gateway; never run by default",
+    "paper: runs against the IBKR paper account; requires ALLOW_LIVE_TESTS=true",
     "live: capable of touching a real broker account; requires ALLOW_LIVE_TESTS=true",
     "llm: requires a real Anthropic API call; never run by default",
 ]
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # ib_async calls asyncio.get_event_loop() when no loop is running, which
+    # Python deprecates. Without this the warning becomes an exception under
+    # `filterwarnings = error` and every gateway-backed test fails with a
+    # misleading "There is no current event loop" instead of connecting.
+    "ignore:There is no current event loop:DeprecationWarning",
+]
 
 # ---------------------------------------------------------------------------
 # ruff
