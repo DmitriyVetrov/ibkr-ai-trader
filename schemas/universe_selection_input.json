@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/universe_selection_input.json",
+  "title": "UniverseSelectionInput",
+  "description": "The deterministic pre-filter's output and the ONLY thing the Universe Selector agent may see. Contains underlyings with evidence already retrieved, normalised and quality-assessed by the data layer - never a raw provider payload, never a broker handle, never an option contract. Every candidate here is already deterministically eligible; the agent ranks, it does not admit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "as_of",
+    "universe_source",
+    "candidate_assets",
+    "deterministic_filter_config",
+    "data_snapshot_ids",
+    "schema_version"
+  ],
+  "properties": {
+    "run_id": { "type": "string", "minLength": 1 },
+    "as_of": {
+      "description": "The instant the universe is reconstructed for. No evidence retrieved after this instant may appear anywhere below.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "universe_source": { "$ref": "#/$defs/universe_source" },
+    "candidate_assets": {
+      "description": "Deterministically eligible underlyings. May be empty - an empty universe is a valid outcome.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/candidate_asset" }
+    },
+    "deterministic_filter_config": {
+      "description": "The filter thresholds actually applied, echoed so a stored run explains itself without consulting the config tree it ran under.",
+      "$ref": "#/$defs/filter_config"
+    },
+    "data_snapshot_ids": {
+      "description": "Every immutable data snapshot this input was derived from.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "max_selected_assets": { "type": "integer", "minimum": 0 }
+  },
+  "$defs": {
+    "universe_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "version"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "STATIC",
+            "FILE",
+            "CUSTOM",
+            "SP500",
+            "NASDAQ100",
+            "ETF_UNIVERSE",
+            "IBKR_DISCOVERED"
+          ]
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "symbol_count": { "type": "integer", "minimum": 0 },
+        "location": { "type": ["string", "null"] }
+      }
+    },
+    "candidate_asset": {
+      "description": "One underlying security. Never an option contract and never a strategy.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "symbol",
+        "security_type",
+        "currency",
+        "deterministic_eligibility",
+        "optionability",
+        "data_quality",
+        "source"
+      ],
+      "properties": {
+        "symbol": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+        "security_type": {
+          "enum": ["STOCK", "OPTION", "FUTURE", "FUTURE_OPTION", "CASH", "INDEX", "OTHER"]
+        },
+        "currency": { "type": "string", "minLength": 1 },
+        "exchange": { "type": ["string", "null"] },
+        "deterministic_eligibility": { "enum": ["ELIGIBLE", "REJECTED"] },
+        "reference_price": { "$ref": "#/$defs/nullable_money" },
+        "reference_price_field": {
+          "description": "Which quote field the reference price came from. A price whose origin is unrecorded cannot be audited.",
+          "type": ["string", "null"],
+          "enum": ["LAST", "CLOSE", "MID", "BID", "ASK", null]
+        },
+        "underlying_volume": {
+          "description": "Underlying share volume. Deliberately NOT option liquidity - that needs option-level data this milestone does not collect.",
+          "$ref": "#/$defs/nullable_money"
+        },
+        "market_data_as_of": { "type": ["string", "null"], "format": "date-time" },
+        "market_data_age_seconds": { "type": ["number", "null"], "minimum": 0 },
+        "market_data_origin": {
+          "description": "null when no quote was available. An absent origin and a SIMULATED one are different claims.",
+          "enum": [
+            "BROKER_REALTIME",
+            "BROKER_DELAYED",
+            "BROKER_FROZEN",
+            "PROVIDER_REALTIME",
+            "PROVIDER_DELAYED",
+            "HISTORICAL",
+            "CACHED",
+            "SIMULATED",
+            "UNAVAILABLE",
+            null
+          ]
+        },
+        "optionability": { "enum": ["TRUE", "FALSE", "UNKNOWN"] },
+        "option_expiration_count": { "type": ["integer", "null"], "minimum": 0 },
+        "option_strike_count": { "type": ["integer", "null"], "minimum": 0 },
+        "data_quality": { "$ref": "#/$defs/data_quality_summary" },
+        "research_usable": { "type": "boolean" },
+        "source": { "$ref": "#/$defs/provenance" }
+      }
+    },
+    "data_quality_summary": {
+      "description": "The data layer's verdict, carried through verbatim. Eight independent dimensions, because a record can be well-formed and economically impossible at once.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["research_usable", "classification"],
+      "properties": {
+        "research_usable": { "type": "boolean" },
+        "classification": { "enum": ["OK", "DEGRADED", "STALE", "UNUSABLE"] },
+        "freshness_valid": { "type": "boolean" },
+        "completeness_valid": { "type": "boolean" },
+        "plausibility_valid": { "type": "boolean" },
+        "consistency_valid": { "type": "boolean" },
+        "issues": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "provenance": {
+      "description": "Who actually produced the evidence, and when we had it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "retrieved_at"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "requested_provider": { "type": ["string", "null"] },
+        "source_tier": { "enum": ["TIER_1", "TIER_2", "TIER_3", "TIER_4", null] },
+        "retrieved_at": { "type": "string", "format": "date-time" },
+        "snapshot_ids": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "filter_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_candidates", "max_selected_assets"],
+      "properties": {
+        "allowed_security_types": { "type": "array", "items": { "type": "string" } },
+        "allowed_currencies": { "type": "array", "items": { "type": "string" } },
+        "allowed_exchanges": { "type": "array", "items": { "type": "string" } },
+        "min_price": { "$ref": "#/$defs/nullable_money" },
+        "min_average_daily_volume": { "type": ["integer", "null"], "minimum": 0 },
+        "max_data_age_seconds": { "type": ["integer", "null"], "minimum": 0 },
+        "require_research_usable": { "type": "boolean" },
+        "optionability_policy": { "enum": ["REQUIRED", "UNKNOWN_ALLOWED", "IGNORED"] },
+        "exclusions": { "type": "array", "items": { "type": "string" } },
+        "max_candidates": { "type": "integer", "minimum": 0 },
+        "max_selected_assets": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "nullable_money": {
+      "description": "Exact decimal as a string, or null for unavailable. Never a JSON number: binary floating point must not reach an accounting decision. null and 0 are different claims.",
+      "type": ["string", "null"],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][-+]?[0-9]+)?$"
+    }
+  }
+}

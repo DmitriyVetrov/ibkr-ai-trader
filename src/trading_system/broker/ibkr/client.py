@@ -110,16 +110,23 @@ class IBKRBroker(Broker):
         trading_mode: TradingMode = TradingMode.PAPER,
         read_only: bool = True,
         connect_timeout_seconds: float = 10.0,
+        request_timeout_seconds: float = 30.0,
         market_data_type: int = 3,
         clock: Clock | None = None,
     ) -> None:
         super().__init__(trading_mode=trading_mode, read_only=read_only)
         self._validate_configuration(host, port, client_id, trading_mode, read_only)
+        if request_timeout_seconds <= 0:
+            raise BrokerConfigurationError(
+                "request_timeout_seconds must be positive: an unbounded IBKR request can "
+                "hang the process forever when a round trip goes unanswered"
+            )
         self._host = host
         self._port = port
         self._client_id = client_id
         self._configured_account = account or None
         self._connect_timeout = connect_timeout_seconds
+        self._request_timeout = request_timeout_seconds
         self._market_data_type = market_data_type
         self._clock = clock or SystemClock()
 
@@ -174,6 +181,13 @@ class IBKRBroker(Broker):
         """Open a read-only connection and establish account identity."""
         ib_async = _import_ib_async()
         ib = ib_async.IB()
+        # ib_async's synchronous wrappers default to RequestTimeout = 0, which
+        # means "wait forever". Against the validated TWS environment a second
+        # uncached round trip on one connection can go unanswered indefinitely,
+        # so an unbounded wrapper is a guaranteed hang rather than a
+        # theoretical one. Bounding it turns that into a timeout we can fail
+        # safe on.
+        ib.RequestTimeout = self._request_timeout
 
         try:
             ib.connect(
@@ -378,12 +392,28 @@ class IBKRBroker(Broker):
             raise BrokerConnectionError(f"{self.name} is not connected. Call connect() first.")
         return self._ib
 
+    def _timed_out(self, what: str) -> BrokerTimeoutError:
+        """Turn an exhausted request bound into a typed, actionable failure.
+
+        Distinct from a response error on purpose: a timeout means IBKR never
+        answered, which is the documented one-live-round-trip failure mode and
+        calls for a fresh connection rather than for retrying on this one.
+        """
+        self._last_error = f"{what} timed out after {self._request_timeout}s"
+        return BrokerTimeoutError(
+            f"IBKR did not answer the {what} request within {self._request_timeout}s. "
+            f"Only the first uncached round trip on a connection is reliably answered; "
+            f"open a fresh connection for the next uncached request."
+        )
+
     # --- read-only state ---------------------------------------------------
     def get_account_summary(self) -> dict[str, str]:
         """Raw tag/value pairs exactly as IBKR reported them."""
         ib = self._require_connection()
         try:
             values = ib.accountSummary(self._account_id or "")
+        except TimeoutError as exc:
+            raise self._timed_out("account summary") from exc
         except Exception as exc:
             raise BrokerResponseError(f"could not read the account summary: {exc}") from exc
         summary = {
@@ -403,6 +433,8 @@ class IBKRBroker(Broker):
 
         try:
             values = ib.accountSummary(self._account_id)
+        except TimeoutError as exc:
+            raise self._timed_out("account summary") from exc
         except Exception as exc:
             raise BrokerResponseError(f"could not read the account summary: {exc}") from exc
 
@@ -449,6 +481,8 @@ class IBKRBroker(Broker):
             items = list(ib.portfolio(self._account_id or ""))
             if not items:
                 items = list(ib.positions(self._account_id or ""))
+        except TimeoutError as exc:
+            raise self._timed_out("positions") from exc
         except Exception as exc:
             raise BrokerResponseError(f"could not read positions: {exc}") from exc
 
@@ -463,6 +497,8 @@ class IBKRBroker(Broker):
         now = self._clock.now()
         try:
             trades = list(ib.openTrades())
+        except TimeoutError as exc:
+            raise self._timed_out("open orders") from exc
         except Exception as exc:
             raise BrokerResponseError(f"could not read open orders: {exc}") from exc
 
@@ -477,6 +513,8 @@ class IBKRBroker(Broker):
         now = self._clock.now()
         try:
             fills = list(ib.fills())
+        except TimeoutError as exc:
+            raise self._timed_out("executions") from exc
         except Exception as exc:
             raise BrokerResponseError(f"could not read executions: {exc}") from exc
 
@@ -522,6 +560,8 @@ class IBKRBroker(Broker):
 
         try:
             qualified = ib.qualifyContracts(contract)
+        except TimeoutError as exc:
+            raise self._timed_out(f"contract qualification for {symbol.upper()}") from exc
         except Exception as exc:
             raise BrokerResponseError(f"could not qualify {symbol}: {exc}") from exc
         if not qualified:
@@ -581,6 +621,8 @@ class IBKRBroker(Broker):
             tickers = ib.reqTickers(qualified[0])
         except MarketDataUnavailableError:
             raise
+        except TimeoutError as exc:
+            raise self._timed_out(f"market data for {symbol.upper()}") from exc
         except Exception as exc:
             raise MarketDataUnavailableError(
                 f"MARKET_DATA_UNAVAILABLE: IBKR rejected the market data request for "
@@ -613,6 +655,8 @@ class IBKRBroker(Broker):
 
         try:
             chains = ib.reqSecDefOptParams(underlying.upper(), "", "STK", contract.contract_id)
+        except TimeoutError as exc:
+            raise self._timed_out(f"option chain for {underlying.upper()}") from exc
         except Exception as exc:
             raise OptionChainUnavailableError(
                 f"IBKR rejected the option chain request for {underlying.upper()}: {exc}"

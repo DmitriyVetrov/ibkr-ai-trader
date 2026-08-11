@@ -150,13 +150,11 @@ def test_config_validates_and_prints() -> None:
         ["research"],
         ["opportunities"],
         ["reconcile"],
-        ["run", "universe"],
         ["run", "research"],
         ["run", "opportunities"],
         ["run", "position-monitor"],
         ["run", "thesis-monitor"],
         ["run", "reconciliation"],
-        ["run", "data-collection"],
         ["run", "end-of-day-report"],
         # The IBKR diagnostics and `test reconciliation` landed in Milestone 2;
         # they are covered by tests/broker and tests/integration.
@@ -168,8 +166,11 @@ def test_config_validates_and_prints() -> None:
         ["test", "workflow", "research"],
         ["test", "strategy-selection", "--ticker", "NVDA"],
         ["test", "contract-selection", "--ticker", "NVDA"],
-        ["data", "status"],
-        ["data", "collect"],
+        # The `data` command group and `run data-collection` landed in
+        # Milestone 3; they are covered by tests/data/test_data_cli.py.
+        # The `universe` group and `run universe` landed in Milestone 4; they
+        # are covered by tests/universe/test_cli.py, which repoints the service
+        # at tmp_path so no command touches the repository's own data/.
         ["reports", "daily"],
         ["reports", "performance"],
     ],
@@ -184,10 +185,10 @@ def test_unimplemented_commands_fail_loudly(args: list[str]) -> None:
 
 @pytest.mark.unit
 def test_unimplemented_command_names_its_milestone() -> None:
-    result = runner.invoke(app, ["run", "universe"])
+    result = runner.invoke(app, ["run", "research"])
     text = _text(result)
     assert "NOT IMPLEMENTED" in text
-    assert "Milestone 4" in text
+    assert "Milestone 5" in text
     assert "No broker connection was attempted" in text
 
 
@@ -204,6 +205,27 @@ def test_milestone_2_diagnostics_are_implemented() -> None:
         result = runner.invoke(app, args)
         assert result.exit_code == EXIT_OK, f"{args} -> {result.output}"
         assert "NOT IMPLEMENTED" not in _text(result)
+
+
+@pytest.mark.unit
+def test_milestone_4_universe_commands_are_implemented() -> None:
+    """These exited 3 before Milestone 4 and must not regress to a stub.
+
+    Only read-only commands are invoked here. `universe run` writes a run
+    record, so it is exercised in tests/universe/test_cli.py against a
+    temporary store — a unit test that wrote into the repository's own data/
+    would be a bug in the test.
+    """
+    for args in (["universe", "--help"], ["universe", "validate"]):
+        result = runner.invoke(app, args)
+        assert result.exit_code == EXIT_OK, f"{args} -> {result.output}"
+        assert "NOT IMPLEMENTED" not in _text(result)
+
+
+@pytest.mark.unit
+def test_no_cli_test_leaves_a_universe_run_in_the_repository(repo_root) -> None:
+    """A stray artifact means some test invoked a state-writing command for real."""
+    assert not (repo_root / "data" / "universe" / "history.jsonl").exists()
 
 
 @pytest.mark.unit

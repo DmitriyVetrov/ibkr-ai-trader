@@ -1,0 +1,114 @@
+{
+  "cik": 320193,
+  "entityName": "Apple Inc.",
+  "facts": {
+    "dei": {
+      "EntityCommonStockSharesOutstanding": {
+        "label": "Entity Common Stock, Shares Outstanding",
+        "units": {
+          "shares": [
+            {
+              "end": "2026-07-18",
+              "val": 14840000000,
+              "accn": "0000320193-26-000081",
+              "fy": 2026,
+              "fp": "Q3",
+              "form": "10-Q",
+              "filed": "2026-08-01"
+            }
+          ]
+        }
+      }
+    },
+    "us-gaap": {
+      "RevenueFromContractWithCustomerExcludingAssessedTax": {
+        "label": "Revenue",
+        "units": {
+          "USD": [
+            {
+              "start": "2025-03-30",
+              "end": "2025-06-28",
+              "val": 85777000000,
+              "accn": "0000320193-25-000073",
+              "fy": 2025,
+              "fp": "Q3",
+              "form": "10-Q",
+              "filed": "2025-08-01"
+            },
+            {
+              "start": "2026-03-29",
+              "end": "2026-06-27",
+              "val": 94036000000,
+              "accn": "0000320193-26-000081",
+              "fy": 2026,
+              "fp": "Q3",
+              "form": "10-Q",
+              "filed": "2026-08-01"
+            },
+            {
+              "start": "2025-09-28",
+              "end": "2026-06-27",
+              "val": 294000000000,
+              "accn": "0000320193-26-000081",
+              "fy": 2026,
+              "fp": "Q3",
+              "form": "10-Q",
+              "filed": "2026-08-01"
+            }
+          ]
+        }
+      },
+      "NetIncomeLoss": {
+        "label": "Net Income (Loss)",
+        "units": {
+          "USD": [
+            {
+              "start": "2026-03-29",
+              "end": "2026-06-27",
+              "val": 23434000000,
+              "accn": "0000320193-26-000081",
+              "fy": 2026,
+              "fp": "Q3",
+              "form": "10-Q",
+              "filed": "2026-08-01"
+            }
+          ]
+        }
+      },
+      "EarningsPerShareBasic": {
+        "label": "EPS, Basic",
+        "units": {
+          "USD/shares": [
+            {
+              "start": "2026-03-29",
+              "end": "2026-06-27",
+              "val": 1.58,
+              "accn": "0000320193-26-000081",
+              "fy": 2026,
+              "fp": "Q3",
+              "form": "10-Q",
+              "filed": "2026-08-01"
+            }
+          ]
+        }
+      },
+      "EarningsPerShareDiluted": {
+        "label": "EPS, Diluted",
+        "units": {
+          "USD/shares": [
+            {
+              "start": "2026-03-29",
+              "end": "2026-06-27",
+              "val": 1.57,
+              "accn": "0000320193-26-000081",
+              "fy": 2026,
+              "fp": "Q3",
+              "form": "10-Q",
+              "filed": "2026-08-01"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

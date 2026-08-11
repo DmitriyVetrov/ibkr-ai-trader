@@ -3,8 +3,9 @@ PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
 CLI := $(PYTHON) -m trading_system.cli
 
-.PHONY: help install test test-unit test-contract test-agents test-strategies \
-        test-allocation test-risk test-broker test-data test-integration test-e2e \
+.PHONY: help install test test-unit test-contract test-agents test-universe \
+        test-strategies test-allocation test-risk test-broker test-data \
+        test-integration test-e2e universe-validate universe-run universe-show \
         lint format typecheck check health config ibkr-connection ibkr-portfolio clean
 
 help:  ## Show this help
@@ -25,8 +26,11 @@ test-unit:  ## Deterministic unit tests
 test-contract:  ## Workflow-boundary schema compatibility tests
 	$(PYTEST) tests/contract
 
-test-agents:  ## AI agent test suites (Milestone 4+)
+test-agents:  ## AI agent test suites (Milestone 4+). Needs no API key.
 	$(PYTEST) tests/agents
+
+test-universe:  ## Universe selection: config, filters, point-in-time, snapshots
+	$(PYTEST) tests/universe
 
 test-strategies:  ## Strategy test suites (Milestone 6)
 	$(PYTEST) tests/strategies
@@ -67,6 +71,15 @@ health:  ## Report configuration, mode and schema availability
 
 config:  ## Validate and print the YAML configuration
 	$(CLI) config
+
+universe-validate:  ## Validate universe config and data readiness (Milestone 4)
+	$(CLI) universe validate
+
+universe-run:  ## Select the research universe. Submits no orders (Milestone 4)
+	$(CLI) universe run
+
+universe-show:  ## Show the current universe (Milestone 4)
+	$(CLI) universe show
 
 ibkr-connection:  ## Read-only IBKR connection test (Milestone 2)
 	$(CLI) test ibkr-connection

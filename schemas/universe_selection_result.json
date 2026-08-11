@@ -1,0 +1,609 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/universe_selection_result.json",
+  "title": "UniverseSelectionResult",
+  "description": "The immutable record of one universe run: what was considered, what survived deterministic filtering, how it was ranked, which model did the ranking, and which data snapshots it rests on. Written once and never rewritten - a later run appends a new record. This is what makes 'why was NVDA researched on 10 August and AAPL not' answerable without consulting an LLM's memory.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "snapshot_id",
+    "run_id",
+    "as_of",
+    "generated_at",
+    "status",
+    "selection_method",
+    "universe_source",
+    "deterministic_filter_config",
+    "selected_assets",
+    "rejected_assets",
+    "input_snapshot_ids",
+    "schema_version",
+    "versions"
+  ],
+  "properties": {
+    "snapshot_id": {
+      "description": "Derived from the run's content, not generated. Identical inputs and configuration produce an identical id.",
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "enum": [
+        "SUCCESS",
+        "NO_CANDIDATES",
+        "DATA_UNAVAILABLE",
+        "AI_UNAVAILABLE",
+        "AI_INVALID_OUTPUT",
+        "CONFIGURATION_ERROR"
+      ]
+    },
+    "status_detail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "selection_method": {
+      "enum": [
+        "AI_RANKED",
+        "DETERMINISTIC_ONLY"
+      ]
+    },
+    "universe_source": {
+      "$ref": "#/$defs/universe_source"
+    },
+    "deterministic_filter_config": {
+      "$ref": "#/$defs/filter_config"
+    },
+    "selected_assets": {
+      "description": "The research-ready universe, in rank order. Underlyings only. Empty is valid.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/selected_asset"
+      }
+    },
+    "rejected_assets": {
+      "description": "Everything considered and not selected, each with a machine-readable reason.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/rejected_asset"
+      }
+    },
+    "agent_metadata": {
+      "$ref": "#/$defs/agent_metadata"
+    },
+    "input_snapshot_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "counts": {
+      "$ref": "#/$defs/counts"
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "versions": {
+      "$ref": "#/$defs/system_versions"
+    }
+  },
+  "$defs": {
+    "selected_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "symbol",
+        "rank",
+        "deterministic_eligibility",
+        "reasons",
+        "data_quality"
+      ],
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "pattern": "^[A-Z0-9.\\-]+$"
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deterministic_eligibility": {
+          "enum": [
+            "ELIGIBLE",
+            "REJECTED"
+          ]
+        },
+        "selection_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100
+        },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/reason_code"
+          }
+        },
+        "confidence": {
+          "enum": [
+            "HIGH",
+            "MEDIUM",
+            "LOW"
+          ]
+        },
+        "rationale": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "optionability": {
+          "enum": [
+            "TRUE",
+            "FALSE",
+            "UNKNOWN"
+          ]
+        },
+        "reference_price": {
+          "$ref": "#/$defs/nullable_money"
+        },
+        "underlying_volume": {
+          "$ref": "#/$defs/nullable_money"
+        },
+        "data_quality": {
+          "$ref": "#/$defs/data_quality_summary"
+        },
+        "source": {
+          "$ref": "#/$defs/nullable_provenance"
+        }
+      }
+    },
+    "rejected_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "symbol",
+        "deterministic_eligibility",
+        "reason"
+      ],
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "pattern": "^[A-Z0-9.\\-]+$"
+        },
+        "deterministic_eligibility": {
+          "enum": [
+            "ELIGIBLE",
+            "REJECTED"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/rejection_reason"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "optionability": {
+          "enum": [
+            "TRUE",
+            "FALSE",
+            "UNKNOWN"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/nullable_provenance"
+        }
+      }
+    },
+    "agent_metadata": {
+      "description": "Which model produced the ranking. Null when no model was involved, which must be visible rather than inferred.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "model_provider",
+        "model_name",
+        "prompt_version",
+        "generated_at"
+      ],
+      "properties": {
+        "model_provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agent_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "latency_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "raw_response": {
+          "description": "The model's exact response, retained for auditability. The validated fields above are canonical; this is evidence, not input.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "candidates": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deterministic_pass": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deterministic_reject": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ai_input": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ai_selected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "final": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duration_seconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "universe_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "version"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "STATIC",
+            "FILE",
+            "CUSTOM",
+            "SP500",
+            "NASDAQ100",
+            "ETF_UNIVERSE",
+            "IBKR_DISCOVERED"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "symbol_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "location": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "filter_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_candidates",
+        "max_selected_assets"
+      ],
+      "properties": {
+        "allowed_security_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowed_currencies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowed_exchanges": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "min_price": {
+          "$ref": "#/$defs/nullable_money"
+        },
+        "min_average_daily_volume": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "max_data_age_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "require_research_usable": {
+          "type": "boolean"
+        },
+        "optionability_policy": {
+          "enum": [
+            "REQUIRED",
+            "UNKNOWN_ALLOWED",
+            "IGNORED"
+          ]
+        },
+        "exclusions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_candidates": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_selected_assets": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "data_quality_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "research_usable",
+        "classification"
+      ],
+      "properties": {
+        "research_usable": {
+          "type": "boolean"
+        },
+        "classification": {
+          "enum": [
+            "OK",
+            "DEGRADED",
+            "STALE",
+            "UNUSABLE"
+          ]
+        },
+        "freshness_valid": {
+          "type": "boolean"
+        },
+        "completeness_valid": {
+          "type": "boolean"
+        },
+        "plausibility_valid": {
+          "type": "boolean"
+        },
+        "consistency_valid": {
+          "type": "boolean"
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "retrieved_at"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requested_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_tier": {
+          "enum": [
+            "TIER_1",
+            "TIER_2",
+            "TIER_3",
+            "TIER_4",
+            null
+          ]
+        },
+        "retrieved_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "snapshot_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "reason_code": {
+      "enum": [
+        "HIGH_UNDERLYING_LIQUIDITY",
+        "MODERATE_UNDERLYING_LIQUIDITY",
+        "LOWER_UNDERLYING_LIQUIDITY",
+        "OPTIONS_AVAILABLE",
+        "OPTIONABILITY_NOT_ESTABLISHED",
+        "SUFFICIENT_DATA_QUALITY",
+        "FRESH_MARKET_DATA",
+        "STALE_MARKET_DATA",
+        "PRICE_IN_RANGE",
+        "LIMITED_DATA_HISTORY",
+        "UNIVERSE_SIZE_LIMIT"
+      ]
+    },
+    "rejection_reason": {
+      "enum": [
+        "EXCLUDED_BY_CONFIGURATION",
+        "DUPLICATE_SYMBOL",
+        "SECURITY_TYPE_NOT_ALLOWED",
+        "CURRENCY_NOT_ALLOWED",
+        "EXCHANGE_NOT_ALLOWED",
+        "DATA_UNAVAILABLE",
+        "DATA_NOT_RESEARCH_USABLE",
+        "DATA_STALE",
+        "PRICE_UNAVAILABLE",
+        "PRICE_BELOW_MINIMUM",
+        "VOLUME_UNAVAILABLE",
+        "VOLUME_BELOW_MINIMUM",
+        "OPTIONABILITY_FALSE",
+        "OPTIONABILITY_UNKNOWN",
+        "CANDIDATE_LIMIT_EXCEEDED",
+        "NOT_SELECTED_BY_RANKING"
+      ]
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "application_version",
+        "config_version"
+      ],
+      "properties": {
+        "application_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "config_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "strategy_spec_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "nullable_money": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][-+]?[0-9]+)?$"
+    },
+    "nullable_provenance": {
+      "description": "Provenance, or null when there was none to record - an asset excluded by configuration, or one with no stored data at all, rests on no evidence.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/provenance"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

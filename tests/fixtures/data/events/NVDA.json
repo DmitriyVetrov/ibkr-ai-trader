@@ -1,0 +1,21 @@
+[
+  {
+    "event_id": "nvda-q2-fy2027-earnings",
+    "event_type": "EARNINGS",
+    "event_time": "2026-08-27T20:20:00+00:00",
+    "announced_at": "2026-08-06T12:00:00+00:00",
+    "confirmed": true,
+    "description": "Q2 FY2027 results",
+    "url": "https://investor.nvidia.com/events/2026-08-27",
+    "detail": {"fiscal_period": "Q2 FY2027"}
+  },
+  {
+    "event_id": "nvda-investor-day-2026",
+    "event_type": "INVESTOR_DAY",
+    "event_time": "2026-10-14T14:00:00+00:00",
+    "announced_at": "2026-08-12T09:00:00+00:00",
+    "confirmed": false,
+    "description": "Announced after 2026-08-11, so invisible to earlier snapshots",
+    "url": "https://investor.nvidia.com/events/2026-10-14"
+  }
+]

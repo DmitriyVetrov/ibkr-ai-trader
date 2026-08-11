@@ -10,22 +10,28 @@ not reachable by configuration alone — see [Trading modes](#trading-modes).
 
 ## Status
 
-**Milestone 2 of 12 — broker connectivity.** What exists today:
+**Milestone 4 of 12 — universe selection.** What exists today:
 
 - domain models, enums, events and the position state machine;
-- YAML configuration for campaign, risk, schedules, sources and strategies;
-- the 11 JSON schemas for the workflow boundaries;
+- YAML configuration for campaign, risk, schedules, sources, strategies and data;
+- the 14 JSON schemas for the workflow boundaries;
 - structured logging and an injectable clock;
 - a `Broker` abstraction with a deterministic `SimulatedBroker` and a
   **read-only** `IBKRBroker` over IB Gateway;
 - read-only diagnostics for connection, portfolio, market data and option chain;
 - the reconciliation foundation — detects discrepancies, never resolves them;
+- **the data layer**: provider interfaces and free providers, canonical models,
+  an eight-dimension quality engine, immutable point-in-time snapshots, an
+  append-only historical ledger, and a repository behind an interface;
+- **universe selection**: a configurable candidate pool, a deterministic
+  eligibility pre-filter, the first AI agent, deterministic validation of what
+  it returns, and immutable append-only universe runs;
 - the CLI surface, with every command tagged read-only or state-mutating.
 
-What deliberately does **not** exist yet: market/news data providers, AI
-agents, order execution, autonomous trading and any form of live trading.
-Commands covering those exist in the CLI but exit `3` naming the milestone that
-delivers them. They never fabricate output.
+What deliberately does **not** exist yet: research reasoning, strategy
+selection, contract selection, allocation, order execution, autonomous trading
+and any form of live trading. Commands covering those exist in the CLI but exit
+`3` naming the milestone that delivers them. They never fabricate output.
 
 **No code path in this repository can submit an order.** See
 [Safety properties](#safety-properties).
@@ -81,6 +87,110 @@ with no gateway. Each prints its access level (`READ-ONLY / PAPER` or
 `READ-ONLY / SIMULATED`) and ends with `Orders submitted: 0`, read off the
 broker rather than hard-coded. They exit `0` on success and `1` on failure —
 never a fabricated success.
+
+### Data layer
+
+```bash
+python -m trading_system.cli data providers                 # tier, cost, availability
+python -m trading_system.cli data collect --symbol SPY      # store a quote snapshot
+python -m trading_system.cli data collect-options --symbol SPY
+python -m trading_system.cli data snapshot --symbol SPY
+python -m trading_system.cli data snapshot --symbol SPY --as-of 2026-08-10T14:30:00+00:00
+python -m trading_system.cli data quality --symbol SPY
+python -m trading_system.cli data history --symbol SPY
+python -m trading_system.cli data status
+python -m trading_system.cli run data-collection            # the scheduled job, once
+```
+
+Every one is read-only with respect to the broker and reports what the data
+*is* — `REAL`, `CACHED`, `HISTORICAL`, `SIMULATED` or `UNAVAILABLE` — not
+merely whether the command succeeded. `--simulated` runs any of them offline.
+
+See [data/README.md](data/README.md) for the storage layout, the quality model
+and how to inspect a stored snapshot.
+
+### Universe selection
+
+```bash
+python -m trading_system.cli universe validate            # config + data readiness
+python -m trading_system.cli universe run --dry-run       # full pipeline, persists nothing
+python -m trading_system.cli universe run
+python -m trading_system.cli universe run --as-of 2026-08-10T14:30:00+00:00
+python -m trading_system.cli universe show
+python -m trading_system.cli universe history
+python -m trading_system.cli universe explain --run-id <ID> --symbol SPY
+```
+
+Every one is read-only with respect to the broker and reports
+`Orders submitted: 0`. The universe layer constructs no broker at all, so that
+is structural rather than a check performed at the end.
+
+`universe run` reads stored data only — it never collects and never connects —
+so run `data collect` first if the store is empty. It reports
+`DATA_UNAVAILABLE` rather than inventing candidates.
+
+## Data architecture
+
+```
+PROVIDERS      retrieve, and say honestly who they are
+    |
+RAW            preserved verbatim, never edited - the evidence
+    |
+NORMALIZATION  canonical shape, provenance attached, values untouched
+    |
+QUALITY        eight independent dimensions; flags, never fixes
+    |
+SNAPSHOT       immutable, hashed, version-stamped, point-in-time
+    |
+HISTORICAL     append-only ledger; accumulates, never overwrites
+    |
+REPOSITORY     the only interface consumers see
+```
+
+## Universe selection
+
+```
+CONFIGURED SOURCE       explicit and versioned; index lists are not approximated
+    |
+POINT-IN-TIME EVIDENCE  DataRepository only - no provider, no broker
+    |
+DETERMINISTIC FILTER    decides eligibility; nothing above reverses it
+    |
+AGENT INPUT CONTRACT    structurally cannot carry a rejected asset
+    |
+UNIVERSE SELECTOR       ranks; cannot admit, cannot exceed the size cap
+    |
+DETERMINISTIC VALIDATION rejects a violating response in full, never repairs
+    |
+IMMUTABLE RUN           appended, never overwritten
+```
+
+The output is a list of **underlyings** — never option contracts, never a
+strategy, never a direction, never an amount of money. Five rules do the work:
+
+- a deterministic exclusion is final — no ranking can restore it;
+- a violating model response is rejected whole, never partially accepted;
+- an unreachable or unusable model fails closed and selects nothing, unless a
+  deterministic ordering is explicitly configured (and then it is stamped as one);
+- `UNKNOWN` optionability is never read as `TRUE` or as `FALSE`;
+- underlying share volume is not option liquidity, and nothing claims otherwise.
+
+Providers shipped, all free, none required to be paid:
+
+| Provider         | Data                        | Cost                | Status                             |
+| ---------------- | --------------------------- | ------------------- | ---------------------------------- |
+| `IBKR`           | quotes, option chains       | free with account   | implemented, paper-validated       |
+| `SEC_EDGAR`      | filing metadata             | free                | implemented, validated live        |
+| `SEC_XBRL`       | reported fundamentals       | free                | implemented, validated live        |
+| `FIXTURE_NEWS`   | news articles               | free                | interface + replay; live deferred  |
+| `FIXTURE_EVENTS` | corporate events            | free                | interface + replay; live deferred  |
+| `SIMULATOR`      | synthetic quotes and chains | free                | offline runs and tests             |
+
+Three rules do most of the work:
+
+- an unavailable value is `None`, never `0`;
+- a suspicious value is preserved and flagged, never corrected;
+- a record is invisible to any reconstruction of a time before we retrieved it.
 
 ## IBKR architecture
 
@@ -177,6 +287,9 @@ credentials.
 make test              # whole suite
 make test-unit         # deterministic unit tests
 make test-broker       # broker abstraction, simulator, IBKR adapter
+make test-data         # providers, quality, point-in-time, storage
+make test-universe     # filters, point-in-time, snapshots, reproducibility, CLI
+make test-agents       # AI agent contract tests; needs no API key
 make test-contract     # workflow-boundary schema compatibility
 make test-integration  # multi-component, simulated broker
 pytest tests/unit/test_state_machine.py            # one file
@@ -189,7 +302,9 @@ make lint typecheck    # ruff + mypy
 `paper`) and are skipped unless unlocked:
 
 ```bash
-ALLOW_LIVE_TESTS=true pytest -m ibkr     # requires a running gateway
+ALLOW_LIVE_TESTS=true pytest -m ibkr            # requires a running gateway
+ALLOW_LIVE_TESTS=true pytest -m ibkr tests/data # data layer against IBKR Paper
+ALLOW_LIVE_TESTS=true pytest -m llm             # one real model call; places no trades
 ```
 
 Those tests are read-only and assert `orders_submitted == 0`. They fail loudly
@@ -213,8 +328,22 @@ Enforced in code and covered by tests, not left to convention:
 - **No invented data.** Missing broker values stay `None`, never zero.
   Unavailable quotes raise `MARKET_DATA_UNAVAILABLE` rather than returning a
   price. Simulated data is stamped `SIMULATED` and cannot be read as live.
+- **No invented history.** A suspicious value is preserved and flagged, never
+  corrected. A snapshot is immutable and hash-verified on read. A record is
+  invisible to any reconstruction of a time before it was retrieved.
+- **Bounded broker requests.** Every IBKR request carries a timeout;
+  `ib_async`'s default is to wait forever, and only the first uncached round
+  trip per connection is reliably answered. Data retrievals open one
+  short-lived connection each.
 - **The broker is authoritative.** Reconciliation reports discrepancies and
   blocks new executions; it never resolves them or trades to correct them.
+- **The AI cannot widen its own remit.** The universe agent is handed a
+  validated contract that cannot express a rejected asset, and everything it
+  returns is checked against that contract before storage. It has no field for
+  a strike, a direction or an allocation, and no reason code for one either.
+- **An AI failure is never a silent success.** An unreachable model, a refusal,
+  a truncated generation, malformed JSON or a fabricated justification each end
+  the run with a named status and an empty universe.
 - monetary fields reject binary floats; naive datetimes are rejected; illegal
   state transitions raise; an `APPROVED` risk decision cannot carry a rejection
   reason; `NO_TRADE` is valid at every stage; the allocator's books must
@@ -239,8 +368,10 @@ Two separate concerns, deliberately split:
 
 - **`.env`** — secrets and deployment switches. Never committed.
 - **`config/*.yaml`** — trading policy: campaign budget, risk limits, schedules,
-  source trust tiers, strategy definitions. Committed and reviewable, so a
-  change to a risk limit shows up in a diff.
+  source trust tiers, strategy definitions, the data layer's freshness windows,
+  plausibility bounds, research-usability policy and market calendar, and the
+  universe's candidate pool, eligibility filters and ranking policy. Committed
+  and reviewable, so a change to a risk limit shows up in a diff.
 
 Monetary values in YAML are quoted strings or integers (`"0.50"`, `5000`) so
 they parse as exact decimals. An unquoted `0.50` is a binary float and is
@@ -253,7 +384,10 @@ config/            trading policy (committed, reviewable)
 schemas/           JSON Schema for each workflow boundary
 src/
   broker/          Broker abstraction, simulator, IBKR adapter
+  data/            providers, normalizers, quality, snapshots, repository
   domain/          models, enums, events, state machine (pure, no I/O)
+  universe/        candidate pool, pre-filter, ranking, immutable runs
+  agents/          LLM agents and their shipped prompts
   infrastructure/  settings, config loading, logging, clock
 data/              market data, snapshots and caches (contents git-ignored)
 trades/            immutable per-trade artifact directories (contents git-ignored)

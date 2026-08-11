@@ -1,0 +1,208 @@
+# Data layer policy (Milestone 3).
+#
+# Everything the data layer treats as a judgement call lives here rather than
+# as a constant in code: freshness windows, plausibility bounds, what makes a
+# record usable for research, and which days the market is actually open.
+#
+# Monetary and price values are quoted strings or integers so they parse as
+# exact decimals. An unquoted 0.50 is a binary float and is rejected.
+config_version: "2026.08.11-1"
+
+# ---------------------------------------------------------------------------
+# What to collect.
+#
+# A hand-maintained watchlist until Milestone 4 delivers universe selection.
+# The data layer must be able to accumulate history before there is an agent
+# to decide what is interesting.
+# ---------------------------------------------------------------------------
+collection:
+  symbols:
+    - SPY
+    - QQQ
+  option_chain_symbols:
+    - SPY
+  # A single snapshot larger than this is refused rather than silently
+  # truncated: a truncated option chain that looks complete is worse than a
+  # failed collection.
+  max_records_per_snapshot: 20000
+
+# ---------------------------------------------------------------------------
+# Freshness (Milestone 3 brief section 21).
+#
+# There is deliberately no single global threshold. A realtime quote goes stale
+# in seconds; a daily bar is still perfectly good the next morning; a 10-K is
+# good for a quarter.
+#
+# Resolution rule: the applicable window is the SMALLEST of the configured
+# data-type window and the configured origin window. If neither is configured,
+# default_seconds applies. Origins that are inherently not a live observation
+# (HISTORICAL, CACHED, SIMULATED) have no origin entry, so their data-type
+# window governs.
+#
+# Freshness is reported, not enforced: the consumer decides whether a record is
+# fresh enough for its purpose.
+# ---------------------------------------------------------------------------
+freshness:
+  default_seconds: 3600
+
+  by_data_type:
+    MARKET_QUOTE: 300
+    MARKET_BAR: 129600 # 36h - a daily bar survives a weekend morning
+    OPTION_CHAIN: 86400
+    OPTION_QUOTE: 300
+    OPTION_SNAPSHOT: 900
+    NEWS_ARTICLE: 86400
+    CORPORATE_EVENT: 604800 # 7d
+    FUNDAMENTAL_SNAPSHOT: 7776000 # 90d - one reporting quarter
+    REGULATORY_EVENT: 604800
+
+  by_origin:
+    BROKER_REALTIME: 60
+    PROVIDER_REALTIME: 60
+    BROKER_DELAYED: 1800
+    PROVIDER_DELAYED: 1800
+    BROKER_FROZEN: 86400
+
+# ---------------------------------------------------------------------------
+# Plausibility (Milestone 3 brief sections 19 and 2.3).
+#
+# These bounds exist to catch a corrupted or nonsensical feed, NOT to judge
+# whether an instrument is liquid enough to trade — that is the risk engine's
+# job, against config/risk.yaml. Set them far outside any real market value so
+# that a flag means "this number cannot be true", not "I dislike this number".
+#
+# A flagged value is preserved exactly as received and marked; it is never
+# corrected, smoothed or replaced.
+# ---------------------------------------------------------------------------
+plausibility:
+  min_price: "0.001"
+  max_price: "1000000"
+  # A quoted spread wider than this is treated as a broken quote rather than a
+  # wide market. The tradeable-spread limit is max_bid_ask_spread_pct in
+  # risk.yaml and is much tighter.
+  max_spread_pct: 80.0
+
+  # No single US equity session has ever traded anything close to this many
+  # shares. Real IBKR paper validation returned an SPY volume that could not be
+  # a real session volume, which is what this bound is for.
+  max_equity_daily_volume: 10000000000
+  max_option_contract_volume: 50000000
+  max_open_interest: 100000000
+
+  min_implied_volatility: 0.0
+  # 1000% annualised. Genuinely observed on distressed single names; anything
+  # above it is a feed artefact.
+  max_implied_volatility: 10.0
+  max_abs_delta: 1.0
+
+  max_strike: "1000000"
+  # Unlisted multipliers are flagged, not rejected: a new product with an
+  # unusual multiplier should surface for review, not vanish.
+  allowed_multipliers: [1, 10, 100, 1000]
+  # Roughly four years. LEAPS reach three; beyond this the expiry is suspect.
+  max_expiration_horizon_days: 1500
+
+# ---------------------------------------------------------------------------
+# Research usability (Milestone 3 brief section 50).
+#
+# Technical validity and research usability are different questions. A record
+# may be perfectly well-formed and still unfit to reason from.
+#
+# require_freshness is false on purpose: staleness is contextual, and section
+# 21 puts that decision with the consumer. A stale record stays research-usable
+# and carries freshness_valid=false so the consumer can filter on it.
+# ---------------------------------------------------------------------------
+research_usability:
+  require_transport: true
+  require_schema: true
+  require_source: true
+  require_timestamp: true
+  require_completeness: true
+  require_plausibility: true
+  require_consistency: true
+  require_freshness: false
+
+# ---------------------------------------------------------------------------
+# Market calendar (Milestone 3 brief section 35).
+#
+# Weekends are not the whole story and "Monday-Friday is open" is wrong about
+# ten days a year. Holidays and early closes are listed explicitly for the
+# years we have verified; outside covered_years the calendar reports that it
+# does not know rather than guessing.
+# ---------------------------------------------------------------------------
+#
+# Source: the NYSE holiday and early-closings calendar published at
+# https://www.nyse.com/markets/hours-calendars. Transcribed, not derived — the
+# observance rules have edge cases (a Saturday holiday moves to the preceding
+# Friday, a Sunday holiday to the following Monday) and the early-close list
+# does not follow from them at all. Add a year only after reading it off the
+# exchange; until then the calendar answers UNKNOWN, which is usable.
+market_calendar:
+  exchange: XNYS
+  timezone: America/New_York
+  regular_open: "09:30"
+  regular_close: "16:00"
+  early_close_time: "13:00"
+  covered_years: [2026, 2027]
+
+  holidays:
+    - "2026-01-01" # New Year's Day
+    - "2026-01-19" # Martin Luther King Jr. Day
+    - "2026-02-16" # Washington's Birthday
+    - "2026-04-03" # Good Friday
+    - "2026-05-25" # Memorial Day
+    - "2026-06-19" # Juneteenth
+    - "2026-07-03" # Independence Day (observed; 4 July falls on a Saturday)
+    - "2026-09-07" # Labor Day
+    - "2026-11-26" # Thanksgiving
+    - "2026-12-25" # Christmas Day
+
+    - "2027-01-01" # New Year's Day
+    - "2027-01-18" # Martin Luther King Jr. Day
+    - "2027-02-15" # Washington's Birthday
+    - "2027-03-26" # Good Friday
+    - "2027-05-31" # Memorial Day
+    - "2027-06-18" # Juneteenth (observed; 19 June falls on a Saturday)
+    - "2027-07-05" # Independence Day (observed; 4 July falls on a Sunday)
+    - "2027-09-06" # Labor Day
+    - "2027-11-25" # Thanksgiving
+    - "2027-12-24" # Christmas Day (observed; 25 December falls on a Saturday)
+
+  early_closes:
+    - "2026-11-27" # day after Thanksgiving
+    - "2026-12-24" # Christmas Eve
+
+    - "2027-11-26" # day after Thanksgiving
+    # 2027 has no Christmas Eve early close: 24 December is itself the observed
+    # Christmas holiday, so the market is fully closed rather than closing at
+    # 13:00. Nor is there a 3 July early close — it falls on a Saturday.
+
+# ---------------------------------------------------------------------------
+# Storage. Filesystem today; the repository interface allows SQLite or
+# PostgreSQL later without touching a consumer.
+# ---------------------------------------------------------------------------
+storage:
+  root: data
+
+# ---------------------------------------------------------------------------
+# Cache. Never authoritative, always regenerable, never mixed with snapshots.
+# Anything served from here is relabelled CACHED and can never be presented as
+# a live quote.
+# ---------------------------------------------------------------------------
+cache:
+  enabled: true
+  default_ttl_seconds: 300
+
+# ---------------------------------------------------------------------------
+# Providers.
+#
+# No paid provider is configured or required. Free sources only.
+# ---------------------------------------------------------------------------
+providers:
+  http_timeout_seconds: 15.0
+  # The SEC requires a descriptive User-Agent with contact details on every
+  # request and rate-limits or blocks requests without one. Not a secret.
+  sec_user_agent: "trading-system/0.1 (research; set SEC contact in config/data.yaml)"
+  sec_base_url: "https://data.sec.gov"
+  # The bound on broker-backed requests is IBKR_REQUEST_TIMEOUT_SECONDS in the
+  # environment, alongside the other connection settings — one place, not two.

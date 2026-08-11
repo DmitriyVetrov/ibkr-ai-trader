@@ -183,7 +183,53 @@ def test_selection_is_deterministic_without_the_preferred_exchange() -> None:
     ]
     first = to_option_chain_snapshot(rows, "SPY", BROKER_NOW)
     second = to_option_chain_snapshot(list(reversed(rows)), "SPY", BROKER_NOW)
-    assert first.exchange == second.exchange == "CBOE"
+    assert first.exchange == second.exchange
+
+
+@pytest.mark.unit
+def test_the_widest_row_wins_when_one_exchange_appears_twice() -> None:
+    """The real SPY response, reduced to the case that matters.
+
+    Paper validation returned two SMART rows: ``SMART/SPY`` with 35
+    expirations and 491 strikes, and ``SMART/2SPY`` with 3 and 3. Taking
+    whichever SMART row IBKR happened to send first stored 3 of 491 strikes and
+    said nothing about it.
+    """
+    sparse = make_option_chain_row(
+        exchange="SMART",
+        expirations=["20260904", "20260911", "20260916"],
+        strikes=[668.0, 672.0, 682.0],
+    )
+    sparse.tradingClass = "2SPY"
+    full = make_option_chain_row(
+        exchange="SMART",
+        expirations=[f"2026{month:02d}18" for month in range(1, 13)],
+        strikes=[float(strike) for strike in range(400, 900, 5)],
+    )
+    full.tradingClass = "SPY"
+
+    for ordering in ([sparse, full], [full, sparse]):
+        chain = to_option_chain_snapshot(ordering, "SPY", BROKER_NOW)
+
+        assert chain.trading_class == "SPY"
+        assert len(chain.strikes) == 100
+        assert len(chain.expirations) == 12
+
+
+@pytest.mark.unit
+def test_an_unusual_trading_class_is_still_carried_through() -> None:
+    """``2SPY`` is a real class, and whatever the broker says is what we store.
+
+    The rule from validation is that the trading class cannot be derived from
+    the symbol — not that it is always ``2SPY``.
+    """
+    row = make_option_chain_row(exchange="SMART", strikes=[668.0])
+    row.tradingClass = "2SPY"
+
+    chain = to_option_chain_snapshot([row], "SPY", BROKER_NOW)
+
+    assert chain.trading_class == "2SPY"
+    assert chain.underlying == "SPY"
 
 
 @pytest.mark.unit

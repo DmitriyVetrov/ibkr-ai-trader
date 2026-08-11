@@ -40,6 +40,8 @@ data/normalized/*
 data/cache/*
 data/historical/*
 data/snapshots/*
+# Universe runs: an append-only local research record, not source code.
+data/universe/*
 trades/open/*
 trades/closed/*
 trades/rejected/*

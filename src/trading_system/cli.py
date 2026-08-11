@@ -20,7 +20,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.console import Console
@@ -37,6 +37,14 @@ from trading_system.infrastructure.settings import (
     load_config,
     project_root,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from datetime import datetime
+
+    from trading_system.data.collectors import CollectionReport
+    from trading_system.data.service import DataService
+    from trading_system.domain.enums import DataType
+    from trading_system.universe.service import UniverseSelectionService
 
 __all__ = ["app", "main"]
 
@@ -71,6 +79,13 @@ data_app = typer.Typer(
     help="Inspect and collect market/research data.",
     no_args_is_help=True,
 )
+universe_app = typer.Typer(
+    help=(
+        "Select and inspect the research universe. Every command here is "
+        "read-only with respect to the broker and submits zero orders."
+    ),
+    no_args_is_help=True,
+)
 reports_app = typer.Typer(
     help="Generate and inspect reports. (read-only)",
     no_args_is_help=True,
@@ -79,6 +94,7 @@ reports_app = typer.Typer(
 app.add_typer(run_app, name="run")
 app.add_typer(test_app, name="test")
 app.add_typer(data_app, name="data")
+app.add_typer(universe_app, name="universe")
 app.add_typer(reports_app, name="reports")
 
 
@@ -325,9 +341,23 @@ def reconcile() -> None:
 # run  — one scheduled job, once
 # ---------------------------------------------------------------------------
 @run_app.command("universe")
-def run_universe() -> None:
-    """Rebuild the candidate universe. (mutates state)"""
-    _not_implemented("universe selection", "Milestone 4 (universe)")
+def run_universe(
+    as_of: Annotated[
+        str | None,
+        typer.Option("--as-of", help="ISO-8601 instant; rebuild the universe as it was then."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Run everything but do not persist the result."),
+    ] = False,
+) -> None:
+    """Rebuild the candidate universe. (writes a universe run; submits no orders)
+
+    Runs the ``universe_refresh`` job from ``config/schedules.yaml`` once. It
+    reads stored data only — no broker connection is opened and no data is
+    collected, so run ``data collect`` first if the store is empty.
+    """
+    _universe_run(as_of=as_of, dry_run=dry_run)
 
 
 @run_app.command("research")
@@ -361,9 +391,29 @@ def run_reconciliation() -> None:
 
 
 @run_app.command("data-collection")
-def run_data_collection() -> None:
-    """Collect and persist market/option snapshots. (mutates state)"""
-    _not_implemented("data collection", "Milestone 3 (data layer)")
+def run_data_collection(simulated: SimulatedOption = False) -> None:
+    """Collect and persist market/option snapshots. (collects data; submits no orders)
+
+    Runs the ``data_collection`` job from ``config/schedules.yaml`` once, over
+    the symbols configured in ``config/data.yaml``. Each data type is collected
+    independently, so one provider being down does not stop the others from
+    accumulating history.
+    """
+    service = _data_service(simulated)
+    symbols = service.configured_symbols()
+    if not symbols:
+        console.print("[yellow]No symbols are configured in config/data.yaml.[/yellow]")
+        return
+
+    failures = 0
+    for symbol in symbols:
+        for report in service.collect_all(symbol):
+            _print_collection(report)
+            failures += 0 if report.succeeded else 1
+
+    if failures:
+        _fail(f"{failures} collection(s) failed; existing history was not modified")
+    console.print("[green]PASS[/green]  Collection complete. No orders were submitted.")
 
 
 @run_app.command("end-of-day-report")
@@ -629,17 +679,609 @@ def test_e2e_paper() -> None:
 
 # ---------------------------------------------------------------------------
 # data
+#
+# Every command here is read-only with respect to the broker: they retrieve and
+# they write to local storage, and none of them can reach an order path. The
+# broker connections they open are read-only, and each run reports the orders
+# it submitted, which is always zero.
 # ---------------------------------------------------------------------------
-@data_app.command("status")
-def data_status() -> None:
-    """Summarise what data has been collected so far. (read-only)"""
-    _not_implemented("data status", "Milestone 3 (data layer)")
+def _data_service(simulated: bool) -> DataService:
+    """Build the data layer from configuration, or fail with a diagnostic."""
+    from trading_system.data.service import DataService
+
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        err_console.print(f"[red]CONFIGURATION ERROR[/red]\n{exc}")
+        raise typer.Exit(code=EXIT_ERROR) from exc
+    return DataService(settings=settings, config=config, simulated=simulated)
+
+
+def _print_collection(report: CollectionReport) -> None:
+    """Print one collection result, leading with what the data actually is."""
+    status_styles = {
+        "REAL": "green",
+        "SIMULATED": "yellow",
+        "CACHED": "cyan",
+        "HISTORICAL": "cyan",
+        "UNAVAILABLE": "red",
+    }
+    status = report.display_status
+    style = status_styles.get(status, "white")
+    console.print(
+        f"[{style}]{status:<12}[/{style}] {report.data_type.value:<20} "
+        f"{report.key:<8} provider={report.provider}"
+    )
+    console.print(
+        f"             outcome={report.outcome.value} records={report.records_normalized} "
+        f"snapshots_created={report.snapshots_created} "
+        f"duration={report.duration_seconds:.2f}s"
+    )
+    if report.research_usable is not None:
+        style = "green" if report.research_usable else "yellow"
+        console.print(f"             research_usable=[{style}]{report.research_usable}[/{style}]")
+    if report.quality_issues:
+        console.print(
+            f"             quality_issues={', '.join(i.value for i in report.quality_issues)}"
+        )
+    if report.error:
+        console.print(f"             [red]error[/red]={report.error}")
+
+
+@data_app.command("providers")
+def data_providers(simulated: SimulatedOption = False) -> None:
+    """List registered data providers and their tier, cost and availability. (read-only)"""
+    service = _data_service(simulated)
+    descriptions = service.providers()
+
+    table = Table(title="Data providers", show_header=True, header_style="bold")
+    for column in ("Provider", "Tier", "Cost", "Origin", "Data types", "Availability"):
+        table.add_column(column)
+    for description in descriptions:
+        cost_style = "red" if description.cost.value == "PAID" else "green"
+        table.add_row(
+            description.provider_id,
+            description.tier.value,
+            f"[{cost_style}]{description.cost.value}[/{cost_style}]",
+            description.origin.value,
+            ", ".join(sorted(t.value for t in description.data_types)),
+            description.availability.value,
+        )
+    console.print(table)
+
+    paid = [d.provider_id for d in descriptions if d.cost.value == "PAID"]
+    if paid:
+        _fail(f"paid providers are configured: {', '.join(paid)}")
+    console.print("[green]No paid data provider is configured or required.[/green]")
 
 
 @data_app.command("collect")
-def data_collect() -> None:
-    """Collect a data snapshot now. (mutates state)"""
-    _not_implemented("data collection", "Milestone 3 (data layer)")
+def data_collect(
+    symbol: SymbolOption = "SPY",
+    simulated: SimulatedOption = False,
+) -> None:
+    """Collect a market quote snapshot. (collects data; submits no orders)"""
+    service = _data_service(simulated)
+    report = service.collect_quote(symbol)
+    _print_collection(report)
+    if not report.succeeded:
+        _fail(f"collection failed: {report.error}")
+    console.print("[green]PASS[/green]  Snapshot stored. No orders were submitted.")
+
+
+@data_app.command("collect-options")
+def data_collect_options(
+    symbol: SymbolOption = "SPY",
+    simulated: SimulatedOption = False,
+    quotes: Annotated[
+        bool,
+        typer.Option("--quotes", help="Also collect per-contract option quotes where available."),
+    ] = False,
+) -> None:
+    """Collect an option chain snapshot. Selects no contract. (collects data)"""
+    service = _data_service(simulated)
+    reports = [service.collect_option_chain(symbol)]
+    if quotes:
+        reports.append(service.collect_option_quotes(symbol))
+    for report in reports:
+        _print_collection(report)
+    if not reports[0].succeeded:
+        _fail(f"collection failed: {reports[0].error}")
+    console.print("[green]PASS[/green]  Chain stored. No contract was selected.")
+
+
+@data_app.command("snapshot")
+def data_snapshot(
+    symbol: SymbolOption = "SPY",
+    data_type: Annotated[
+        str, typer.Option("--type", help="Data type, e.g. MARKET_QUOTE or OPTION_CHAIN.")
+    ] = "MARKET_QUOTE",
+    as_of: Annotated[
+        str | None,
+        typer.Option("--as-of", help="ISO-8601 instant; shows what was known then."),
+    ] = None,
+    simulated: SimulatedOption = False,
+) -> None:
+    """Show a stored snapshot, optionally as of a past instant. (read-only)
+
+    With ``--as-of`` this answers "what did the system know at time T", using
+    only records that had actually been retrieved by then.
+    """
+    service = _data_service(simulated)
+    kind = _parse_data_type(data_type)
+
+    if as_of is None:
+        snapshot = service.latest(kind, symbol)
+        label = "latest"
+    else:
+        snapshot = service.as_of(kind, symbol, _parse_instant(as_of))
+        label = f"as of {as_of}"
+
+    if snapshot is None:
+        console.print(
+            f"[yellow]UNAVAILABLE[/yellow]  no {kind.value} snapshot for "
+            f"{symbol.upper()} ({label})."
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print(f"\n[bold]SNAPSHOT[/bold] ({label})")
+    console.print(f"Snapshot id : {snapshot.snapshot_id}")
+    console.print(f"Data type   : {snapshot.data_type.value}")
+    console.print(f"Key         : {snapshot.key}")
+    console.print(f"Provider    : {snapshot.provider} (tier {snapshot.source_tier.value})")
+    console.print(f"Data origin : {snapshot.data_origin.value}")
+    console.print(f"As of       : {snapshot.as_of.isoformat()}")
+    console.print(f"Retrieved   : {snapshot.retrieved_at.isoformat()}")
+    console.print(f"Schema      : {snapshot.schema_version} / app {snapshot.application_version}")
+    console.print(f"Payload hash: {snapshot.payload_hash}")
+    console.print(f"Records     : {snapshot.record_count}")
+    console.print(f"Research use: {snapshot.data_quality.research_usable}")
+
+
+@data_app.command("quality")
+def data_quality(
+    symbol: SymbolOption = "SPY",
+    data_type: Annotated[
+        str, typer.Option("--type", help="Data type to inspect.")
+    ] = "MARKET_QUOTE",
+    simulated: SimulatedOption = False,
+) -> None:
+    """Show the quality verdict on the latest stored snapshot. (read-only)"""
+    service = _data_service(simulated)
+    kind = _parse_data_type(data_type)
+    snapshot = service.latest(kind, symbol)
+    if snapshot is None:
+        console.print(
+            f"[yellow]UNAVAILABLE[/yellow]  no {kind.value} snapshot for {symbol.upper()}. "
+            f"Run 'data collect --symbol {symbol.upper()}' first."
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    report = snapshot.data_quality
+    table = Table(title=f"Data quality — {symbol.upper()} {kind.value}", show_header=True)
+    table.add_column("Dimension")
+    table.add_column("Valid")
+    for name, value in (
+        ("transport", report.transport_valid),
+        ("schema", report.schema_valid),
+        ("source", report.source_valid),
+        ("timestamp", report.timestamp_valid),
+        ("freshness", report.freshness_valid),
+        ("completeness", report.completeness_valid),
+        ("plausibility", report.plausibility_valid),
+        ("consistency", report.consistency_valid),
+    ):
+        table.add_row(
+            name, f"[{'green' if value else 'red'}]{value}[/{'green' if value else 'red'}]"
+        )
+    table.add_row(
+        "[bold]research_usable[/bold]",
+        f"[{'green' if report.research_usable else 'yellow'}]{report.research_usable}"
+        f"[/{'green' if report.research_usable else 'yellow'}]",
+    )
+    console.print(table)
+    console.print(f"Classification: {report.classification.value}")
+    if report.issues:
+        console.print("\nIssues:")
+        for issue in report.issues:
+            console.print(f"  - {issue.value}")
+        for detail in report.details[:20]:
+            console.print(f"    {detail}")
+        console.print(
+            "\n[yellow]Flagged values are preserved exactly as received.[/yellow] "
+            "Nothing was corrected, smoothed or dropped."
+        )
+
+
+@data_app.command("history")
+def data_history(
+    symbol: SymbolOption = "SPY",
+    data_type: Annotated[
+        str, typer.Option("--type", help="Data type to inspect.")
+    ] = "MARKET_QUOTE",
+    limit: Annotated[int, typer.Option("--limit", help="Maximum ledger entries to show.")] = 20,
+    simulated: SimulatedOption = False,
+) -> None:
+    """Show the append-only collection history for a symbol. (read-only)"""
+    service = _data_service(simulated)
+    kind = _parse_data_type(data_type)
+    entries = service.history(kind, symbol)
+    if not entries:
+        console.print(
+            f"[yellow]UNAVAILABLE[/yellow]  no collection history for {symbol.upper()} "
+            f"{kind.value}."
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    table = Table(title=f"History — {symbol.upper()} {kind.value}", show_header=True)
+    for column in ("Recorded", "Event", "Provider", "As of", "Records", "Usable", "Detail"):
+        table.add_column(column)
+    for entry in entries[-limit:]:
+        table.add_row(
+            entry.recorded_at.isoformat(timespec="seconds"),
+            entry.event,
+            entry.provider,
+            entry.as_of.isoformat(timespec="seconds") if entry.as_of else "-",
+            str(entry.record_count if entry.record_count is not None else "-"),
+            "-" if entry.research_usable is None else str(entry.research_usable),
+            (entry.outcome or entry.detail or "")[:60],
+        )
+    console.print(table)
+    console.print(
+        f"{len(entries)} ledger entries. History is append-only: nothing here is ever rewritten."
+    )
+
+
+@data_app.command("status")
+def data_status(simulated: SimulatedOption = False) -> None:
+    """Summarise what data has been collected so far. (read-only)"""
+    service = _data_service(simulated)
+    statuses = service.status()
+
+    console.print(f"\n[bold]DATA STATUS[/bold]  ({service.data_root})")
+    console.print(f"Configured symbols       : {', '.join(service.configured_symbols()) or 'none'}")
+    console.print(
+        f"Configured option symbols: {', '.join(service.configured_option_symbols()) or 'none'}"
+    )
+    console.print(f"Registered providers     : {len(service.registry)}")
+
+    if not statuses:
+        console.print(
+            "\n[yellow]No data has been collected yet.[/yellow] "
+            "History accumulates going forward; nothing is backfilled."
+        )
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    for column in ("Provider", "Data type", "Key", "Last success", "Snapshots", "Fails", "Gap"):
+        table.add_column(column)
+    for status in statuses:
+        state = status.state
+        gap_style = "green" if status.gap.status.value == "NO_GAP" else "yellow"
+        table.add_row(
+            state.provider,
+            state.data_type.value,
+            state.key,
+            state.last_successful_collection.isoformat(timespec="seconds")
+            if state.last_successful_collection
+            else "never",
+            str(state.snapshot_count),
+            str(state.consecutive_failures),
+            f"[{gap_style}]{status.gap.status.value}[/{gap_style}]",
+        )
+    console.print(table)
+
+
+def _parse_data_type(value: str) -> DataType:
+    from trading_system.domain.enums import DataType
+
+    try:
+        return DataType(value.strip().upper())
+    except ValueError:
+        _fail(f"unknown data type {value!r}. Valid values: {', '.join(t.value for t in DataType)}")
+        raise AssertionError("unreachable") from None  # pragma: no cover
+
+
+def _parse_instant(value: str) -> datetime:
+    from datetime import datetime
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        _fail(f"--as-of must be an ISO-8601 instant, got {value!r}")
+        raise AssertionError("unreachable") from None  # pragma: no cover
+    if parsed.tzinfo is None:
+        _fail("--as-of must carry a timezone; a naive instant has no position on the timeline")
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# universe
+#
+# Every command here is read-only with respect to the broker. The universe
+# service constructs no broker, opens no connection and has no order path: it
+# consumes stored data through the repository and writes a run record. The
+# zero-order property is therefore structural, not a check performed at the end.
+# ---------------------------------------------------------------------------
+def _universe_service() -> UniverseSelectionService:
+    """Build the universe layer from configuration, or fail with a diagnostic."""
+    from trading_system.universe.service import UniverseSelectionService
+
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        err_console.print(f"[red]CONFIGURATION ERROR[/red]\n{exc}")
+        raise typer.Exit(code=EXIT_ERROR) from exc
+    return UniverseSelectionService(settings=settings, config=config)
+
+
+def _universe_run(*, as_of: str | None, dry_run: bool) -> None:
+    """Execute one universe run and print its report."""
+    from trading_system.domain.enums import UniverseSelectionStatus
+    from trading_system.universe.report import render_report
+
+    service = _universe_service()
+    instant = _parse_instant(as_of) if as_of else None
+
+    run = service.run(as_of=instant, dry_run=dry_run)
+    console.print()
+    console.print(render_report(run.result))
+
+    if dry_run:
+        console.print(
+            "\n[yellow]DRY RUN[/yellow]  Nothing was persisted. Authoritative history is unchanged."
+        )
+    else:
+        console.print(f"\n[green]Stored[/green] run {run.result.run_id}")
+
+    if run.result.status is not UniverseSelectionStatus.SUCCESS:
+        _fail(
+            f"universe selection ended as {run.result.status.value}; "
+            f"no universe was produced and no downstream stage may consume this run"
+        )
+
+
+@universe_app.command("show")
+def universe_show(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="A specific run. Defaults to the most recent."),
+    ] = None,
+) -> None:
+    """Show the current (or a named) universe. (read-only)"""
+    from trading_system.universe.report import render_report
+
+    service = _universe_service()
+    result = service.get(run_id) if run_id else service.latest()
+
+    if result is None:
+        console.print(
+            "[yellow]UNAVAILABLE[/yellow]  "
+            + (
+                f"no universe run with id {run_id!r}."
+                if run_id
+                else "no universe has been selected yet. Run 'universe run' first."
+            )
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    console.print(render_report(result))
+
+
+@universe_app.command("validate")
+def universe_validate() -> None:
+    """Validate the universe configuration and its data readiness. (read-only)
+
+    Checks the configuration loads, the source resolves to symbols, and reports
+    which of those symbols actually have data stored. A symbol without data is
+    not an error here — it is a fact, and one worth seeing before a run reports
+    it as a rejection.
+    """
+    from trading_system.domain.enums import DataType
+    from trading_system.universe.source import UniverseSourceError
+
+    service = _universe_service()
+    settings = _load_settings()
+    config = load_config(settings.config_dir)
+    universe = config.universe
+
+    console.print("\n[bold]UNIVERSE CONFIGURATION[/bold]")
+    console.print(f"Config version : {universe.config_version}")
+    console.print(
+        f"Source         : {universe.source.kind.value} "
+        f"{universe.source.name} v{universe.source.version}"
+    )
+
+    try:
+        symbols = service.configured_symbols()
+    except UniverseSourceError as exc:
+        console.print(f"Symbols        : [red]FAILED[/red]\n{exc}")
+        _fail("the configured universe source cannot be resolved")
+        return
+
+    console.print(f"Symbols        : {len(symbols)} ({', '.join(symbols)})")
+
+    filters = universe.filters
+    table = Table(title="Deterministic filters", show_header=True, header_style="bold")
+    table.add_column("Rule")
+    table.add_column("Value")
+    for name, value in (
+        ("allowed security types", ", ".join(t.value for t in filters.allowed_security_types)),
+        ("allowed currencies", ", ".join(filters.allowed_currencies)),
+        ("allowed exchanges", ", ".join(filters.allowed_exchanges) or "any"),
+        ("min price", str(filters.min_price)),
+        ("min underlying volume", str(filters.min_average_daily_volume)),
+        ("max data age (s)", str(filters.max_data_age_seconds)),
+        ("require research usable", str(filters.require_research_usable)),
+        ("optionability policy", filters.optionability_policy.value),
+        ("exclusions", ", ".join(filters.exclusions) or "none"),
+        ("max candidates", str(filters.max_candidates)),
+        ("max selected assets", str(filters.max_selected_assets)),
+    ):
+        table.add_row(name, value)
+    console.print(table)
+
+    ranking = universe.ai_ranking
+    console.print(
+        f"\nAI ranking     : {'enabled' if ranking.enabled else 'disabled'} "
+        f"({ranking.model_provider}/{ranking.model_name}, prompt {ranking.prompt_version})"
+    )
+    console.print(
+        "Fallback       : "
+        + (
+            "[yellow]deterministic ordering permitted[/yellow]"
+            if ranking.allow_deterministic_fallback
+            else "[green]fail closed[/green] — no ordering is substituted"
+        )
+    )
+    if ranking.enabled and settings.anthropic_api_key is None:
+        console.print(
+            "[yellow]ANTHROPIC_API_KEY is not set[/yellow]; a run would end as AI_UNAVAILABLE."
+        )
+
+    data_table = Table(title="Stored data", show_header=True, header_style="bold")
+    for column in ("Symbol", "Quote snapshot", "Option chain"):
+        data_table.add_column(column)
+    missing = 0
+    for symbol in symbols:
+        quote = service.data_repository.get_latest(DataType.MARKET_QUOTE, symbol)
+        chain = service.data_repository.get_latest(DataType.OPTION_CHAIN, symbol)
+        if quote is None:
+            missing += 1
+        data_table.add_row(
+            symbol,
+            quote.as_of.isoformat(timespec="seconds") if quote else "[yellow]none[/yellow]",
+            chain.as_of.isoformat(timespec="seconds") if chain else "[yellow]none[/yellow]",
+        )
+    console.print(data_table)
+
+    if missing:
+        console.print(
+            f"[yellow]{missing} symbol(s) have no stored quote.[/yellow] They would be "
+            f"rejected as DATA_UNAVAILABLE. Collect data first: "
+            f"'data collect --symbol <SYMBOL>'."
+        )
+    console.print("[green]PASS[/green]  Configuration is valid. No orders were submitted.")
+
+
+@universe_app.command("run")
+def universe_run_command(
+    as_of: Annotated[
+        str | None,
+        typer.Option("--as-of", help="ISO-8601 instant; rebuild the universe as it was then."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Run everything but do not persist. Never reaches a broker either way.",
+        ),
+    ] = False,
+) -> None:
+    """Select the research universe. (writes a universe run; submits no orders)
+
+    Reads stored data only. It never collects, never connects to a broker and
+    has no reachable order path.
+    """
+    _universe_run(as_of=as_of, dry_run=dry_run)
+
+
+@universe_app.command("history")
+def universe_history(
+    limit: Annotated[int, typer.Option("--limit", help="Maximum runs to show.")] = 20,
+) -> None:
+    """Show past universe runs. (read-only)
+
+    History is append-only: a run is never overwritten by a later one, so a
+    past research decision stays explainable.
+    """
+    service = _universe_service()
+    entries = service.history(limit=limit)
+    if not entries:
+        console.print("[yellow]UNAVAILABLE[/yellow]  no universe runs have been recorded yet.")
+        raise typer.Exit(code=EXIT_OK)
+
+    table = Table(title="Universe runs", show_header=True, header_style="bold")
+    for column in ("Generated", "Run id", "As of", "Status", "Method", "Selected", "Model"):
+        table.add_column(column)
+    for entry in entries:
+        style = "green" if entry.status == "SUCCESS" else "yellow"
+        table.add_row(
+            entry.generated_at.isoformat(timespec="seconds"),
+            entry.run_id,
+            entry.as_of.isoformat(timespec="seconds"),
+            f"[{style}]{entry.status}[/{style}]",
+            entry.selection_method,
+            str(entry.selected_count),
+            entry.model_name or "-",
+        )
+    console.print(table)
+    console.print(f"{len(entries)} run(s). Nothing here is ever rewritten.")
+
+
+@universe_app.command("explain")
+def universe_explain(
+    run_id: Annotated[str, typer.Option("--run-id", help="The run to explain.")],
+    symbol: Annotated[
+        str | None,
+        typer.Option("--symbol", help="Restrict to one underlying."),
+    ] = None,
+) -> None:
+    """Explain why each asset was selected or rejected in a run. (read-only)"""
+    from trading_system.universe.report import render_report, render_summary
+
+    service = _universe_service()
+    result = service.get(run_id)
+    if result is None:
+        console.print(f"[yellow]UNAVAILABLE[/yellow]  no universe run with id {run_id!r}.")
+        raise typer.Exit(code=EXIT_OK)
+
+    if symbol is None:
+        console.print()
+        console.print(render_report(result))
+        return
+
+    wanted = symbol.strip().upper()
+    console.print()
+    console.print(render_summary(result))
+    console.print()
+
+    selected = next((a for a in result.selected_assets if a.symbol == wanted), None)
+    if selected is not None:
+        console.print(f"[green]{wanted} was SELECTED[/green] at rank {selected.rank}")
+        console.print(f"  reasons      : {', '.join(r.value for r in selected.reasons)}")
+        console.print(f"  confidence   : {selected.confidence.value}")
+        console.print(f"  score        : {_or_dash(selected.selection_score)}")
+        console.print(f"  optionability: {selected.optionability.value}")
+        console.print(f"  price        : {_or_dash(selected.reference_price)}")
+        console.print(f"  volume       : {_or_dash(selected.underlying_volume)} (underlying)")
+        console.print(
+            f"  data quality : {selected.data_quality.classification.value} "
+            f"(research_usable={selected.data_quality.research_usable})"
+        )
+        if selected.source is not None:
+            console.print(f"  provider     : {selected.source.provider}")
+            console.print(f"  snapshots    : {', '.join(selected.source.snapshot_ids) or 'none'}")
+        if selected.rationale:
+            console.print(f"  rationale    : {selected.rationale}")
+        return
+
+    rejected = next((a for a in result.rejected_assets if a.symbol == wanted), None)
+    if rejected is not None:
+        console.print(f"[yellow]{wanted} was REJECTED[/yellow]")
+        console.print(f"  reason       : {rejected.reason.value}")
+        console.print(f"  eligibility  : {rejected.deterministic_eligibility.value}")
+        console.print(f"  optionability: {rejected.optionability.value}")
+        if rejected.detail:
+            console.print(f"  detail       : {rejected.detail}")
+        if rejected.source is not None:
+            console.print(f"  snapshots    : {', '.join(rejected.source.snapshot_ids) or 'none'}")
+        return
+
+    console.print(f"[yellow]{wanted} was not considered in run {run_id}.[/yellow]")
 
 
 # ---------------------------------------------------------------------------

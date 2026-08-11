@@ -15,6 +15,12 @@ from jsonschema import Draft202012Validator
 #: directory listing: a test that reads the answer off disk proves nothing.
 REQUIRED_SCHEMAS = (
     "universe_selection",
+    # Milestone 4 adds the three universe-selection boundaries: what the
+    # deterministic pre-filter hands the agent, what the agent may return, and
+    # the immutable record of a whole run.
+    "universe_selection_input",
+    "universe_agent_ranking",
+    "universe_selection_result",
     "research_report",
     "strategy_decision",
     "purchase_card",

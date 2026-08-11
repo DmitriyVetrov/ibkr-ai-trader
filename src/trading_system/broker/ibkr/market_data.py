@@ -145,17 +145,29 @@ def to_option_chain_snapshot(
 ) -> OptionChainSnapshot:
     """Merge IBKR ``OptionChain`` rows into one normalised snapshot.
 
-    IBKR returns one row per exchange/trading-class combination. The preferred
-    exchange is used when present; otherwise the first row is taken, so the
-    result is deterministic rather than dependent on IBKR's ordering.
+    IBKR returns one row per exchange **and trading class**, and a single
+    exchange routinely appears more than once. Real paper validation on SPY
+    returned 39 rows including *two* on SMART: ``SMART/SPY`` with 35
+    expirations and 491 strikes, and ``SMART/2SPY`` with 3 and 3. Taking the
+    first SMART row IBKR happened to send would have stored 3 of 491 strikes —
+    a silent 99% loss, and fatal to the point of accumulating an option-chain
+    history.
+
+    So among the rows for the preferred exchange, the one with the widest
+    coverage wins. Ties break on trading class and then exchange name — an
+    arbitrary rule, but a fixed one, which is what keeps the result independent
+    of IBKR's response ordering.
+
+    The winning row's ``tradingClass`` is carried through exactly as reported.
+    ``2SPY`` is a real, separate class that coexists with ``SPY``; the lesson
+    from validation is that the trading class cannot be *derived* from the
+    symbol, not that SPY options are always ``2SPY``.
     """
     if not chains:
         raise ValueError(f"no option chain rows returned for {underlying}")
 
-    chosen = next(
-        (c for c in chains if getattr(c, "exchange", None) == preferred_exchange),
-        None,
-    ) or min(chains, key=lambda c: str(getattr(c, "exchange", "")))
+    preferred = [c for c in chains if getattr(c, "exchange", None) == preferred_exchange]
+    chosen = max(preferred or chains, key=_coverage)
 
     expirations = sorted(
         {
@@ -187,6 +199,23 @@ def to_option_chain_snapshot(
         expirations=expirations,
         strikes=strikes,
         rights=[OptionRight.CALL, OptionRight.PUT],
+    )
+
+
+def _coverage(row: Any) -> tuple[int, int, str, str]:
+    """Rank a chain row: widest coverage first, then deterministically.
+
+    The exchange and trading class are included as tie-breakers so that two
+    rows describing the same number of contracts still order identically on
+    every run, whatever order IBKR sent them in.
+    """
+    strikes = getattr(row, "strikes", None) or ()
+    expirations = getattr(row, "expirations", None) or ()
+    return (
+        len(strikes),
+        len(expirations),
+        str(getattr(row, "tradingClass", "") or ""),
+        str(getattr(row, "exchange", "") or ""),
     )
 
 

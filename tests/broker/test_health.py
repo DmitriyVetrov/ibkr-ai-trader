@@ -127,9 +127,7 @@ def test_health_check_times_out_instead_of_hanging_forever(
         async def reqCurrentTimeAsync(self) -> None:  # noqa: N802
             await asyncio.sleep(3600)
 
-    broker = connect_fake(
-        make_broker(broker_clock, connect_timeout_seconds=0.2), HangingIB()
-    )
+    broker = connect_fake(make_broker(broker_clock, connect_timeout_seconds=0.2), HangingIB())
 
     started = time.monotonic()
     health = broker.health_check()

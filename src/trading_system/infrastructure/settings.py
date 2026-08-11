@@ -19,6 +19,7 @@ An unquoted ``0.50`` is parsed as a binary float and is rejected, by design
 from __future__ import annotations
 
 import os
+from datetime import date
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -27,23 +28,43 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from trading_system.domain.enums import MarketHypothesis, StrategyType, TradingMode
+from trading_system.domain.enums import (
+    MarketHypothesis,
+    SecurityType,
+    StrategyType,
+    TradingMode,
+    UniverseSourceKind,
+)
 from trading_system.domain.models import Money
 
 __all__ = [
+    "AiRankingConfig",
     "ApplicationConfig",
     "BrokerBackend",
+    "CacheConfig",
     "CampaignConfig",
+    "CollectionConfig",
     "ConfigError",
+    "DataConfig",
     "ExitPolicyConfig",
+    "FreshnessConfig",
     "LiquidityConfig",
+    "MarketCalendarConfig",
+    "OptionabilityPolicy",
+    "PlausibilityConfig",
+    "ProvidersConfig",
+    "ResearchUsabilityConfig",
     "RiskConfig",
     "ScheduleJob",
     "SchedulesConfig",
     "Settings",
     "SourcesConfig",
+    "StorageConfig",
     "StrategyConfig",
     "SystemConfig",
+    "UniverseConfig",
+    "UniverseFilterConfig",
+    "UniverseSourceConfig",
     "default_config_dir",
     "load_config",
     "load_settings",
@@ -139,6 +160,12 @@ class Settings(BaseSettings):
     #: order placement. Milestone 2 refuses to run with this disabled.
     ibkr_read_only: bool = True
     ibkr_connect_timeout_seconds: float = Field(default=10.0, gt=0)
+    #: Bound on every individual IBKR request. ``ib_async``'s synchronous
+    #: wrappers default to waiting forever, and against the validated TWS
+    #: environment a second uncached round trip on one connection can go
+    #: unanswered indefinitely — so "forever" is a real outcome, not a
+    #: theoretical one. Must stay positive; there is no unbounded setting.
+    ibkr_request_timeout_seconds: float = Field(default=30.0, gt=0)
     #: IBKR market data type: 1 live, 2 frozen, 3 delayed, 4 delayed-frozen.
     #: Delayed is the default because it needs no paid subscription, and a
     #: quote that is honestly labelled delayed beats one that fails to arrive.
@@ -392,15 +419,276 @@ class SourcesConfig(_ConfigModel):
     min_sources_per_report: int = Field(default=1, ge=0)
 
 
+# ---------------------------------------------------------------------------
+# Data layer policy (Milestone 3)
+# ---------------------------------------------------------------------------
+class CollectionConfig(_ConfigModel):
+    """What the collectors fetch, until universe selection exists."""
+
+    symbols: list[str] = Field(default_factory=list)
+    option_chain_symbols: list[str] = Field(default_factory=list)
+    max_records_per_snapshot: int = Field(default=20000, ge=1)
+
+
+class FreshnessConfig(_ConfigModel):
+    """Per-data-type and per-origin staleness windows.
+
+    One global threshold cannot be right for both a realtime quote and a
+    quarterly filing, so there deliberately is not one.
+    """
+
+    default_seconds: int = Field(default=3600, ge=0)
+    by_data_type: dict[str, int] = Field(default_factory=dict)
+    by_origin: dict[str, int] = Field(default_factory=dict)
+
+    def window_seconds(self, data_type: str, origin: str | None = None) -> int:
+        """The applicable window: the tightest configured bound that applies.
+
+        Taking the minimum means adding an origin rule can only ever make the
+        system more suspicious of a record, never less.
+        """
+        candidates = [self.by_data_type.get(data_type, self.default_seconds)]
+        if origin is not None and origin in self.by_origin:
+            candidates.append(self.by_origin[origin])
+        return min(candidates)
+
+
+class PlausibilityConfig(_ConfigModel):
+    """Bounds that separate "implausible" from "merely unattractive".
+
+    These catch a broken feed. Tradeability limits live in
+    :class:`RiskConfig`; conflating the two would let a data check quietly
+    become a trading rule.
+    """
+
+    min_price: Money = Field(ge=0)
+    max_price: Money = Field(gt=0)
+    max_spread_pct: float = Field(ge=0.0)
+
+    max_equity_daily_volume: int = Field(ge=0)
+    max_option_contract_volume: int = Field(ge=0)
+    max_open_interest: int = Field(ge=0)
+
+    min_implied_volatility: float = Field(ge=0.0)
+    max_implied_volatility: float = Field(gt=0.0)
+    max_abs_delta: float = Field(gt=0.0)
+
+    max_strike: Money = Field(gt=0)
+    allowed_multipliers: list[int] = Field(default_factory=list)
+    max_expiration_horizon_days: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _ranges_are_ordered(self) -> PlausibilityConfig:
+        if self.min_price > self.max_price:
+            raise ValueError("data plausibility: min_price exceeds max_price")
+        if self.min_implied_volatility > self.max_implied_volatility:
+            raise ValueError("data plausibility: min_implied_volatility exceeds max")
+        return self
+
+
+class ResearchUsabilityConfig(_ConfigModel):
+    """Which quality dimensions a record must satisfy to be research-usable.
+
+    Separate from technical validity on purpose (Milestone 3 brief section 50):
+    a well-formed record carrying an impossible number is valid and unusable at
+    the same time.
+    """
+
+    require_transport: bool = True
+    require_schema: bool = True
+    require_source: bool = True
+    require_timestamp: bool = True
+    require_completeness: bool = True
+    require_plausibility: bool = True
+    require_consistency: bool = True
+    #: False by default: staleness is contextual and the consumer decides.
+    require_freshness: bool = False
+
+
+class MarketCalendarConfig(_ConfigModel):
+    """Trading calendar. Weekends alone are not enough (section 35)."""
+
+    exchange: str = "XNYS"
+    timezone: str = "America/New_York"
+    regular_open: str = "09:30"
+    regular_close: str = "16:00"
+    early_close_time: str = "13:00"
+    #: Years for which holidays have actually been verified. Outside these the
+    #: calendar answers "unknown" instead of assuming a weekday is open.
+    covered_years: list[int] = Field(default_factory=list)
+    holidays: list[date] = Field(default_factory=list)
+    early_closes: list[date] = Field(default_factory=list)
+
+
+class StorageConfig(_ConfigModel):
+    root: str = "data"
+
+
+class CacheConfig(_ConfigModel):
+    """Cache policy. Never authoritative, always regenerable."""
+
+    enabled: bool = True
+    default_ttl_seconds: int = Field(default=300, ge=0)
+
+
+class ProvidersConfig(_ConfigModel):
+    """Provider-level knobs. No paid provider is configured or required."""
+
+    http_timeout_seconds: float = Field(default=15.0, gt=0)
+    sec_user_agent: str = ""
+    sec_base_url: str = "https://data.sec.gov"
+
+
+class DataConfig(_ConfigModel):
+    """All data-layer policy (``config/data.yaml``)."""
+
+    config_version: str
+    collection: CollectionConfig = Field(default_factory=CollectionConfig)
+    freshness: FreshnessConfig = Field(default_factory=FreshnessConfig)
+    plausibility: PlausibilityConfig
+    research_usability: ResearchUsabilityConfig = Field(default_factory=ResearchUsabilityConfig)
+    market_calendar: MarketCalendarConfig = Field(default_factory=MarketCalendarConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
+    cache: CacheConfig = Field(default_factory=CacheConfig)
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
+
+
+# ---------------------------------------------------------------------------
+# Universe selection policy (Milestone 4)
+# ---------------------------------------------------------------------------
+class OptionabilityPolicy(StrEnum):
+    """What to do with an underlying whose optionability is not established.
+
+    ``UNKNOWN`` is never rewritten into a definite answer; this only decides
+    whether an unresolved candidate may proceed.
+    """
+
+    #: Only underlyings established to have listed options. UNKNOWN is rejected.
+    REQUIRED = "REQUIRED"
+    #: UNKNOWN passes, flagged, and the agent sees that it is unresolved.
+    UNKNOWN_ALLOWED = "UNKNOWN_ALLOWED"
+    #: Optionability is not considered at all.
+    IGNORED = "IGNORED"
+
+
+class UniverseSourceConfig(_ConfigModel):
+    """Where the candidate pool comes from, explicitly and with a version.
+
+    Versioned because "which assets were considered at time T" is part of
+    reconstructing a decision: a symbol list that changed silently makes a past
+    universe unreproducible.
+    """
+
+    kind: UniverseSourceKind
+    name: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    symbols: list[str] = Field(default_factory=list)
+    #: Path to a newline-delimited symbol file, for ``kind: FILE``.
+    location: str | None = None
+
+    @model_validator(mode="after")
+    def _kind_has_what_it_needs(self) -> UniverseSourceConfig:
+        if self.kind is UniverseSourceKind.FILE and not (self.location or "").strip():
+            raise ValueError("universe source kind FILE requires 'location'")
+        if self.kind in (UniverseSourceKind.STATIC, UniverseSourceKind.CUSTOM) and not self.symbols:
+            raise ValueError(f"universe source kind {self.kind.value} requires 'symbols'")
+        return self
+
+
+class UniverseFilterConfig(_ConfigModel):
+    """Deterministic eligibility rules.
+
+    These decide who reaches the agent. The agent runs afterwards and cannot
+    restore anything excluded here — see
+    :mod:`trading_system.universe.filters`.
+    """
+
+    allowed_security_types: list[SecurityType] = Field(min_length=1)
+    allowed_currencies: list[str] = Field(min_length=1)
+    #: Empty means any exchange.
+    allowed_exchanges: list[str] = Field(default_factory=list)
+
+    min_price: Money = Field(ge=0)
+    #: Underlying share volume, never option volume (specification section 11
+    #: of the Milestone 4 brief): stock liquidity does not establish that an
+    #: option is liquid.
+    min_average_daily_volume: int = Field(ge=0)
+    max_data_age_seconds: int = Field(ge=0)
+    require_research_usable: bool = True
+    optionability_policy: OptionabilityPolicy = OptionabilityPolicy.REQUIRED
+    exclusions: list[str] = Field(default_factory=list)
+
+    max_candidates: int = Field(ge=0)
+    max_selected_assets: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _limits_are_ordered(self) -> UniverseFilterConfig:
+        if self.max_selected_assets > self.max_candidates:
+            raise ValueError(
+                f"universe: max_selected_assets ({self.max_selected_assets}) exceeds "
+                f"max_candidates ({self.max_candidates}); the agent cannot select more "
+                f"assets than it is shown"
+            )
+        return self
+
+    def excludes(self, symbol: str) -> bool:
+        return symbol.upper() in {s.upper() for s in self.exclusions}
+
+
+class AiRankingConfig(_ConfigModel):
+    """How the ranking agent is invoked, and what happens when it cannot be.
+
+    No credential appears here. ``ANTHROPIC_API_KEY`` comes from the
+    environment, like every other secret.
+    """
+
+    enabled: bool = True
+    model_provider: str = Field(default="ANTHROPIC", alias="provider", min_length=1)
+    model_name: str = Field(default="claude-opus-5", alias="model", min_length=1)
+    #: Bumped whenever the prompt changes in a way that could alter a ranking.
+    #: Stamped into every stored run so a universe traces to its instructions.
+    prompt_version: str = Field(min_length=1)
+    timeout_seconds: float = Field(default=120.0, gt=0)
+    max_output_tokens: int = Field(default=8000, ge=1)
+    effort: str = "medium"
+
+    #: Fail closed by default. A deterministic ordering substituted for a failed
+    #: model call would be indistinguishable from the model's judgement in the
+    #: stored record, so it must be an explicit, recorded choice.
+    allow_deterministic_fallback: bool = False
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _effort_is_known(self) -> AiRankingConfig:
+        allowed = {"low", "medium", "high", "xhigh", "max"}
+        if self.effort not in allowed:
+            raise ValueError(
+                f"universe ai_ranking.effort {self.effort!r} is not one of {sorted(allowed)}"
+            )
+        return self
+
+
+class UniverseConfig(_ConfigModel):
+    """All universe-selection policy (``config/universe.yaml``)."""
+
+    config_version: str
+    source: UniverseSourceConfig
+    filters: UniverseFilterConfig
+    ai_ranking: AiRankingConfig
+
+
 class SystemConfig(_ConfigModel):
     """All YAML configuration, loaded and validated together."""
 
     application: ApplicationConfig
     campaign: CampaignConfig
+    data: DataConfig
     risk: RiskConfig
     schedules: SchedulesConfig
     sources: SourcesConfig
     strategies: dict[str, StrategyConfig]
+    universe: UniverseConfig
 
     @model_validator(mode="after")
     def _strategies_respect_risk_dte_window(self) -> SystemConfig:
@@ -454,10 +742,12 @@ def load_config(config_dir: Path | str | None = None) -> SystemConfig:
     payload = {
         "application": _read_yaml(directory / "application.yaml"),
         "campaign": _read_yaml(directory / "campaign.yaml"),
+        "data": _read_yaml(directory / "data.yaml"),
         "risk": _read_yaml(directory / "risk.yaml"),
         "schedules": _read_yaml(directory / "schedules.yaml"),
         "sources": _read_yaml(directory / "sources.yaml"),
         "strategies": strategies,
+        "universe": _read_yaml(directory / "universe.yaml"),
     }
 
     try:

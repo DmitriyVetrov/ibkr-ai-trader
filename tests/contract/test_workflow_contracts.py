@@ -205,6 +205,61 @@ def test_schema_rejects_sell_without_a_reason(
 # Producer output is consumable by the next stage
 # ---------------------------------------------------------------------------
 @pytest.mark.contract
+def test_a_universe_run_feeds_the_research_stage(
+    universe_run_result, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """Milestone 4 -> Milestone 5.
+
+    The full run record is the audit artifact; the researcher consumes the
+    narrow ``UniverseSelection`` boundary. This asserts the projection actually
+    validates against the schema the next stage was built against, rather than
+    merely being convertible.
+    """
+    selection = universe_run_result.to_universe_selection()
+
+    _validator(load_schema("universe_selection")).validate(_dump(selection))
+    assert selection.universe_id == universe_run_result.snapshot_id
+    assert [c.ticker for c in selection.candidates] == universe_run_result.symbols
+
+
+@pytest.mark.contract
+def test_the_universe_boundary_carries_only_underlyings(universe_run_result) -> None:
+    """No strike, no expiry, no strategy crosses into research."""
+    payload = _dump(universe_run_result.to_universe_selection())
+
+    for candidate in payload["candidates"]:
+        assert set(candidate) <= {"ticker", "rank", "selection_score", "rationale"}
+
+
+@pytest.mark.contract
+def test_a_failed_universe_run_produces_no_research_candidates(
+    universe_run_result, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """A run that did not produce a universe must hand the next stage nothing."""
+    from trading_system.domain.enums import UniverseSelectionStatus
+
+    failed = universe_run_result.model_copy(
+        update={
+            "status": UniverseSelectionStatus.AI_UNAVAILABLE,
+            "selected_assets": [],
+            "selection_method": universe_run_result.selection_method,
+            "agent_metadata": universe_run_result.agent_metadata,
+        }
+    )
+    selection = failed.to_universe_selection()
+
+    assert selection.candidates == []
+    _validator(load_schema("universe_selection")).validate(_dump(selection))
+
+
+@pytest.mark.contract
+def test_the_universe_result_validates_against_its_own_schema(
+    universe_run_result, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    _validator(load_schema("universe_selection_result")).validate(_dump(universe_run_result))
+
+
+@pytest.mark.contract
 def test_research_feeds_strategy(
     research_report: ResearchReport, strategy_decision: StrategyDecision
 ) -> None:

@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/universe_agent_ranking.json",
+  "title": "UniverseAgentRanking",
+  "description": "The Universe Selector agent's raw structured response. Prose is not a valid response - every field here is validated before anything downstream sees it, and a ranking that fails validation is rejected rather than repaired. The agent may only reorder and select from the candidates it was given; it can never admit an asset the deterministic filter excluded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "rankings"],
+  "properties": {
+    "run_id": {
+      "description": "Echoed from the input, so a response can be matched to the request that produced it.",
+      "type": "string",
+      "minLength": 1
+    },
+    "rankings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ranking" }
+    },
+    "notes": {
+      "description": "Free text, retained for audit only. Never parsed, and never able to change an outcome.",
+      "type": ["string", "null"]
+    }
+  },
+  "$defs": {
+    "ranking": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol", "selection", "reasons", "confidence"],
+      "properties": {
+        "symbol": {
+          "description": "Must be one of the supplied candidates. An unrecognised symbol invalidates the whole ranking.",
+          "type": "string",
+          "pattern": "^[A-Z0-9.\\-]+$"
+        },
+        "selection": { "enum": ["SELECTED", "NOT_SELECTED"] },
+        "rank": {
+          "description": "Required for SELECTED, forbidden for NOT_SELECTED. Ranks must be unique and contiguous from 1.",
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "selection_score": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+        "reasons": {
+          "description": "Codes from a closed vocabulary. Each one is checked against the candidate's own evidence: a claim the supplied data contradicts invalidates the ranking.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/reason_code" }
+        },
+        "confidence": { "enum": ["HIGH", "MEDIUM", "LOW"] },
+        "rationale": {
+          "description": "One sentence, for a human reader. Advisory: the machine-readable reasons are authoritative.",
+          "type": ["string", "null"]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "selection": { "const": "SELECTED" } }, "required": ["selection"] },
+          "then": { "required": ["rank"], "properties": { "rank": { "type": "integer", "minimum": 1 } } }
+        },
+        {
+          "if": {
+            "properties": { "selection": { "const": "NOT_SELECTED" } },
+            "required": ["selection"]
+          },
+          "then": { "properties": { "rank": { "type": "null" } } }
+        }
+      ]
+    },
+    "reason_code": {
+      "description": "No directional, option-level, or capital-allocation code exists here by design. The universe selector is not a trader, a predictor, an option strategist or a risk engine.",
+      "enum": [
+        "HIGH_UNDERLYING_LIQUIDITY",
+        "MODERATE_UNDERLYING_LIQUIDITY",
+        "LOWER_UNDERLYING_LIQUIDITY",
+        "OPTIONS_AVAILABLE",
+        "OPTIONABILITY_NOT_ESTABLISHED",
+        "SUFFICIENT_DATA_QUALITY",
+        "FRESH_MARKET_DATA",
+        "STALE_MARKET_DATA",
+        "PRICE_IN_RANGE",
+        "LIMITED_DATA_HISTORY",
+        "UNIVERSE_SIZE_LIMIT"
+      ]
+    }
+  }
+}

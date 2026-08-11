@@ -1,0 +1,137 @@
+# Universe selection policy (Milestone 4).
+#
+# Which underlyings are even considered for research, and what a candidate must
+# prove before an AI agent is allowed to rank it. Nothing here is a trading
+# rule: the universe selector picks what is worth *researching*, never what to
+# buy, which strategy to use, or how much to spend.
+#
+# Every threshold lives here rather than in code, so a change to what the
+# system considers research-ready shows up in a diff. Money values are quoted
+# strings or integers so they parse as exact decimals; an unquoted 5.00 is a
+# binary float and is rejected.
+config_version: "2026.08.11-1"
+
+# ---------------------------------------------------------------------------
+# Where the candidate pool comes from.
+#
+# The source is explicit and versioned because "which assets were considered on
+# date T" is part of reconstructing a decision. Bump `version` whenever the
+# symbol list changes; a stored run records the version it ran against.
+#
+# kind:
+#   STATIC   symbols listed below                      (implemented)
+#   FILE     newline-delimited file at `location`       (implemented)
+#   CUSTOM   a curated list; same mechanics as STATIC   (implemented)
+#   SP500 / NASDAQ100 / ETF_UNIVERSE / IBKR_DISCOVERED  (not implemented)
+#
+# The index kinds are deliberately unimplemented rather than approximated. A
+# constituent list written from memory would be invented data, and an S&P 500
+# universe that is quietly wrong produces research nobody can trust. They fail
+# with CONFIGURATION_ERROR naming what they would need.
+# ---------------------------------------------------------------------------
+source:
+  kind: STATIC
+  name: liquid-us-optionable-core
+  version: "2026.08.11-1"
+  # Liquid, widely optionable US underlyings. Being listed here buys nothing:
+  # each one still has to pass every filter below against real stored data, and
+  # an asset the data layer cannot vouch for is not research-ready.
+  symbols:
+    - SPY
+    - QQQ
+    - IWM
+    - DIA
+    - AAPL
+    - MSFT
+    - NVDA
+    - AMZN
+    - META
+    - GOOGL
+
+# ---------------------------------------------------------------------------
+# Deterministic filters.
+#
+# These decide eligibility. The AI agent runs *after* them and cannot restore
+# anything they excluded — that hierarchy is the point of the milestone.
+# ---------------------------------------------------------------------------
+filters:
+  # SecurityType values. ETFs are reported as STOCK by IBKR, so SPY and AAPL
+  # are the same security type here.
+  allowed_security_types:
+    - STOCK
+  allowed_currencies:
+    - USD
+  # Empty means any exchange. Populate to restrict.
+  allowed_exchanges: []
+
+  # A price floor, not a valuation opinion: sub-dollar underlyings have option
+  # chains too thin and too wide to be worth researching.
+  min_price: "5.00"
+
+  # UNDERLYING share volume, never option volume. Stock liquidity is a
+  # pre-filter for option liquidity, not a substitute for it — establishing
+  # that an option is liquid needs option-level data this milestone does not
+  # collect.
+  min_average_daily_volume: 1000000
+
+  # How old the market data may be and still support a research decision.
+  # 24h: universe selection runs daily and a previous close is a legitimate
+  # basis for "is this worth researching", unlike an execution decision.
+  max_data_age_seconds: 86400
+
+  # The data layer's eight-dimension verdict. A record that is well-formed but
+  # economically impossible is not a basis for research.
+  require_research_usable: true
+
+  # REQUIRED         optionable underlyings only; UNKNOWN is rejected
+  # UNKNOWN_ALLOWED  UNKNOWN passes and is flagged to the agent
+  # IGNORED          optionability is not considered
+  #
+  # REQUIRED is the honest default for an options system: an underlying we have
+  # not established to be optionable cannot become an option trade. UNKNOWN is
+  # never silently read as TRUE or as FALSE either way.
+  optionability_policy: REQUIRED
+
+  # Never considered, whatever the data says. Takes precedence over everything.
+  exclusions: []
+
+  # Most candidates that may reach the agent. Excess candidates are dropped in
+  # a deterministic order and recorded as CANDIDATE_LIMIT_EXCEEDED, never
+  # silently.
+  max_candidates: 50
+
+  # Hard ceiling on the research-ready universe. An agent returning more than
+  # this fails validation; it is not truncated back into range, because
+  # truncating would silently change what the model actually said.
+  max_selected_assets: 10
+
+# ---------------------------------------------------------------------------
+# AI ranking policy.
+#
+# The agent ranks already-validated candidates. It cannot admit an excluded
+# asset, predict direction, pick a strategy, choose a contract or size a
+# position — and the deterministic post-validation enforces that rather than
+# trusting the prompt.
+#
+# No secret belongs here. ANTHROPIC_API_KEY comes from the environment.
+# ---------------------------------------------------------------------------
+ai_ranking:
+  enabled: true
+  provider: ANTHROPIC
+  model: claude-opus-5
+  # Bumped whenever the prompt changes in a way that could alter a ranking. It
+  # is stamped into every stored run, so a past universe can be traced to the
+  # exact instructions that produced it.
+  prompt_version: "1.0.0"
+  timeout_seconds: 120.0
+  max_output_tokens: 8000
+  # low | medium | high | xhigh | max. Ranking a few dozen pre-validated
+  # candidates on supplied evidence is not a deep-reasoning task.
+  effort: medium
+
+  # Fail closed. With AI ranking enabled, an unavailable or invalid model
+  # response ends the run as AI_UNAVAILABLE / AI_INVALID_OUTPUT — it does not
+  # quietly fall back to a deterministic ordering that would then be indistinguishable
+  # from a model's judgement in the stored record. Setting this true is an
+  # explicit, recorded choice: such runs are stamped DETERMINISTIC_ONLY.
+  allow_deterministic_fallback: false

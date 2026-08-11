@@ -188,6 +188,118 @@ def universe_selection(versions: SystemVersions) -> UniverseSelection:
 
 
 @pytest.fixture
+def universe_run_result(versions: SystemVersions):
+    """A complete Milestone 4 run record, feeding the research stage.
+
+    Built by hand rather than by running the service: a contract test asserts
+    that the *artifact shape* crosses the boundary correctly, and should fail
+    for a schema change rather than for an unrelated pipeline change.
+    """
+    from trading_system.domain.enums import (
+        ConfidenceLevel,
+        DataQuality,
+        Optionability,
+        SelectionMethod,
+        UniverseEligibility,
+        UniverseRejectionReason,
+        UniverseSelectionReason,
+        UniverseSelectionStatus,
+    )
+    from trading_system.universe.models import (
+        AgentMetadata,
+        CandidateProvenance,
+        DataQualitySummary,
+        FilterConfigSnapshot,
+        RejectedAsset,
+        SelectedAsset,
+        UniverseRunCounts,
+        UniverseSelectionResult,
+        UniverseSourceRef,
+    )
+
+    quality = DataQualitySummary(research_usable=True, classification=DataQuality.OK)
+    provenance = CandidateProvenance(
+        provider="IBKR", retrieved_at=FIXED_NOW, snapshot_ids=["snap-nvda"]
+    )
+    return UniverseSelectionResult(
+        snapshot_id="universe-snapshot-001",
+        run_id="universe-run-001",
+        as_of=FIXED_NOW,
+        generated_at=FIXED_NOW,
+        status=UniverseSelectionStatus.SUCCESS,
+        selection_method=SelectionMethod.AI_RANKED,
+        universe_source=UniverseSourceRef(
+            kind="STATIC", name="liquid-us-optionable-core", version="1", symbol_count=2
+        ),
+        deterministic_filter_config=FilterConfigSnapshot(
+            allowed_security_types=["STOCK"],
+            allowed_currencies=["USD"],
+            min_price=Decimal("5.00"),
+            min_average_daily_volume=1_000_000,
+            max_data_age_seconds=86_400,
+            optionability_policy="REQUIRED",
+            max_candidates=50,
+            max_selected_assets=10,
+        ),
+        selected_assets=[
+            SelectedAsset(
+                symbol="NVDA",
+                rank=1,
+                deterministic_eligibility=UniverseEligibility.ELIGIBLE,
+                reasons=[
+                    UniverseSelectionReason.OPTIONS_AVAILABLE,
+                    UniverseSelectionReason.HIGH_UNDERLYING_LIQUIDITY,
+                ],
+                data_quality=quality,
+                confidence=ConfidenceLevel.HIGH,
+                selection_score=94.0,
+                rationale="Established option chain and deep underlying volume.",
+                optionability=Optionability.TRUE,
+                reference_price=Decimal("180.25"),
+                underlying_volume=Decimal("240000000"),
+                source=provenance,
+            ),
+            SelectedAsset(
+                symbol="AAPL",
+                rank=2,
+                deterministic_eligibility=UniverseEligibility.ELIGIBLE,
+                reasons=[UniverseSelectionReason.OPTIONS_AVAILABLE],
+                data_quality=quality,
+                confidence=ConfidenceLevel.MEDIUM,
+                selection_score=88.0,
+                optionability=Optionability.TRUE,
+                reference_price=Decimal("225.10"),
+                underlying_volume=Decimal("55000000"),
+                source=CandidateProvenance(
+                    provider="IBKR", retrieved_at=FIXED_NOW, snapshot_ids=["snap-aapl"]
+                ),
+            ),
+        ],
+        rejected_assets=[
+            RejectedAsset(
+                symbol="IWM",
+                deterministic_eligibility=UniverseEligibility.ELIGIBLE,
+                reason=UniverseRejectionReason.NOT_SELECTED_BY_RANKING,
+                detail="ranked but below the size limit",
+                optionability=Optionability.TRUE,
+            )
+        ],
+        agent_metadata=AgentMetadata(
+            model_provider="ANTHROPIC",
+            model_name="claude-opus-5",
+            prompt_version="1.0.0",
+            agent_version="1.0.0+abcdef123456",
+            generated_at=FIXED_NOW,
+        ),
+        input_snapshot_ids=["snap-aapl", "snap-nvda"],
+        counts=UniverseRunCounts(
+            candidates=3, deterministic_pass=3, ai_input=3, ai_selected=2, final=2
+        ),
+        versions=versions,
+    )
+
+
+@pytest.fixture
 def research_report(versions: SystemVersions, source_reference: SourceReference) -> ResearchReport:
     return ResearchReport(
         report_id="research-001",

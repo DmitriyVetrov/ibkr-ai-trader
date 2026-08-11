@@ -20,6 +20,24 @@ __all__ = ["configure_logging", "get_logger"]
 _configured = False
 
 
+def _add_logger_name(logger: Any, method_name: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+    """Add the logger's name when it has one.
+
+    ``structlog.stdlib.add_logger_name`` assumes a stdlib logger and reads
+    ``logger.name`` unconditionally. This configuration uses
+    ``PrintLoggerFactory``, whose loggers have no ``name`` — so the stdlib
+    processor raises ``AttributeError`` on the first log call, turning any
+    logging statement into a crash. The name is bound by :func:`get_logger`
+    instead, and this processor only fills it in when the logger itself can
+    supply one.
+    """
+    if "logger" not in event_dict:
+        name = getattr(logger, "name", None)
+        if name:
+            event_dict["logger"] = name
+    return event_dict
+
+
 def configure_logging(level: str = "INFO", log_format: str = "console") -> None:
     """Configure structlog and the stdlib root logger.
 
@@ -35,7 +53,7 @@ def configure_logging(level: str = "INFO", log_format: str = "console") -> None:
     shared_processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,
-        structlog.stdlib.add_logger_name,
+        _add_logger_name,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.UnicodeDecoder(),
@@ -59,7 +77,13 @@ def configure_logging(level: str = "INFO", log_format: str = "console") -> None:
 
 
 def get_logger(name: str | None = None) -> Any:
-    """Return a bound structlog logger, configuring logging on first use."""
+    """Return a bound structlog logger, configuring logging on first use.
+
+    The name is bound into the event context rather than left for a processor
+    to read off the logger object: ``PrintLogger`` has no name, and binding is
+    the only way to keep the module name in the record.
+    """
     if not _configured:
         configure_logging()
-    return structlog.get_logger(name)
+    logger = structlog.get_logger(name)
+    return logger.bind(logger=name) if name else logger

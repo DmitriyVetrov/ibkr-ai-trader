@@ -69,6 +69,7 @@ def build_broker(
         trading_mode=settings.trading_mode,
         read_only=True,
         connect_timeout_seconds=settings.ibkr_connect_timeout_seconds,
+        request_timeout_seconds=settings.ibkr_request_timeout_seconds,
         market_data_type=settings.ibkr_market_data_type,
         clock=clock,
     )
