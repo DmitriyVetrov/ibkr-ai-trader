@@ -222,3 +222,46 @@ def test_missing_strategy_directory_is_an_error(tmp_config_dir: Path) -> None:
     shutil.rmtree(tmp_config_dir / "strategies")
     with pytest.raises(ConfigError, match="strategy directory"):
         load_config(tmp_config_dir)
+
+
+# ---------------------------------------------------------------------------
+# Project root discovery
+# ---------------------------------------------------------------------------
+@pytest.mark.unit
+def test_project_root_finds_the_config_tree() -> None:
+    from trading_system.infrastructure.settings import project_root
+
+    root = project_root()
+    assert (root / "config").is_dir()
+    assert (root / "schemas").is_dir()
+
+
+@pytest.mark.unit
+def test_project_root_honours_an_explicit_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trading_system.infrastructure.settings import project_root
+
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    assert project_root() == tmp_path.resolve()
+
+
+@pytest.mark.unit
+def test_project_root_falls_back_to_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The installed-package layout: config/ sits at the working directory.
+
+    Without this the container silently reports "no configuration" instead of
+    failing loudly at startup.
+    """
+    import trading_system.infrastructure.settings as settings_module
+    from trading_system.infrastructure.settings import project_root
+
+    (tmp_path / "config").mkdir()
+    monkeypatch.delenv("PROJECT_ROOT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    # Simulate site-packages: the source-derived path has no config/ beside it.
+    monkeypatch.setattr(settings_module, "__file__", str(tmp_path / "sp" / "a" / "b" / "s.py"))
+
+    assert project_root() == tmp_path

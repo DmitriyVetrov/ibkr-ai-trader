@@ -158,14 +158,11 @@ def test_config_validates_and_prints() -> None:
         ["run", "reconciliation"],
         ["run", "data-collection"],
         ["run", "end-of-day-report"],
-        ["test", "ibkr-connection"],
-        ["test", "ibkr-portfolio"],
-        ["test", "ibkr-market-data"],
-        ["test", "ibkr-option-chain"],
+        # The IBKR diagnostics and `test reconciliation` landed in Milestone 2;
+        # they are covered by tests/broker and tests/integration.
         ["test", "ibkr-order-simulation"],
         ["test", "allocation"],
         ["test", "risk"],
-        ["test", "reconciliation"],
         ["test", "e2e-dry-run"],
         ["test", "e2e-paper"],
         ["test", "workflow", "research"],
@@ -187,11 +184,26 @@ def test_unimplemented_commands_fail_loudly(args: list[str]) -> None:
 
 @pytest.mark.unit
 def test_unimplemented_command_names_its_milestone() -> None:
-    result = runner.invoke(app, ["test", "ibkr-connection"])
+    result = runner.invoke(app, ["run", "universe"])
     text = _text(result)
     assert "NOT IMPLEMENTED" in text
-    assert "Milestone 2" in text
+    assert "Milestone 4" in text
     assert "No broker connection was attempted" in text
+
+
+@pytest.mark.unit
+def test_milestone_2_diagnostics_are_implemented() -> None:
+    """These exited 3 in Milestone 1 and must not regress to a stub."""
+    for args in (
+        ["test", "ibkr-connection", "--simulated"],
+        ["test", "ibkr-portfolio", "--simulated"],
+        ["test", "ibkr-market-data", "--symbol", "SPY", "--simulated"],
+        ["test", "ibkr-option-chain", "--symbol", "SPY", "--simulated"],
+        ["test", "reconciliation", "--simulated"],
+    ):
+        result = runner.invoke(app, args)
+        assert result.exit_code == EXIT_OK, f"{args} -> {result.output}"
+        assert "NOT IMPLEMENTED" not in _text(result)
 
 
 @pytest.mark.unit

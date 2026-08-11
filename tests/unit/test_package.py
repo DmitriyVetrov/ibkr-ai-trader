@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import tomllib
 from pathlib import Path
@@ -54,3 +55,62 @@ def test_domain_does_not_import_infrastructure() -> None:
         source = Path(module.__file__ or "").read_text(encoding="utf-8")
         assert "trading_system.infrastructure" not in source
         assert "trading_system.broker" not in source
+
+
+def _imported_modules(path: Path) -> set[str]:
+    """Top-level module names actually imported by a file.
+
+    Parsed rather than grepped: the string "ib_async" appears in several
+    docstrings that explain the boundary, and those must not count as
+    violations of it.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            imported.add(node.module.split(".")[0])
+    return imported
+
+
+@pytest.mark.unit
+def test_only_the_ibkr_adapter_imports_ib_async(repo_root: Path) -> None:
+    """The broker library must not leak past its adapter.
+
+    If any other module imports ib_async, the abstraction has been bypassed and
+    application code has become coupled to one broker.
+    """
+    allowed = repo_root / "src" / "trading_system" / "broker" / "ibkr"
+    offenders = [
+        str(path.relative_to(repo_root))
+        for path in (repo_root / "src").rglob("*.py")
+        if "ib_async" in _imported_modules(path) and allowed not in path.parents
+    ]
+    assert offenders == [], f"ib_async imported outside broker/ibkr/: {offenders}"
+
+
+@pytest.mark.unit
+def test_domain_does_not_import_the_broker_layer(repo_root: Path) -> None:
+    """The domain layer stays free of broker implementation details."""
+    domain = repo_root / "src" / "trading_system" / "domain"
+    for path in domain.rglob("*.py"):
+        imported = _imported_modules(path)
+        assert "ib_async" not in imported, path
+        source = path.read_text(encoding="utf-8")
+        assert "from trading_system.broker" not in source, path
+        assert "import trading_system.broker" not in source, path
+
+
+@pytest.mark.unit
+def test_ibkr_translation_modules_do_not_import_the_library(repo_root: Path) -> None:
+    """Only client.py touches ib_async; the translators stay pure and testable.
+
+    This is what lets the position/order/execution/quote mapping be tested with
+    plain fakes, without the library or a gateway.
+    """
+    adapter = repo_root / "src" / "trading_system" / "broker" / "ibkr"
+    for name in ("positions.py", "orders.py", "executions.py", "market_data.py", "conversion.py"):
+        assert "ib_async" not in _imported_modules(adapter / name), (
+            f"{name} must not import ib_async"
+        )

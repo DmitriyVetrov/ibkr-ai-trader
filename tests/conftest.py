@@ -100,7 +100,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         reason="requires ALLOW_LIVE_TESTS=true; may reach a real broker or paid API"
     )
     for item in items:
-        if {"live", "ibkr", "llm"} & set(item.keywords):
+        if {"live", "ibkr", "paper", "llm"} & set(item.keywords):
             item.add_marker(skip)
 
 
