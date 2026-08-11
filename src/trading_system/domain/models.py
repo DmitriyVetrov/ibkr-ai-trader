@@ -22,19 +22,25 @@ from typing import Annotated, Any
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 from trading_system.domain.enums import (
+    BrokerConnectionState,
     DataQuality,
     Direction,
+    DiscrepancyType,
     ExitAction,
     ExitReason,
     ExpectedMagnitude,
     LegAction,
+    MarketDataOrigin,
     MarketHypothesis,
     OptionRight,
+    OrderSide,
     OrderStatus,
     OrderType,
     PositionState,
+    ReconciliationStatus,
     RiskOutcome,
     RiskReasonCode,
+    SecurityType,
     SourceTier,
     StrategyAction,
     StrategyType,
@@ -46,17 +52,27 @@ from trading_system.domain.enums import (
 __all__ = [
     "AllocationDecision",
     "AllocationEntry",
+    "BrokerAccount",
+    "BrokerContract",
+    "BrokerExecution",
+    "BrokerHealth",
+    "BrokerOrder",
+    "BrokerPosition",
     "ContractSelection",
     "DomainModel",
     "ExecutionResult",
     "ExitDecision",
     "Fill",
     "ImmutableModel",
+    "MarketDataSnapshot",
     "Money",
+    "OptionChainSnapshot",
     "OptionLeg",
     "OrderIntent",
     "PositionSnapshot",
     "PurchaseCard",
+    "ReconciliationDiscrepancy",
+    "ReconciliationReport",
     "ResearchReport",
     "RiskDecision",
     "SourceReference",
@@ -533,3 +549,338 @@ class TradeSnapshot(ImmutableModel):
     max_adverse_excursion_eur: Money | None = None
     exit_reason: ExitReason | None = None
     versions: SystemVersions
+
+
+# ---------------------------------------------------------------------------
+# Broker state (Milestone 2)
+#
+# These models are our normalised view of what the broker says is true. They
+# are deliberately separate from the workflow artifacts above: those record
+# what the system decided, these record what the broker reports. When the two
+# disagree, the broker wins.
+#
+# Every field the broker may omit is Optional. An absent value is represented
+# as ``None`` and never as a zero — "no margin data" and "zero margin" are
+# different facts, and conflating them would let a missing field read as a
+# safe number.
+# ---------------------------------------------------------------------------
+
+#: Broker-supplied symbols are accepted as-is. Broker reality is authoritative,
+#: so an unexpected symbol format must not cause us to reject the response.
+BrokerSymbol = Annotated[str, Field(min_length=1, max_length=64)]
+
+
+class BrokerContract(ImmutableModel):
+    """A tradeable instrument as identified by the broker.
+
+    Resolving a symbol to a broker contract id is a prerequisite for quotes and
+    option chains, so it is part of the read-only surface.
+    """
+
+    symbol: BrokerSymbol
+    security_type: SecurityType
+    as_of: UtcDatetime
+    source: Identifier
+
+    contract_id: int | None = None
+    exchange: str | None = None
+    primary_exchange: str | None = None
+    currency: str | None = None
+    local_symbol: str | None = None
+    trading_class: str | None = None
+    multiplier: int | None = Field(default=None, ge=1)
+
+    expiration: date | None = None
+    strike: Money | None = Field(default=None, gt=0)
+    right: OptionRight | None = None
+
+
+class BrokerAccount(ImmutableModel):
+    """Account-level state as reported by the broker."""
+
+    account_id: BrokerSymbol
+    currency: str = Field(min_length=3, max_length=8)
+    as_of: UtcDatetime
+    source: Identifier
+
+    cash: Money | None = None
+    net_liquidation: Money | None = None
+    buying_power: Money | None = None
+    available_funds: Money | None = None
+    initial_margin: Money | None = None
+    maintenance_margin: Money | None = None
+    excess_liquidity: Money | None = None
+    unrealized_pnl: Money | None = None
+    realized_pnl: Money | None = None
+
+    #: Every tag the broker returned, unparsed, for audit and later use.
+    raw_tags: dict[str, str] = Field(default_factory=dict)
+
+
+class BrokerPosition(ImmutableModel):
+    """A single position as reported by the broker.
+
+    Supports stock and option positions; option-specific fields are ``None``
+    for non-option instruments.
+    """
+
+    account_id: BrokerSymbol
+    symbol: BrokerSymbol
+    security_type: SecurityType
+    as_of: UtcDatetime
+    source: Identifier
+
+    contract_id: int | None = None
+    local_symbol: str | None = None
+    currency: str | None = None
+    multiplier: int | None = Field(default=None, ge=1)
+
+    #: Signed: negative means short. Fractional quantities are possible for
+    #: some instruments, so this is a Decimal rather than an int.
+    quantity: Money
+    average_cost: Money | None = None
+
+    # Option-specific.
+    expiration: date | None = None
+    strike: Money | None = Field(default=None, gt=0)
+    right: OptionRight | None = None
+
+    market_price: Money | None = None
+    market_value: Money | None = None
+    unrealized_pnl: Money | None = None
+    realized_pnl: Money | None = None
+
+    @model_validator(mode="after")
+    def _option_fields_match_security_type(self) -> BrokerPosition:
+        if self.security_type in (SecurityType.OPTION, SecurityType.FUTURE_OPTION):
+            missing = [
+                name
+                for name, value in (
+                    ("expiration", self.expiration),
+                    ("strike", self.strike),
+                    ("right", self.right),
+                )
+                if value is None
+            ]
+            if missing:
+                raise ValueError(f"option position {self.symbol} is missing: {', '.join(missing)}")
+        return self
+
+    @property
+    def is_option(self) -> bool:
+        return self.security_type in (SecurityType.OPTION, SecurityType.FUTURE_OPTION)
+
+
+class BrokerOrder(ImmutableModel):
+    """An order known to the broker.
+
+    An order is not a position and a submitted order is not a filled order;
+    both distinctions are load-bearing during reconciliation.
+    """
+
+    broker_order_id: BrokerSymbol
+    account_id: BrokerSymbol | None = None
+    as_of: UtcDatetime
+    source: Identifier
+
+    client_order_id: str | None = None
+    perm_id: int | None = None
+    contract_id: int | None = None
+    symbol: BrokerSymbol
+    security_type: SecurityType
+    local_symbol: str | None = None
+
+    side: OrderSide
+    quantity: Money = Field(gt=0)
+    order_type: str
+    limit_price: Money | None = None
+    stop_price: Money | None = None
+    time_in_force: str | None = None
+
+    status: OrderStatus
+    filled_quantity: Money = Field(default=Decimal("0"), ge=0)
+    remaining_quantity: Money | None = Field(default=None, ge=0)
+    average_fill_price: Money | None = None
+
+    submitted_at: UtcDatetime | None = None
+    updated_at: UtcDatetime | None = None
+
+
+class BrokerExecution(ImmutableModel):
+    """A fill reported by the broker.
+
+    Positions are reconstructed from executions, never from submitted orders.
+    """
+
+    execution_id: BrokerSymbol
+    broker_order_id: BrokerSymbol | None = None
+    account_id: BrokerSymbol | None = None
+    as_of: UtcDatetime
+    source: Identifier
+
+    contract_id: int | None = None
+    symbol: BrokerSymbol
+    security_type: SecurityType
+    side: OrderSide
+
+    quantity: Money = Field(gt=0)
+    price: Money = Field(gt=0)
+    executed_at: UtcDatetime
+    commission: Money | None = None
+    currency: str | None = None
+
+
+class MarketDataSnapshot(ImmutableModel):
+    """A quote, with its provenance attached.
+
+    ``origin`` is required: a consumer must always be able to tell a live
+    broker quote from delayed, cached or simulated data. When no real data is
+    available the origin is ``UNAVAILABLE`` and every price field is ``None``
+    — no price is ever invented.
+    """
+
+    symbol: BrokerSymbol
+    security_type: SecurityType
+    as_of: UtcDatetime
+    source: Identifier
+    origin: MarketDataOrigin
+    data_quality: DataQuality = DataQuality.OK
+
+    contract_id: int | None = None
+    currency: str | None = None
+    bid: Money | None = None
+    ask: Money | None = None
+    last: Money | None = None
+    close: Money | None = None
+    volume: Money | None = None
+
+    @model_validator(mode="after")
+    def _unavailable_carries_no_prices(self) -> MarketDataSnapshot:
+        if self.origin is MarketDataOrigin.UNAVAILABLE:
+            priced = [
+                name
+                for name, value in (
+                    ("bid", self.bid),
+                    ("ask", self.ask),
+                    ("last", self.last),
+                    ("close", self.close),
+                )
+                if value is not None
+            ]
+            if priced:
+                raise ValueError(
+                    f"origin UNAVAILABLE must carry no prices, but got: {', '.join(priced)}"
+                )
+        return self
+
+    @property
+    def has_quote(self) -> bool:
+        return self.origin is not MarketDataOrigin.UNAVAILABLE and (
+            self.bid is not None or self.ask is not None or self.last is not None
+        )
+
+
+class OptionChainSnapshot(ImmutableModel):
+    """Normalised option chain metadata for one underlying.
+
+    Milestone 2 proves the chain can be requested and normalised. It does not
+    select a contract, rank anything, or recommend a trade.
+    """
+
+    underlying: BrokerSymbol
+    as_of: UtcDatetime
+    source: Identifier
+    origin: MarketDataOrigin
+
+    underlying_contract_id: int | None = None
+    exchange: str | None = None
+    trading_class: str | None = None
+    multiplier: int | None = Field(default=None, ge=1)
+
+    expirations: list[date] = Field(default_factory=list)
+    strikes: list[Money] = Field(default_factory=list)
+    rights: list[OptionRight] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _sorted_and_unique(self) -> OptionChainSnapshot:
+        """Deterministic ordering: the same chain must normalise identically."""
+        if list(self.expirations) != sorted(set(self.expirations)):
+            raise ValueError("expirations must be sorted and unique")
+        if list(self.strikes) != sorted(set(self.strikes)):
+            raise ValueError("strikes must be sorted and unique")
+        return self
+
+
+class BrokerHealth(ImmutableModel):
+    """Diagnostic result of a broker health check.
+
+    Carries no credentials: host and port are operational facts, usernames and
+    passwords are not, and this object is logged and printed.
+    """
+
+    broker: Identifier
+    state: BrokerConnectionState
+    as_of: UtcDatetime
+    trading_mode: TradingMode
+
+    host: str | None = None
+    port: int | None = None
+    account_id: BrokerSymbol | None = None
+    read_only: bool = True
+    latency_ms: float | None = Field(default=None, ge=0)
+    last_successful_communication: UtcDatetime | None = None
+    server_version: int | None = None
+    error: str | None = None
+
+    @property
+    def is_usable(self) -> bool:
+        """Whether it is safe to rely on this broker right now."""
+        return self.state is BrokerConnectionState.CONNECTED
+
+
+class ReconciliationDiscrepancy(ImmutableModel):
+    """One specific disagreement between internal state and broker state.
+
+    Both sides are recorded verbatim. No resolution is proposed: the system
+    reports the discrepancy and stops, it does not guess which side is stale.
+    """
+
+    discrepancy_type: DiscrepancyType
+    identifier: str
+    description: str
+    internal_value: str | None = None
+    broker_value: str | None = None
+
+
+class ReconciliationReport(ImmutableModel):
+    """Outcome of comparing internal state against broker state.
+
+    A ``MISMATCH`` blocks new executions until it is resolved or explicitly
+    classified as safe (specification section 20).
+    """
+
+    as_of: UtcDatetime
+    broker: Identifier
+    status: ReconciliationStatus
+    discrepancies: list[ReconciliationDiscrepancy] = Field(default_factory=list)
+
+    positions_compared: int = Field(default=0, ge=0)
+    orders_compared: int = Field(default=0, ge=0)
+    executions_compared: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _status_matches_discrepancies(self) -> ReconciliationReport:
+        if self.status is ReconciliationStatus.MATCHED and self.discrepancies:
+            raise ValueError("MATCHED cannot carry discrepancies")
+        if self.status is ReconciliationStatus.MISMATCH and not self.discrepancies:
+            raise ValueError("MISMATCH must name at least one discrepancy")
+        return self
+
+    @property
+    def blocks_new_executions(self) -> bool:
+        """Fail safe: anything other than a clean match stops new trading.
+
+        An unreachable broker blocks too — unknown broker state is not a safe
+        state to open a position from.
+        """
+        return self.status is not ReconciliationStatus.MATCHED

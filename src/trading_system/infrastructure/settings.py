@@ -18,6 +18,8 @@ An unquoted ``0.50`` is parsed as a binary float and is rejected, by design
 
 from __future__ import annotations
 
+import os
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -30,6 +32,7 @@ from trading_system.domain.models import Money
 
 __all__ = [
     "ApplicationConfig",
+    "BrokerBackend",
     "CampaignConfig",
     "ConfigError",
     "ExitPolicyConfig",
@@ -52,12 +55,40 @@ class ConfigError(RuntimeError):
     """Raised when configuration is missing, malformed or inconsistent."""
 
 
-def project_root() -> Path:
-    """Repository root, derived from this file's location.
+class BrokerBackend(StrEnum):
+    """Which broker implementation the runtime should construct."""
 
-    ``src/trading_system/infrastructure/settings.py`` -> four levels up.
+    SIMULATOR = "SIMULATOR"
+    IBKR = "IBKR"
+
+
+def project_root() -> Path:
+    """Locate the directory holding ``config/`` and ``schemas/``.
+
+    Three layouts have to work, and deriving the path from ``__file__`` alone
+    only handles the first:
+
+    * a repo checkout or editable install — four levels up from this file;
+    * an installed package (the container image), where this file lives in
+      ``site-packages`` and the data directories sit at the working directory;
+    * an explicit ``PROJECT_ROOT``, which wins over both.
+
+    Getting this wrong is not cosmetic: the runtime silently reports "no
+    configuration" and "0 schemas" instead of failing at startup.
     """
-    return Path(__file__).resolve().parents[3]
+    override = os.environ.get("PROJECT_ROOT")
+    if override:
+        return Path(override).resolve()
+
+    from_source = Path(__file__).resolve().parents[3]
+    if (from_source / "config").is_dir():
+        return from_source
+
+    working_directory = Path.cwd()
+    if (working_directory / "config").is_dir():
+        return working_directory
+
+    return from_source
 
 
 def default_config_dir() -> Path:
@@ -90,13 +121,32 @@ class Settings(BaseSettings):
     live_readiness_checklist_signed_off: bool = False
     allow_live_tests: bool = False
 
-    # --- IBKR (Milestone 2) ------------------------------------------------
+    # --- IBKR --------------------------------------------------------------
+    #
+    # Port 4002 is IB Gateway paper. The four gateway/TWS ports differ and are
+    # easy to confuse, so nothing here is hard-coded elsewhere in the codebase:
+    #
+    #   IB Gateway paper 4002   IB Gateway live 4001
+    #   TWS paper        7497   TWS live        7496
     ibkr_host: str = "127.0.0.1"
     ibkr_port: int = 4002
     ibkr_client_id: int = 1
     ibkr_username: SecretStr | None = None
     ibkr_password: SecretStr | None = None
     ibkr_account: SecretStr | None = None
+
+    #: Opens the IBKR API connection read-only, so the broker itself rejects
+    #: order placement. Milestone 2 refuses to run with this disabled.
+    ibkr_read_only: bool = True
+    ibkr_connect_timeout_seconds: float = Field(default=10.0, gt=0)
+    #: IBKR market data type: 1 live, 2 frozen, 3 delayed, 4 delayed-frozen.
+    #: Delayed is the default because it needs no paid subscription, and a
+    #: quote that is honestly labelled delayed beats one that fails to arrive.
+    ibkr_market_data_type: int = Field(default=3, ge=1, le=4)
+
+    #: Which broker implementation to use. Unset resolves from the trading
+    #: mode: DRY_RUN uses the simulator, PAPER and LIVE use IBKR.
+    broker_backend: BrokerBackend | None = None
 
     # --- Anthropic (Milestone 4+) -----------------------------------------
     anthropic_api_key: SecretStr | None = None
@@ -150,6 +200,25 @@ class Settings(BaseSettings):
         ``DRY_RUN`` never leaves the process.
         """
         return self.trading_mode in (TradingMode.PAPER, TradingMode.LIVE)
+
+    @property
+    def resolved_broker_backend(self) -> BrokerBackend:
+        """Which broker to construct, derived from the mode unless overridden."""
+        if self.broker_backend is not None:
+            return self.broker_backend
+        return (
+            BrokerBackend.SIMULATOR
+            if self.trading_mode is TradingMode.DRY_RUN
+            else BrokerBackend.IBKR
+        )
+
+    @property
+    def ibkr_account_id(self) -> str | None:
+        """The configured account number, unwrapped from its secret container."""
+        if self.ibkr_account is None:
+            return None
+        value = self.ibkr_account.get_secret_value().strip()
+        return value or None
 
 
 # ---------------------------------------------------------------------------

@@ -12,20 +12,25 @@ from __future__ import annotations
 from enum import StrEnum, unique
 
 __all__ = [
+    "BrokerConnectionState",
     "DataQuality",
     "Direction",
+    "DiscrepancyType",
     "ExitAction",
     "ExitReason",
     "ExpectedMagnitude",
     "LegAction",
+    "MarketDataOrigin",
     "MarketHypothesis",
     "OptionRight",
+    "OrderSide",
     "OrderStatus",
     "OrderType",
     "PositionState",
     "ReconciliationStatus",
     "RiskOutcome",
     "RiskReasonCode",
+    "SecurityType",
     "SourceTier",
     "StrategyAction",
     "StrategyType",
@@ -284,6 +289,75 @@ class ReconciliationStatus(StrEnum):
     MATCHED = "MATCHED"
     MISMATCH = "MISMATCH"
     BROKER_UNAVAILABLE = "BROKER_UNAVAILABLE"
+
+
+@unique
+class SecurityType(StrEnum):
+    """Instrument class as reported by the broker.
+
+    The system trades options, but a broker account may hold stock — assigned
+    shares, for instance — so an accurate picture of broker state needs both.
+    """
+
+    STOCK = "STOCK"
+    OPTION = "OPTION"
+    FUTURE = "FUTURE"
+    FUTURE_OPTION = "FUTURE_OPTION"
+    CASH = "CASH"
+    INDEX = "INDEX"
+    OTHER = "OTHER"
+
+
+@unique
+class OrderSide(StrEnum):
+    """Side of a broker order."""
+
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+@unique
+class BrokerConnectionState(StrEnum):
+    """Connection state reported by a broker health check.
+
+    ``UNKNOWN`` is distinct from ``DISCONNECTED`` on purpose: not knowing the
+    broker's state is itself a reason not to trade, and must not be quietly
+    collapsed into a definite answer.
+    """
+
+    CONNECTED = "CONNECTED"
+    CONNECTING = "CONNECTING"
+    DISCONNECTED = "DISCONNECTED"
+    ERROR = "ERROR"
+    UNKNOWN = "UNKNOWN"
+
+
+@unique
+class MarketDataOrigin(StrEnum):
+    """Where a quote actually came from.
+
+    Recorded on every snapshot so that simulated or delayed data can never be
+    mistaken for a live broker quote. There is no silent fallback: if real data
+    is unavailable the origin is ``UNAVAILABLE`` and no price is invented.
+    """
+
+    BROKER_REALTIME = "BROKER_REALTIME"
+    BROKER_DELAYED = "BROKER_DELAYED"
+    BROKER_FROZEN = "BROKER_FROZEN"
+    CACHED = "CACHED"
+    SIMULATED = "SIMULATED"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+@unique
+class DiscrepancyType(StrEnum):
+    """Kind of disagreement found between internal state and broker state."""
+
+    POSITION_MISMATCH = "POSITION_MISMATCH"
+    ORDER_MISMATCH = "ORDER_MISMATCH"
+    EXECUTION_MISMATCH = "EXECUTION_MISMATCH"
+    ACCOUNT_MISMATCH = "ACCOUNT_MISMATCH"
+    UNKNOWN = "UNKNOWN"
 
 
 #: States from which no further transition is possible.
