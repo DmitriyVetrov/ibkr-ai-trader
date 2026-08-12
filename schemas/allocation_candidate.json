@@ -1,0 +1,538 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/allocation_candidate.json",
+  "title": "AllocationCandidate",
+  "description": "One purchase candidate from Milestone 6 plus the strategy-level risk semantics that apply to it: the only thing the risk engine evaluates. Carries the cost of ONE unit of the structure and no quantity, no allocation and no money beyond it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "opportunity_id",
+    "symbol",
+    "as_of",
+    "strategy",
+    "risk_profile",
+    "legs",
+    "expiration",
+    "dte",
+    "price",
+    "score",
+    "contract_selection_id",
+    "contract_run_id"
+  ],
+  "properties": {
+    "opportunity_id": {
+      "description": "Derived from the research report, strategy decision and contract selection this descends from. This is what makes the stage idempotent.",
+      "type": "string",
+      "minLength": 1
+    },
+    "symbol": {
+      "type": "string",
+      "pattern": "^[A-Z0-9.\\-]+$"
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "strategy": {
+      "enum": [
+        "LONG_CALL",
+        "LONG_PUT",
+        "LONG_STRADDLE",
+        "LONG_STRANGLE"
+      ]
+    },
+    "risk_profile": {
+      "$ref": "#/$defs/strategy_risk_profile"
+    },
+    "legs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/candidate_leg"
+      }
+    },
+    "expiration": {
+      "type": "string",
+      "format": "date"
+    },
+    "dte": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "price": {
+      "$ref": "#/$defs/candidate_price"
+    },
+    "score": {
+      "$ref": "#/$defs/opportunity_score"
+    },
+    "hypothesis": {
+      "enum": [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+        null
+      ]
+    },
+    "research_confidence": {
+      "enum": [
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+        null
+      ]
+    },
+    "strategy_confidence": {
+      "enum": [
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+        null
+      ]
+    },
+    "expected_magnitude": {
+      "enum": [
+        "SMALL",
+        "MODERATE",
+        "LARGE",
+        null
+      ]
+    },
+    "horizon_days": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "maximum": 365
+    },
+    "research_usable": {
+      "description": "The data layer's own verdict, carried across verbatim and never re-graded here.",
+      "type": "boolean"
+    },
+    "data_quality": {
+      "enum": [
+        "OK",
+        "DEGRADED",
+        "STALE",
+        "UNUSABLE"
+      ]
+    },
+    "contract_selection_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "contract_run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "strategy_decision_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "strategy_run_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "research_report_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "research_run_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "universe_run_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "input_snapshot_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "money": {
+      "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "nullable_money": {
+      "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "candidate_leg": {
+      "description": "One contract of a purchase candidate. Carried so Milestone 8 can build an order without re-running selection; carries no order instruction of any kind.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leg_index",
+        "action",
+        "right",
+        "underlying",
+        "expiration",
+        "strike",
+        "multiplier",
+        "contract_id",
+        "trading_class"
+      ],
+      "properties": {
+        "leg_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "action": {
+          "enum": [
+            "BUY",
+            "SELL"
+          ]
+        },
+        "right": {
+          "enum": [
+            "CALL",
+            "PUT"
+          ]
+        },
+        "ratio": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "underlying": {
+          "type": "string",
+          "pattern": "^[A-Z0-9.\\-]+$"
+        },
+        "expiration": {
+          "type": "string",
+          "format": "date"
+        },
+        "strike": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "multiplier": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "contract_id": {
+          "description": "The broker's own contract id. Required: a leg nobody can identify at the broker cannot be authorised.",
+          "type": "integer"
+        },
+        "trading_class": {
+          "description": "Copied from the chain the contract came from, never derived from the ticker. IBKR reports SPY options under both SPY and 2SPY.",
+          "type": "string",
+          "minLength": 1
+        },
+        "exchange": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local_symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bid": {
+          "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "ask": {
+          "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "quote_as_of": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "quote_snapshot_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "candidate_price": {
+      "description": "The cost of ONE unit of the structure, and where the figure came from. available=false carries no figure and must say why: no price is ever invented.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "source": {
+          "enum": [
+            "ASK_DEBIT",
+            "MID_DEBIT",
+            null
+          ]
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unit_cost": {
+          "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "max_leg_spread_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "quote_as_of": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "unavailable_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "available": {
+                "const": true
+              }
+            },
+            "required": [
+              "available"
+            ]
+          },
+          "then": {
+            "required": [
+              "unit_cost",
+              "source"
+            ],
+            "properties": {
+              "unit_cost": {
+                "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+                "type": "string",
+                "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+              },
+              "source": {
+                "enum": [
+                  "ASK_DEBIT",
+                  "MID_DEBIT"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "available": {
+                "const": false
+              }
+            },
+            "required": [
+              "available"
+            ]
+          },
+          "then": {
+            "required": [
+              "unavailable_reason"
+            ],
+            "properties": {
+              "unit_cost": {
+                "type": "null"
+              },
+              "unavailable_reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "opportunity_score": {
+      "description": "A deterministic priority score with every component shown, so the total can be recomputed by hand. A band representative, never a probability, and it decides order only — never permission and never size.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "research_confidence",
+        "strategy_confidence",
+        "expected_magnitude",
+        "spread_quality",
+        "data_quality"
+      ],
+      "properties": {
+        "total": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "research_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "strategy_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "expected_magnitude": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "spread_quality": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "data_quality": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "weights": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "strategy_risk_profile": {
+      "description": "The strategy-level risk semantics that apply to a candidate, copied from the strategy's own definition so a past decision stays explainable after the configuration changes.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "strategy",
+        "strategy_version",
+        "max_loss_basis",
+        "directional_view",
+        "leg_count",
+        "dte_min",
+        "dte_max",
+        "min_option_price_eur",
+        "max_option_price_eur",
+        "max_bid_ask_spread_pct"
+      ],
+      "properties": {
+        "strategy": {
+          "enum": [
+            "LONG_CALL",
+            "LONG_PUT",
+            "LONG_STRADDLE",
+            "LONG_STRANGLE"
+          ]
+        },
+        "strategy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "max_loss_basis": {
+          "enum": [
+            "NET_DEBIT_PAID",
+            "NOT_DEFINED"
+          ]
+        },
+        "directional_view": {
+          "enum": [
+            "BULLISH",
+            "BEARISH",
+            "NEUTRAL",
+            "UNCERTAIN"
+          ]
+        },
+        "single_position": {
+          "type": "boolean"
+        },
+        "leg_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "dte_min": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dte_max": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_option_price_eur": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "max_option_price_eur": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "max_bid_ask_spread_pct": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

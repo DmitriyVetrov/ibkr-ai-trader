@@ -12,8 +12,13 @@ from __future__ import annotations
 from enum import StrEnum, unique
 
 __all__ = [
+    "AllocationOutcome",
+    "AllocationPolicy",
+    "AllocationReason",
+    "AllocationRunStatus",
     "BarInterval",
     "BrokerConnectionState",
+    "BudgetSource",
     "ClaimSupport",
     "CollectionOutcome",
     "ConfidenceLevel",
@@ -38,6 +43,7 @@ __all__ = [
     "MarketDataOrigin",
     "MarketEventType",
     "MarketHypothesis",
+    "MaxLossBasis",
     "OptionDataField",
     "OptionRight",
     "Optionability",
@@ -45,12 +51,15 @@ __all__ = [
     "OrderStatus",
     "OrderType",
     "PositionState",
+    "PriceSource",
     "ReconciliationStatus",
     "RegulatoryFormType",
     "RelevanceLevel",
     "ResearchDataGap",
     "ResearchStatus",
     "RiskCategory",
+    "RiskCheckOutcome",
+    "RiskLimitScope",
     "RiskOutcome",
     "RiskReasonCode",
     "SecurityType",
@@ -270,6 +279,61 @@ class RiskReasonCode(StrEnum):
     STALE_MARKET_DATA = "STALE_MARKET_DATA"
     TRADING_MODE_NOT_PERMITTED = "TRADING_MODE_NOT_PERMITTED"
     LIVE_MODE_GUARD_NOT_SATISFIED = "LIVE_MODE_GUARD_NOT_SATISFIED"
+
+    # --- Milestone 7 -------------------------------------------------------
+    #
+    # Added rather than duplicated into a parallel vocabulary: one authoritative
+    # list of reasons a trade was refused keeps evaluation able to aggregate
+    # across milestones. ``schemas/risk_decision.json`` enumerates the same set.
+
+    #: The campaign has capital left, but not enough for even one unit.
+    INSUFFICIENT_CAMPAIGN_BUDGET = "INSUFFICIENT_CAMPAIGN_BUDGET"
+    #: The broker reports less available capital than the campaign would allow.
+    #: The most restrictive limit wins; the campaign envelope is not permission
+    #: to spend money the account does not have.
+    INSUFFICIENT_BUYING_POWER = "INSUFFICIENT_BUYING_POWER"
+    MAX_RISK_PER_TRADE_EXCEEDED = "MAX_RISK_PER_TRADE_EXCEEDED"
+    MAX_CONTRACT_QUANTITY_EXCEEDED = "MAX_CONTRACT_QUANTITY_EXCEEDED"
+    MAX_POSITIONS_PER_UNDERLYING_EXCEEDED = "MAX_POSITIONS_PER_UNDERLYING_EXCEEDED"
+    MAX_NEW_POSITIONS_PER_RUN_REACHED = "MAX_NEW_POSITIONS_PER_RUN_REACHED"
+    #: A whole number of contracts would cost less than the configured floor.
+    #: Deliberately distinct from ZERO_QUANTITY: one says the position would be
+    #: too small to be worth holding, the other that none was affordable.
+    MIN_ALLOCATION_NOT_MET = "MIN_ALLOCATION_NOT_MET"
+    #: Every limit passed but the floor of the quantity calculation is zero.
+    ZERO_QUANTITY = "ZERO_QUANTITY"
+    #: The reserve fraction is not spendable capital, by policy.
+    CAMPAIGN_RESERVE_PROTECTED = "CAMPAIGN_RESERVE_PROTECTED"
+    #: This exact opportunity already holds an approved capital reservation.
+    DUPLICATE_OPPORTUNITY = "DUPLICATE_OPPORTUNITY"
+    #: A price was present but unusable: zero, negative, or not attributable to
+    #: the selected contract.
+    INVALID_PRICE = "INVALID_PRICE"
+    #: No price at all. Never replaced with zero, a midpoint from one side, or
+    #: the last thing we happened to see.
+    PRICE_UNAVAILABLE = "PRICE_UNAVAILABLE"
+    INVALID_MULTIPLIER = "INVALID_MULTIPLIER"
+    #: The strategy's maximum loss is not bounded by a model this engine knows
+    #: how to compute. Fail closed: an unquantified loss is not a small one.
+    MAX_LOSS_UNDEFINED = "MAX_LOSS_UNDEFINED"
+    #: The upstream data layer judged the inputs unusable. Never re-graded here.
+    DATA_QUALITY_FAILED = "DATA_QUALITY_FAILED"
+    #: A record that was not knowable at the decision instant reached the
+    #: engine. A correctness bug, never a market outcome.
+    POINT_IN_TIME_ERROR = "POINT_IN_TIME_ERROR"
+    INVALID_ACCOUNT_SNAPSHOT = "INVALID_ACCOUNT_SNAPSHOT"
+    ACCOUNT_SNAPSHOT_STALE = "ACCOUNT_SNAPSHOT_STALE"
+    ACCOUNT_SNAPSHOT_UNAVAILABLE = "ACCOUNT_SNAPSHOT_UNAVAILABLE"
+    CURRENCY_MISMATCH = "CURRENCY_MISMATCH"
+    #: A conversion was required and no deterministic rate is configured. An
+    #: arbitrary rate would be an invented price.
+    FX_CONVERSION_UNAVAILABLE = "FX_CONVERSION_UNAVAILABLE"
+    #: Ranked, but below the configured floor for deserving capital.
+    BELOW_MIN_OPPORTUNITY_SCORE = "BELOW_MIN_OPPORTUNITY_SCORE"
+    #: Realised profit and loss for the day is not tracked yet, so the daily
+    #: loss limit could not be evaluated. Recorded rather than assumed passed.
+    DAILY_LOSS_NOT_TRACKED = "DAILY_LOSS_NOT_TRACKED"
+    CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
 
 
 @unique
@@ -1149,6 +1213,182 @@ class ContractRejectionReason(StrEnum):
     #: legs could not be combined. Not a data fault.
     INCOMPATIBLE_LEG = "INCOMPATIBLE_LEG"
     NOT_SELECTED_BY_POLICY = "NOT_SELECTED_BY_POLICY"
+
+
+# ---------------------------------------------------------------------------
+# Allocation and risk (Milestone 7)
+#
+# The milestone that decides how much. Every enum here belongs to a
+# deterministic module: no agent produces one, and no prompt can widen one.
+# ---------------------------------------------------------------------------
+@unique
+class MaxLossBasis(StrEnum):
+    """How a strategy's maximum loss is bounded.
+
+    Declared by the strategy's own structure rather than assumed by the risk
+    engine, because "max loss is the premium" is true of the four long-debit
+    strategies shipped today and false of the first credit spread anyone adds.
+    An engine that assumed it would size that spread as though it could only
+    lose what it paid — which is exactly backwards.
+    """
+
+    #: Long-debit structures: the most that can be lost is what was paid for
+    #: one unit, times the number of units. Nothing else is at risk.
+    NET_DEBIT_PAID = "NET_DEBIT_PAID"
+    #: The loss is bounded by something the engine cannot compute from the
+    #: candidate alone — margin, an assigned short leg, an undefined tail. Fail
+    #: closed: this is a rejection, not a number.
+    NOT_DEFINED = "NOT_DEFINED"
+
+
+@unique
+class PriceSource(StrEnum):
+    """Which figure a candidate's unit cost was taken from.
+
+    Recorded, never assumed: an ask-based debit and a midpoint debit are
+    different claims about what a structure costs, and a later evaluation must
+    be able to tell which one authorised the capital.
+    """
+
+    #: Sum over legs of ask x multiplier x ratio — the honest cost of buying.
+    ASK_DEBIT = "ASK_DEBIT"
+    #: The same at the midpoint, only where both sides of every leg were quoted.
+    MID_DEBIT = "MID_DEBIT"
+
+
+@unique
+class BudgetSource(StrEnum):
+    """Where the campaign budget in force actually came from."""
+
+    CONFIG = "CONFIG"
+    #: ``CAMPAIGN_BUDGET_EUR`` in the environment. Recorded so a stored decision
+    #: never implies the committed configuration authorised the figure.
+    ENVIRONMENT = "ENVIRONMENT"
+
+
+@unique
+class RiskLimitScope(StrEnum):
+    """Which layer of the hierarchy owns a limit.
+
+    Global limits bound campaign limits, which bound strategy limits. A child
+    may narrow a parent and may never widen one; configuration loading refuses
+    rather than clamping, because a clamped limit is a limit nobody can see.
+    """
+
+    GLOBAL = "GLOBAL"
+    CAMPAIGN = "CAMPAIGN"
+    STRATEGY = "STRATEGY"
+    #: Bounds on one position and on the quantity within it — the innermost
+    #: layer, and the only one derived from the candidate rather than declared
+    #: in configuration.
+    POSITION = "POSITION"
+
+
+@unique
+class RiskCheckOutcome(StrEnum):
+    """Result of one individual risk check.
+
+    ``NOT_EVALUATED`` is deliberately distinct from ``PASS``. A limit that could
+    not be checked — because the input it needs is not tracked yet — has not
+    been satisfied, and recording it as passed would be the same lie as reading
+    a missing measurement as zero.
+    """
+
+    PASS = "PASS"
+    FAIL = "FAIL"
+    NOT_EVALUATED = "NOT_EVALUATED"
+
+
+@unique
+class AllocationOutcome(StrEnum):
+    """What happened to one candidate at the allocation stage.
+
+    ``NO_TRADE`` is a first-class outcome and the expected one whenever the
+    campaign has run out of room: a valid strategy and a valid contract are not
+    an entitlement to capital.
+    """
+
+    APPROVED = "APPROVED"
+    #: A hard limit refused it. The reason codes say which.
+    REJECTED = "REJECTED"
+    #: Permitted in principle, but no whole contract fits what is left.
+    NO_TRADE = "NO_TRADE"
+    #: This exact opportunity already holds an approved reservation. Running
+    #: the stage twice must not reserve the capital twice.
+    ALREADY_ALLOCATED = "ALREADY_ALLOCATED"
+
+    @property
+    def commits_capital(self) -> bool:
+        return self is AllocationOutcome.APPROVED
+
+
+@unique
+class AllocationRunStatus(StrEnum):
+    """Outcome of a whole allocation run.
+
+    A run that authorised nothing is not a failure — it is the usual answer
+    when the budget is committed. The states below distinguish *declined* from
+    *could not look*, which are different facts about the world.
+    """
+
+    SUCCESS = "SUCCESS"
+    #: Ran to completion and authorised no capital. A considered refusal.
+    NO_ALLOCATION = "NO_ALLOCATION"
+    #: The contract stage produced no purchase candidate to consider.
+    NO_CANDIDATES = "NO_CANDIDATES"
+    #: No contract-selection run exists to allocate against.
+    NO_CONTRACT_RUN = "NO_CONTRACT_RUN"
+    #: No account snapshot was available, or the newest one is too old. The
+    #: campaign envelope alone is not enough to authorise capital.
+    ACCOUNT_SNAPSHOT_UNAVAILABLE = "ACCOUNT_SNAPSHOT_UNAVAILABLE"
+    #: A record that was not knowable at the decision instant reached the run.
+    POINT_IN_TIME_ERROR = "POINT_IN_TIME_ERROR"
+    CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
+
+    @property
+    def produced_authorizations(self) -> bool:
+        """Whether a downstream stage may consume this run."""
+        return self is AllocationRunStatus.SUCCESS
+
+
+@unique
+class AllocationPolicy(StrEnum):
+    """How a finite campaign budget is distributed across many candidates.
+
+    One member today, deliberately. The first version has to be transparent,
+    deterministic, explainable and testable; a portfolio optimiser is none of
+    those and is not what this milestone is for.
+    """
+
+    #: Order by deterministic priority, then fund each candidate in turn with
+    #: whatever the limits still permit, stopping when the budget or the
+    #: position count is exhausted.
+    PRIORITY_FIRST_FIT = "PRIORITY_FIRST_FIT"
+
+
+@unique
+class AllocationReason(StrEnum):
+    """Why a candidate reached its outcome, beyond the risk reason codes.
+
+    These describe the *allocation* step rather than a limit breach: how the
+    quantity came to be what it is. A rejection always carries a
+    :class:`RiskReasonCode`; an approval carries one of these.
+    """
+
+    #: Every applicable limit permitted the quantity that was requested.
+    FULL_ALLOCATION = "FULL_ALLOCATION"
+    #: The quantity was reduced to fit the remaining campaign budget.
+    LIMITED_BY_BUDGET = "LIMITED_BY_BUDGET"
+    #: Reduced to fit the remaining risk budget.
+    LIMITED_BY_RISK = "LIMITED_BY_RISK"
+    #: Reduced by a per-trade allocation ceiling.
+    LIMITED_BY_TRADE_CAP = "LIMITED_BY_TRADE_CAP"
+    #: Reduced by an underlying or strategy concentration ceiling.
+    LIMITED_BY_CONCENTRATION = "LIMITED_BY_CONCENTRATION"
+    #: Reduced by the contract-count ceiling.
+    LIMITED_BY_CONTRACT_CAP = "LIMITED_BY_CONTRACT_CAP"
+    #: Reduced by what the broker says is actually available.
+    LIMITED_BY_BUYING_POWER = "LIMITED_BY_BUYING_POWER"
 
 
 #: States from which no further transition is possible.

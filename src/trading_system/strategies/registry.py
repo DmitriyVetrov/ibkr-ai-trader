@@ -33,6 +33,7 @@ from trading_system.domain.enums import (
     ExpirationSelectionPolicy,
     LegAction,
     MarketHypothesis,
+    MaxLossBasis,
     OptionDataField,
     OptionRight,
     SecurityType,
@@ -144,6 +145,17 @@ class StrategySpecification:
     @property
     def strike_relationship(self) -> StrikeRelationship:
         return self.structure.strike_relationship
+
+    @property
+    def max_loss_basis(self) -> MaxLossBasis:
+        """How much this strategy can lose, as declared by its structure.
+
+        Read by the risk engine through the candidate rather than computed
+        there: a generic "max loss is the premium" formula is right for every
+        strategy shipped today and wrong for the first one that sells an
+        option.
+        """
+        return self.structure.max_loss_basis
 
     @property
     def is_multi_leg(self) -> bool:

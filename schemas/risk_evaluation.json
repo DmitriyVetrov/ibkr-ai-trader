@@ -1,0 +1,605 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/risk_evaluation.json",
+  "title": "RiskEvaluation",
+  "description": "The deterministic verdict on one candidate. APPROVED means permitted, not funded. No agent can produce, amend or override one: there is no field for a model, a prompt or a rationale.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "evaluation_id",
+    "opportunity_id",
+    "symbol",
+    "as_of",
+    "outcome",
+    "reason_codes",
+    "limits",
+    "exposure",
+    "trading_mode"
+  ],
+  "properties": {
+    "evaluation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "opportunity_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "symbol": {
+      "type": "string",
+      "pattern": "^[A-Z0-9.\\-]+$"
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "outcome": {
+      "enum": [
+        "APPROVED",
+        "REJECTED"
+      ]
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "OK",
+          "CAMPAIGN_BUDGET_EXCEEDED",
+          "MAX_ALLOCATION_PER_TRADE_EXCEEDED",
+          "MAX_POSITIONS_EXCEEDED",
+          "MAX_TOTAL_OPEN_RISK_EXCEEDED",
+          "UNDERLYING_CONCENTRATION_EXCEEDED",
+          "STRATEGY_CONCENTRATION_EXCEEDED",
+          "DIRECTIONAL_EXPOSURE_EXCEEDED",
+          "DAILY_LOSS_LIMIT_REACHED",
+          "INSUFFICIENT_LIQUIDITY",
+          "OPTION_PRICE_OUT_OF_RANGE",
+          "SPREAD_TOO_WIDE",
+          "DTE_OUT_OF_RANGE",
+          "BROKER_STATE_UNKNOWN",
+          "RECONCILIATION_ERROR",
+          "STALE_MARKET_DATA",
+          "TRADING_MODE_NOT_PERMITTED",
+          "LIVE_MODE_GUARD_NOT_SATISFIED",
+          "INSUFFICIENT_CAMPAIGN_BUDGET",
+          "INSUFFICIENT_BUYING_POWER",
+          "MAX_RISK_PER_TRADE_EXCEEDED",
+          "MAX_CONTRACT_QUANTITY_EXCEEDED",
+          "MAX_POSITIONS_PER_UNDERLYING_EXCEEDED",
+          "MAX_NEW_POSITIONS_PER_RUN_REACHED",
+          "MIN_ALLOCATION_NOT_MET",
+          "ZERO_QUANTITY",
+          "CAMPAIGN_RESERVE_PROTECTED",
+          "DUPLICATE_OPPORTUNITY",
+          "INVALID_PRICE",
+          "PRICE_UNAVAILABLE",
+          "INVALID_MULTIPLIER",
+          "MAX_LOSS_UNDEFINED",
+          "DATA_QUALITY_FAILED",
+          "POINT_IN_TIME_ERROR",
+          "INVALID_ACCOUNT_SNAPSHOT",
+          "ACCOUNT_SNAPSHOT_STALE",
+          "ACCOUNT_SNAPSHOT_UNAVAILABLE",
+          "CURRENCY_MISMATCH",
+          "FX_CONVERSION_UNAVAILABLE",
+          "BELOW_MIN_OPPORTUNITY_SCORE",
+          "DAILY_LOSS_NOT_TRACKED",
+          "CONFIGURATION_ERROR"
+        ]
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/risk_check"
+      }
+    },
+    "limits": {
+      "$ref": "#/$defs/risk_limits"
+    },
+    "exposure": {
+      "$ref": "#/$defs/portfolio_exposure"
+    },
+    "trading_mode": {
+      "enum": [
+        "DRY_RUN",
+        "PAPER",
+        "LIVE"
+      ]
+    },
+    "unit_cost": {
+      "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "unit_max_loss": {
+      "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "max_loss_basis": {
+      "enum": [
+        "NET_DEBIT_PAID",
+        "NOT_DEFINED",
+        null
+      ]
+    },
+    "currency": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "campaign_snapshot_as_of": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "account_snapshot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "APPROVED"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reason_codes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "const": "OK"
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "REJECTED"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "not": {
+                "const": "OK"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "money": {
+      "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "nullable_money": {
+      "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "portfolio_exposure": {
+      "description": "What the campaign holds and what it would hold. Both sides are recorded: 'would this breach the limit' and 'how close are we' are different questions.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "campaign_budget",
+        "campaign_reserve",
+        "campaign_allocated",
+        "campaign_available",
+        "campaign_open_risk",
+        "position_count"
+      ],
+      "properties": {
+        "campaign_budget": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "campaign_reserve": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "campaign_allocated": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "campaign_available": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "campaign_open_risk": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "position_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "underlying_exposure": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "strategy_exposure": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "directional_exposure": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "positions_in_underlying": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resulting_campaign_exposure": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "resulting_campaign_risk": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "resulting_underlying_exposure": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "resulting_strategy_exposure": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "resulting_directional_exposure": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "resulting_position_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "risk_check": {
+      "description": "One limit, evaluated: what it was and what the candidate would make it. A failure must name a machine-readable reason; an explanation is generated from these fields and is never the source of truth.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "scope",
+        "outcome"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "enum": [
+            "GLOBAL",
+            "CAMPAIGN",
+            "STRATEGY",
+            "POSITION"
+          ]
+        },
+        "outcome": {
+          "description": "NOT_EVALUATED is deliberately distinct from PASS: a limit nobody could compute has not been satisfied.",
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT_EVALUATED"
+          ]
+        },
+        "actual": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason_code": {
+          "enum": [
+            "OK",
+            "CAMPAIGN_BUDGET_EXCEEDED",
+            "MAX_ALLOCATION_PER_TRADE_EXCEEDED",
+            "MAX_POSITIONS_EXCEEDED",
+            "MAX_TOTAL_OPEN_RISK_EXCEEDED",
+            "UNDERLYING_CONCENTRATION_EXCEEDED",
+            "STRATEGY_CONCENTRATION_EXCEEDED",
+            "DIRECTIONAL_EXPOSURE_EXCEEDED",
+            "DAILY_LOSS_LIMIT_REACHED",
+            "INSUFFICIENT_LIQUIDITY",
+            "OPTION_PRICE_OUT_OF_RANGE",
+            "SPREAD_TOO_WIDE",
+            "DTE_OUT_OF_RANGE",
+            "BROKER_STATE_UNKNOWN",
+            "RECONCILIATION_ERROR",
+            "STALE_MARKET_DATA",
+            "TRADING_MODE_NOT_PERMITTED",
+            "LIVE_MODE_GUARD_NOT_SATISFIED",
+            "INSUFFICIENT_CAMPAIGN_BUDGET",
+            "INSUFFICIENT_BUYING_POWER",
+            "MAX_RISK_PER_TRADE_EXCEEDED",
+            "MAX_CONTRACT_QUANTITY_EXCEEDED",
+            "MAX_POSITIONS_PER_UNDERLYING_EXCEEDED",
+            "MAX_NEW_POSITIONS_PER_RUN_REACHED",
+            "MIN_ALLOCATION_NOT_MET",
+            "ZERO_QUANTITY",
+            "CAMPAIGN_RESERVE_PROTECTED",
+            "DUPLICATE_OPPORTUNITY",
+            "INVALID_PRICE",
+            "PRICE_UNAVAILABLE",
+            "INVALID_MULTIPLIER",
+            "MAX_LOSS_UNDEFINED",
+            "DATA_QUALITY_FAILED",
+            "POINT_IN_TIME_ERROR",
+            "INVALID_ACCOUNT_SNAPSHOT",
+            "ACCOUNT_SNAPSHOT_STALE",
+            "ACCOUNT_SNAPSHOT_UNAVAILABLE",
+            "CURRENCY_MISMATCH",
+            "FX_CONVERSION_UNAVAILABLE",
+            "BELOW_MIN_OPPORTUNITY_SCORE",
+            "DAILY_LOSS_NOT_TRACKED",
+            "CONFIGURATION_ERROR",
+            null
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "FAIL"
+              }
+            },
+            "required": [
+              "outcome"
+            ]
+          },
+          "then": {
+            "required": [
+              "reason_code"
+            ],
+            "properties": {
+              "reason_code": {
+                "not": {
+                  "enum": [
+                    "OK",
+                    null
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "NOT_EVALUATED"
+              }
+            },
+            "required": [
+              "outcome"
+            ]
+          },
+          "then": {
+            "required": [
+              "detail"
+            ],
+            "properties": {
+              "detail": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "risk_limits": {
+      "description": "Every limit in force for one evaluation, already intersected across the hierarchy. 'scopes' records which layer supplied each effective value.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "campaign_budget",
+        "campaign_reserve",
+        "max_allocation_per_trade",
+        "min_allocation_per_trade",
+        "max_risk_per_trade",
+        "max_total_open_risk",
+        "max_daily_loss",
+        "max_open_positions",
+        "max_positions_per_underlying",
+        "max_new_positions_per_run",
+        "max_contracts_per_trade",
+        "max_underlying_concentration_pct",
+        "max_strategy_concentration_pct",
+        "max_directional_exposure_pct",
+        "min_opportunity_score",
+        "max_market_data_age_seconds",
+        "max_account_snapshot_age_seconds",
+        "risk_config_version",
+        "campaign_id"
+      ],
+      "properties": {
+        "campaign_budget": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "campaign_reserve": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "max_allocation_per_trade": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "min_allocation_per_trade": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "max_risk_per_trade": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "max_total_open_risk": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "max_daily_loss": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "max_open_positions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_positions_per_underlying": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_new_positions_per_run": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_contracts_per_trade": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_underlying_concentration_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "max_strategy_concentration_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "max_directional_exposure_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "min_opportunity_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "max_market_data_age_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_account_snapshot_age_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "require_account_snapshot": {
+          "type": "boolean"
+        },
+        "require_daily_loss_tracking": {
+          "type": "boolean"
+        },
+        "allow_currency_conversion": {
+          "type": "boolean"
+        },
+        "accepted_currencies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "risk_config_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "campaign_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scopes": {
+          "type": "object",
+          "additionalProperties": {
+            "enum": [
+              "GLOBAL",
+              "CAMPAIGN",
+              "STRATEGY",
+              "POSITION"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

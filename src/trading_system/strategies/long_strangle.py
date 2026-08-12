@@ -12,7 +12,13 @@ every later stage. The selector rejects it instead.
 
 from __future__ import annotations
 
-from trading_system.domain.enums import Direction, LegAction, OptionRight, StrategyType
+from trading_system.domain.enums import (
+    Direction,
+    LegAction,
+    MaxLossBasis,
+    OptionRight,
+    StrategyType,
+)
 from trading_system.strategies.base import LegTemplate, StrategyStructure, StrikeRelationship
 
 __all__ = ["STRUCTURE"]
@@ -24,6 +30,9 @@ STRUCTURE = StrategyStructure(
         LegTemplate(action=LegAction.BUY, right=OptionRight.PUT, ratio=1),
     ),
     directional_view=Direction.UNCERTAIN,
+    # Bought outright, so the most that can be lost is what was paid:
+    # two premiums, both paid. Nothing beyond the debit is at risk.
+    max_loss_basis=MaxLossBasis.NET_DEBIT_PAID,
     strike_relationship=StrikeRelationship.CALL_ABOVE_PUT,
     same_expiration=True,
     single_position=True,

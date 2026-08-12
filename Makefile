@@ -5,10 +5,13 @@ CLI := $(PYTHON) -m trading_system.cli
 
 .PHONY: help install test test-unit test-contract test-agents test-universe \
         test-research test-strategy test-strategies test-contract-selection \
-        test-allocation test-risk test-broker test-data test-integration \
+        test-allocation test-allocation-unit test-allocation-integration test-risk \
+        test-broker test-data test-integration \
         test-e2e universe-validate universe-run universe-show research-validate \
         research-run research-show strategy-validate strategy-run strategy-show \
         contract-validate contract-select contract-show \
+        risk-validate risk-evaluate risk-capture-account \
+        allocation-validate allocation-run allocation-show \
         lint format typecheck check health config ibkr-connection ibkr-portfolio clean
 
 help:  ## Show this help
@@ -49,6 +52,12 @@ test-contract-selection:  ## Deterministic contract selection: policy, point-in-
 
 test-allocation:  ## Campaign allocation tests (Milestone 7)
 	$(PYTEST) tests/allocation
+
+test-allocation-unit:  ## Allocation engine, scorer and quantity arithmetic only
+	$(PYTEST) tests/allocation -m unit
+
+test-allocation-integration:  ## Research to allocation, end to end, simulated broker
+	$(PYTEST) tests/integration/test_research_to_allocation.py
 
 test-risk:  ## Risk engine tests (Milestone 7)
 	$(PYTEST) tests/risk
@@ -119,6 +128,24 @@ contract-select:  ## Select contracts for the latest strategy run. Submits no or
 
 contract-show:  ## Show the latest contract selection (Milestone 6)
 	$(CLI) contract show
+
+risk-validate:  ## Print the deterministic limits in force (Milestone 7)
+	$(CLI) risk validate
+
+risk-evaluate:  ## Evaluate risk for the latest contract run. Persists nothing
+	$(CLI) risk evaluate
+
+risk-capture-account:  ## Capture an account snapshot. Read-only; submits no orders
+	$(CLI) risk capture-account
+
+allocation-validate:  ## Validate the campaign envelope and allocation policy
+	$(CLI) allocation validate
+
+allocation-run:  ## Allocate campaign capital. Submits no orders (Milestone 7)
+	$(CLI) allocation run
+
+allocation-show:  ## Show the latest allocation run (Milestone 7)
+	$(CLI) allocation show
 
 ibkr-connection:  ## Read-only IBKR connection test (Milestone 2)
 	$(CLI) test ibkr-connection

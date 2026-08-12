@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/campaign_snapshot.json",
+  "title": "CampaignSnapshot",
+  "description": "The campaign's capital envelope and what it has already committed. Independent of the broker account: there is no field here for account equity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "campaign_id",
+    "as_of",
+    "currency",
+    "budget",
+    "reserve"
+  ],
+  "properties": {
+    "campaign_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "currency": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 8
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "budget": {
+      "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "reserve": {
+      "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "budget_source": {
+      "description": "CONFIG, or ENVIRONMENT when CAMPAIGN_BUDGET_EUR overrode the committed configuration. Recorded so a stored decision never implies configuration authorised a figure it does not contain.",
+      "enum": [
+        "CONFIG",
+        "ENVIRONMENT"
+      ]
+    },
+    "open_positions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/campaign_position"
+      }
+    },
+    "realized_pnl_today": {
+      "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    }
+  },
+  "$defs": {
+    "money": {
+      "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "nullable_money": {
+      "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "campaign_position": {
+      "description": "Capital this campaign has already authorised for one opportunity. Not a broker position: an authorisation that was never executed still consumes budget.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "opportunity_id",
+        "allocation_id",
+        "symbol",
+        "strategy",
+        "direction",
+        "quantity",
+        "capital_committed",
+        "max_loss",
+        "authorized_at"
+      ],
+      "properties": {
+        "opportunity_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allocation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "symbol": {
+          "type": "string",
+          "pattern": "^[A-Z0-9.\\-]+$"
+        },
+        "strategy": {
+          "enum": [
+            "LONG_CALL",
+            "LONG_PUT",
+            "LONG_STRADDLE",
+            "LONG_STRANGLE"
+          ]
+        },
+        "direction": {
+          "enum": [
+            "BULLISH",
+            "BEARISH",
+            "NEUTRAL",
+            "UNCERTAIN"
+          ]
+        },
+        "quantity": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "capital_committed": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "max_loss": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "authorized_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expiration": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "contract_selection_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "research_report_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

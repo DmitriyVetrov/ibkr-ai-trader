@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 from datetime import date
+from decimal import ROUND_CEILING, Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -29,12 +30,14 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from trading_system.domain.enums import (
+    AllocationPolicy,
     ConfidenceLevel,
     ExpirationSelectionPolicy,
     LegAction,
     MarketHypothesis,
     OptionDataField,
     OptionRight,
+    PriceSource,
     SecurityType,
     SourceTier,
     StrategyType,
@@ -49,7 +52,12 @@ __all__ = [
     "ApplicationConfig",
     "BrokerBackend",
     "CacheConfig",
+    "CampaignAccountConfig",
+    "CampaignAllocationConfig",
     "CampaignConfig",
+    "CampaignCurrencyConfig",
+    "CampaignLimitsConfig",
+    "CampaignRankingConfig",
     "CollectionConfig",
     "ConfigError",
     "ContractExpirationConfig",
@@ -295,8 +303,100 @@ class ApplicationConfig(_ConfigModel):
     reports_dir: str = "reports"
 
 
+class CampaignLimitsConfig(_ConfigModel):
+    """Position and concentration limits owned by the campaign layer.
+
+    These have no counterpart in ``risk.yaml`` — they are finer-grained than
+    the global policy — so the campaign is their single authoritative source
+    rather than a second copy of one.
+    """
+
+    max_positions_per_underlying: int = Field(default=1, ge=0)
+    max_contracts_per_trade: int = Field(default=20, ge=0)
+    max_new_positions_per_run: int = Field(default=3, ge=0)
+
+
+class CampaignAccountConfig(_ConfigModel):
+    """What the campaign requires to know about the account before committing."""
+
+    require_account_snapshot: bool = True
+    max_snapshot_age_seconds: int = Field(default=86_400, ge=0)
+    #: Whether the daily-loss limit must be evaluable before capital is
+    #: authorised. False until Milestone 9 tracks realised profit and loss; the
+    #: check is then recorded as ``NOT_EVALUATED``, never as passed.
+    require_daily_loss_tracking: bool = False
+
+
+class CampaignCurrencyConfig(_ConfigModel):
+    """Currency policy. No arbitrary rate is ever applied."""
+
+    allow_conversion: bool = False
+    #: Currencies accepted as the campaign currency without conversion. Empty
+    #: by default: treating USD and EUR as interchangeable would be inventing
+    #: an exchange rate, which is the same failure as inventing a price.
+    treat_as_campaign_currency: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _conversion_needs_a_rate_source(self) -> CampaignCurrencyConfig:
+        if self.allow_conversion:
+            raise ValueError(
+                "campaign.currency_policy.allow_conversion is set, but no deterministic FX "
+                "rate source is configured. Converting at an arbitrary rate would invent a "
+                "price; a mismatched currency is a rejection until a rate source exists."
+            )
+        return self
+
+
+class CampaignAllocationConfig(_ConfigModel):
+    """How the campaign budget is distributed. Named, never implied."""
+
+    policy: AllocationPolicy = AllocationPolicy.PRIORITY_FIRST_FIT
+    #: Stamped onto every stored allocation, so a past authorisation traces to
+    #: the policy that produced it.
+    policy_version: str = Field(default="1.0.0", min_length=1)
+    price_source: PriceSource = PriceSource.ASK_DEBIT
+    max_candidates_recorded: int = Field(default=50, ge=0)
+
+
+class CampaignRankingConfig(_ConfigModel):
+    """Weights for the deterministic opportunity score.
+
+    Weights, not a model: every input is a structured upstream fact and every
+    component is recorded on the stored decision, so a score can be recomputed
+    by hand from the record. There is no hidden scoring anywhere.
+    """
+
+    research_confidence_weight: float = Field(default=0.30, ge=0.0, le=1.0)
+    strategy_confidence_weight: float = Field(default=0.20, ge=0.0, le=1.0)
+    expected_magnitude_weight: float = Field(default=0.15, ge=0.0, le=1.0)
+    spread_quality_weight: float = Field(default=0.20, ge=0.0, le=1.0)
+    data_quality_weight: float = Field(default=0.15, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _weights_sum_to_one(self) -> CampaignRankingConfig:
+        total = (
+            self.research_confidence_weight
+            + self.strategy_confidence_weight
+            + self.expected_magnitude_weight
+            + self.spread_quality_weight
+            + self.data_quality_weight
+        )
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError(
+                f"campaign.ranking weights must sum to 1.0, got {total}. A score whose "
+                f"weights do not sum to one is not on the 0-100 scale it claims to be."
+            )
+        return self
+
+
 class CampaignConfig(_ConfigModel):
-    """Campaign capital, independent of IBKR account buying power."""
+    """Campaign capital, independent of IBKR account buying power.
+
+    The child of ``risk.yaml`` in the limit hierarchy: it may narrow a global
+    limit and may never widen one. The cross-file check lives on
+    :class:`SystemConfig`, because it is a relationship between two files and
+    neither one can see the other.
+    """
 
     campaign_id: str
     currency: str = "EUR"
@@ -306,6 +406,43 @@ class CampaignConfig(_ConfigModel):
     max_allocation_per_trade_eur: Money = Field(ge=0)
     max_open_positions: int = Field(ge=0)
     min_opportunity_score: float = Field(ge=0.0, le=100.0)
+    max_risk_per_trade_eur: Money = Field(default=Decimal("1500"), ge=0)
+
+    limits: CampaignLimitsConfig = Field(default_factory=CampaignLimitsConfig)
+    account: CampaignAccountConfig = Field(default_factory=CampaignAccountConfig)
+    currency_policy: CampaignCurrencyConfig = Field(default_factory=CampaignCurrencyConfig)
+    allocation: CampaignAllocationConfig = Field(default_factory=CampaignAllocationConfig)
+    ranking: CampaignRankingConfig = Field(default_factory=CampaignRankingConfig)
+
+    @model_validator(mode="after")
+    def _internal_limits_are_ordered(self) -> CampaignConfig:
+        if self.min_allocation_eur > self.max_allocation_per_trade_eur:
+            raise ValueError(
+                f"campaign: min_allocation_eur {self.min_allocation_eur} exceeds "
+                f"max_allocation_per_trade_eur {self.max_allocation_per_trade_eur}; no trade "
+                f"could ever satisfy both"
+            )
+        if self.min_allocation_eur > self.allocatable_budget_eur:
+            raise ValueError(
+                f"campaign: min_allocation_eur {self.min_allocation_eur} exceeds the "
+                f"allocatable budget {self.allocatable_budget_eur} (budget {self.budget_eur} "
+                f"less a {self.reserve_fraction:.0%} reserve); no trade could ever be funded"
+            )
+        return self
+
+    @property
+    def reserve_eur(self) -> Decimal:
+        """Capital held back by policy, exact to the cent.
+
+        Rounded *up*, so the reserve is never quietly smaller than configured.
+        """
+        fraction = Decimal(str(self.reserve_fraction))
+        return (self.budget_eur * fraction).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+
+    @property
+    def allocatable_budget_eur(self) -> Decimal:
+        """The most the allocator may ever commit across the whole campaign."""
+        return self.budget_eur - self.reserve_eur
 
 
 class LiquidityConfig(_ConfigModel):
@@ -1203,6 +1340,51 @@ class SystemConfig(_ConfigModel):
                 raise ValueError(
                     f"strategy '{name}' widens a global risk limit: " + "; ".join(violations)
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _campaign_never_widens_a_global_limit(self) -> SystemConfig:
+        """The campaign is a child of ``risk.yaml`` and may only narrow it.
+
+        Two limits are declared in both files, and that is deliberate rather
+        than duplication: ``risk.yaml`` states the outer boundary of the whole
+        system, ``campaign.yaml`` states what *this* campaign permits within
+        it. What would be a bug is the campaign quietly permitting more than
+        the risk policy does, so that is a load failure — never a clamp.
+        """
+        risk, campaign = self.risk, self.campaign
+        violations: list[str] = []
+
+        if campaign.max_allocation_per_trade_eur > risk.max_allocation_per_trade_eur:
+            violations.append(
+                f"max_allocation_per_trade_eur {campaign.max_allocation_per_trade_eur} is "
+                f"above the risk ceiling {risk.max_allocation_per_trade_eur}"
+            )
+        if campaign.max_open_positions > risk.max_open_positions:
+            violations.append(
+                f"max_open_positions {campaign.max_open_positions} is above the risk ceiling "
+                f"{risk.max_open_positions}"
+            )
+        if campaign.max_risk_per_trade_eur > risk.max_total_open_risk_eur:
+            violations.append(
+                f"max_risk_per_trade_eur {campaign.max_risk_per_trade_eur} is above the total "
+                f"open-risk ceiling {risk.max_total_open_risk_eur}; one trade may not be "
+                f"permitted more risk than the whole book"
+            )
+        if campaign.limits.max_positions_per_underlying > risk.max_open_positions:
+            violations.append(
+                f"limits.max_positions_per_underlying "
+                f"{campaign.limits.max_positions_per_underlying} is above the risk ceiling on "
+                f"total positions {risk.max_open_positions}"
+            )
+        if campaign.limits.max_new_positions_per_run > risk.max_open_positions:
+            violations.append(
+                f"limits.max_new_positions_per_run {campaign.limits.max_new_positions_per_run} "
+                f"is above the risk ceiling on total positions {risk.max_open_positions}"
+            )
+
+        if violations:
+            raise ValueError("campaign.yaml widens a global risk limit: " + "; ".join(violations))
         return self
 
     def enabled_strategies(self) -> dict[str, StrategyConfig]:

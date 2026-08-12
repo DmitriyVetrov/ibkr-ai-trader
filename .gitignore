@@ -40,8 +40,15 @@ data/normalized/*
 data/cache/*
 data/historical/*
 data/snapshots/*
-# Universe runs: an append-only local research record, not source code.
+# Decision records: append-only local research artifacts, not source code.
 data/universe/*
+data/research/*
+data/strategy/*
+data/contracts/*
+data/allocation/*
+# Account snapshots additionally carry an account number and real balances.
+# Nothing under data/ may ever be committed, and this one least of all.
+data/accounts/*
 trades/open/*
 trades/closed/*
 trades/rejected/*

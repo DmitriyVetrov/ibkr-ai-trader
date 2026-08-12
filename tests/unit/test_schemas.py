@@ -42,6 +42,18 @@ REQUIRED_SCHEMAS = (
     "purchase_card",
     "allocation_decision",
     "risk_decision",
+    # Milestone 7 adds the six allocation and risk boundaries: the two pieces of
+    # state a decision rests on, the candidate it is about, the risk verdict,
+    # the authorisation, and the record of a whole run. `allocation_decision`
+    # and `risk_decision` above stay the narrow Milestone 1 boundaries;
+    # `campaign_allocation` is the audit record that projects onto the first,
+    # exactly as `market_research_report` does for `research_report`.
+    "account_snapshot",
+    "campaign_snapshot",
+    "allocation_candidate",
+    "risk_evaluation",
+    "campaign_allocation",
+    "allocation_run",
     "order_intent",
     "execution_result",
     "position_snapshot",

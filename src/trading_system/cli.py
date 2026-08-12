@@ -41,6 +41,7 @@ from trading_system.infrastructure.settings import (
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from datetime import datetime
 
+    from trading_system.allocation.service import AllocationService
     from trading_system.data.collectors import CollectionReport
     from trading_system.data.service import DataService
     from trading_system.domain.enums import DataType
@@ -113,6 +114,23 @@ contract_app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+risk_app = typer.Typer(
+    help=(
+        "Evaluate and inspect deterministic risk. No model is involved and no "
+        "broker is constructed: the engine reads a stored account snapshot. "
+        "Every command here submits zero orders."
+    ),
+    no_args_is_help=True,
+)
+allocation_app = typer.Typer(
+    help=(
+        "Allocate campaign capital across purchase candidates, and inspect the "
+        "authorisations. Deterministic: no model decides a quantity or an "
+        "amount of money. An authorisation is not an order; every command here "
+        "submits zero orders."
+    ),
+    no_args_is_help=True,
+)
 reports_app = typer.Typer(
     help="Generate and inspect reports. (read-only)",
     no_args_is_help=True,
@@ -125,19 +143,27 @@ app.add_typer(universe_app, name="universe")
 app.add_typer(research_app, name="research")
 app.add_typer(strategy_app, name="strategy")
 app.add_typer(contract_app, name="contract")
+app.add_typer(risk_app, name="risk")
+app.add_typer(allocation_app, name="allocation")
 app.add_typer(reports_app, name="reports")
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _not_implemented(feature: str, milestone: str) -> None:
-    """Report honestly that a command exists but is not built yet."""
+def _not_implemented(feature: str, milestone: str, hint: str | None = None) -> None:
+    """Report honestly that a command exists but is not built yet.
+
+    ``hint`` names a command that already does part of the job, where one
+    exists. Pointing at it is not the same as pretending this command works —
+    the exit code still says "not built".
+    """
     err_console.print(
         f"[yellow]NOT IMPLEMENTED[/yellow]  {feature}\n"
         f"This command is defined by the specification but is delivered in "
         f"[bold]{milestone}[/bold].\n"
         f"No broker connection was attempted and no data was fabricated."
+        + (f"\nAvailable today: {hint}" if hint else "")
     )
     raise typer.Exit(code=EXIT_NOT_IMPLEMENTED)
 
@@ -342,7 +368,11 @@ def positions() -> None:
 @app.command()
 def opportunities() -> None:
     """Show the current ranked opportunities. (read-only)"""
-    _not_implemented("opportunity ranking", "Milestone 7 (allocation and risk)")
+    _not_implemented(
+        "opportunity ranking across the whole discovery loop",
+        "Milestone 8 (execution)",
+        hint="'allocation show' lists the ranked, risk-evaluated candidates of the latest run.",
+    )
 
 
 @app.command()
@@ -405,7 +435,14 @@ def run_research(
 @run_app.command("opportunities")
 def run_opportunities() -> None:
     """Run the slow discovery loop through risk validation. (mutates state)"""
-    _not_implemented("opportunity scan", "Milestone 7 (allocation and risk)")
+    _not_implemented(
+        "the end-to-end opportunity scan",
+        "Milestone 8 (execution)",
+        hint=(
+            "run the stages in order: 'universe run', 'research run', 'strategy run', "
+            "'contract select', 'allocation run'."
+        ),
+    )
 
 
 @run_app.command("position-monitor")
@@ -685,15 +722,74 @@ def test_contract_selection(
 
 
 @test_app.command("allocation")
-def test_allocation() -> None:
-    """Exercise campaign budget allocation against fixtures. (read-only)"""
-    _not_implemented("allocation", "Milestone 7 (allocation and risk)")
+def test_allocation(
+    ticker: Annotated[
+        str | None,
+        typer.Option("--ticker", help="Restrict to one underlying."),
+    ] = None,
+) -> None:
+    """Show the latest stored allocation decisions. (read-only)
+
+    Inspection, not execution: it reads what was authorised and why. To produce
+    new authorisations use ``allocation run`` — which is deterministic and
+    consults no model.
+    """
+    from trading_system.allocation.report import render_allocation, render_allocation_run
+
+    service = _allocation_service()
+    result = service.latest()
+    if result is None:
+        console.print(
+            "[yellow]UNAVAILABLE[/yellow]  no stored allocation run. Run 'allocation run' "
+            "first; this command inspects authorisations rather than making them."
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    if ticker is None:
+        console.print(render_allocation_run(result, verbose=True))
+    else:
+        allocation = result.allocation(ticker)
+        if allocation is None:
+            console.print(
+                f"[yellow]UNAVAILABLE[/yellow]  no stored allocation for {ticker.strip().upper()}."
+            )
+            raise typer.Exit(code=EXIT_OK)
+        console.print(render_allocation(allocation))
+    console.print("\nOrders submitted: 0  (allocation authorises capital; it places no orders)")
 
 
 @test_app.command("risk")
-def test_risk() -> None:
-    """Exercise the risk engine against fixtures. (read-only)"""
-    _not_implemented("risk engine", "Milestone 7 (allocation and risk)")
+def test_risk(
+    ticker: Annotated[
+        str | None,
+        typer.Option("--ticker", help="Restrict to one underlying."),
+    ] = None,
+) -> None:
+    """Show the latest stored risk verdicts, check by check. (read-only)
+
+    Inspection, not execution. To evaluate a contract run without persisting
+    anything, use ``risk evaluate``.
+    """
+    from trading_system.allocation.report import render_evaluation
+
+    service = _allocation_service()
+    result = service.latest()
+    if result is None:
+        console.print(
+            "[yellow]UNAVAILABLE[/yellow]  no stored risk verdict. Run 'allocation run' "
+            "first; this command inspects verdicts rather than making them."
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    wanted = ticker.strip().upper() if ticker else None
+    console.print()
+    for allocation in result.allocations:
+        if wanted and allocation.symbol != wanted:
+            continue
+        console.print(render_evaluation(allocation.risk_evaluation))
+        console.print()
+    console.print("Orders submitted: 0  (the risk engine has no order path)")
 
 
 @test_app.command("reconciliation")
@@ -2419,6 +2515,565 @@ def _contract_validate_run(run_id: str) -> None:
         f"[green]PASS[/green]  {len(result.selections)} selection(s) satisfy the stored-run "
         f"invariants. No orders were submitted."
     )
+
+
+# ---------------------------------------------------------------------------
+# risk and allocation (Milestone 7)
+#
+# Deterministic end to end. The allocation service constructs no LLM client and
+# no broker: it reads stored contract selections, a stored account snapshot and
+# its own append-only ledger, and applies configured policy. Both "no model"
+# and "zero orders" are structural rather than checks performed at the end.
+#
+# The one place broker state enters is `risk capture-account`, which reads and
+# stores an account snapshot. It opens a read-only connection, makes a single
+# retrieval, and reports the order counter it read off the broker.
+# ---------------------------------------------------------------------------
+def _allocation_service() -> AllocationService:
+    from trading_system.allocation.service import AllocationService
+
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        err_console.print(f"[red]CONFIGURATION ERROR[/red]\n{exc}")
+        raise typer.Exit(code=EXIT_ERROR) from exc
+    return AllocationService(settings=settings, config=config)
+
+
+@risk_app.command("capture-account")
+def risk_capture_account(simulated: SimulatedOption = False) -> None:
+    """Capture and store an immutable account snapshot. (writes a snapshot)
+
+    The single boundary between broker reality and deterministic risk. The
+    engines never hold a broker, so this is what gives them a view of the
+    account — captured once, stored, and read back by id.
+
+    Read-only with respect to the broker and structurally incapable of
+    ordering: the count of submitted orders is read off the broker itself and
+    printed, so the zero is evidence rather than a claim.
+    """
+    from trading_system.risk.account import build_account_snapshot
+    from trading_system.risk.store import FilesystemAccountSnapshotRepository
+
+    service = _allocation_service()
+    with _connected_broker(simulated) as (settings, broker):
+        _print_header("ACCOUNT SNAPSHOT CAPTURE", settings, broker)
+        account = broker.get_account()
+        positions = broker.get_positions()
+        snapshot = build_account_snapshot(
+            account,
+            positions,
+            broker=broker.name,
+            trading_mode=settings.trading_mode,
+            captured_at=account.as_of,
+            orders_submitted=broker.orders_submitted,
+            read_only=broker.read_only,
+            simulated=broker.name == "SIMULATOR",
+        )
+        _print_zero_orders(broker)
+
+    repository = service.account_repository
+    assert isinstance(repository, FilesystemAccountSnapshotRepository)
+    repository.save(snapshot)
+
+    table = Table(title="Account snapshot", show_header=True, header_style="bold")
+    table.add_column("Field")
+    table.add_column("Value")
+    for name, value in (
+        ("snapshot id", snapshot.snapshot_id),
+        ("as of", snapshot.as_of.isoformat()),
+        ("account", _mask_account(snapshot.account_id)),
+        ("currency", snapshot.currency),
+        ("cash", _or_dash(snapshot.cash)),
+        ("net liquidation", _or_dash(snapshot.net_liquidation)),
+        ("buying power", _or_dash(snapshot.buying_power)),
+        ("available funds", _or_dash(snapshot.available_funds)),
+        ("spendable (most restrictive)", _or_dash(snapshot.spendable)),
+        ("positions", str(len(snapshot.positions))),
+        ("simulated", str(snapshot.simulated)),
+    ):
+        table.add_row(name, value)
+    console.print(table)
+    console.print(
+        "\nThis balance is [bold]not[/bold] the campaign budget. The campaign spends its own "
+        "envelope; where the account holds less, the account wins."
+    )
+    console.print(f"[green]Stored[/green] {snapshot.snapshot_id}")
+
+
+@risk_app.command("validate")
+def risk_validate() -> None:
+    """Print the deterministic limits in force, layer by layer. (read-only)"""
+    service = _allocation_service()
+    limits = service.limits()
+
+    console.print("\n[bold]RISK LIMITS IN FORCE[/bold]")
+    console.print(f"Campaign       : {limits.campaign_id}")
+    console.print(f"Risk config    : {limits.risk_config_version}")
+    console.print("Model involved : [green]none[/green] — risk is deterministic")
+
+    table = Table(title="Effective limits", show_header=True, header_style="bold")
+    for column in ("Limit", "Value", "Owned by"):
+        table.add_column(column)
+    for name, value in (
+        ("campaign_budget", str(limits.campaign_budget)),
+        ("campaign_reserve", str(limits.campaign_reserve)),
+        ("min_allocation_per_trade", str(limits.min_allocation_per_trade)),
+        ("max_allocation_per_trade", str(limits.max_allocation_per_trade)),
+        ("max_risk_per_trade", str(limits.max_risk_per_trade)),
+        ("max_total_open_risk", str(limits.max_total_open_risk)),
+        ("max_daily_loss", str(limits.max_daily_loss)),
+        ("max_open_positions", str(limits.max_open_positions)),
+        ("max_positions_per_underlying", str(limits.max_positions_per_underlying)),
+        ("max_new_positions_per_run", str(limits.max_new_positions_per_run)),
+        ("max_contracts_per_trade", str(limits.max_contracts_per_trade)),
+        ("max_underlying_concentration_pct", str(limits.max_underlying_concentration_pct)),
+        ("max_strategy_concentration_pct", str(limits.max_strategy_concentration_pct)),
+        ("max_directional_exposure_pct", str(limits.max_directional_exposure_pct)),
+        ("min_opportunity_score", str(limits.min_opportunity_score)),
+        ("max_market_data_age_seconds", str(limits.max_market_data_age_seconds)),
+        ("max_account_snapshot_age_seconds", str(limits.max_account_snapshot_age_seconds)),
+    ):
+        scope = limits.scopes.get(name)
+        table.add_row(name, value, scope.value if scope else "-")
+    console.print(table)
+
+    console.print(
+        f"\nAllocatable: [bold]{limits.campaign_budget - limits.campaign_reserve}[/bold] "
+        f"(budget {limits.campaign_budget} less a reserve of {limits.campaign_reserve} that is "
+        f"never spent)."
+    )
+    console.print(
+        "A child layer may narrow a parent limit and may never widen one; configuration "
+        "loading refuses rather than clamping."
+    )
+    if not limits.require_daily_loss_tracking:
+        console.print(
+            "[yellow]Note[/yellow]  realised daily profit and loss is not tracked yet, so the "
+            "daily-loss limit is recorded as NOT_EVALUATED rather than passed."
+        )
+    console.print("[green]PASS[/green]  Limits are valid. No orders were submitted.")
+
+
+@risk_app.command("evaluate")
+def risk_evaluate(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", "--contract-run-id", help="The contract run to evaluate."),
+    ] = None,
+    symbol: Annotated[
+        list[str] | None,
+        typer.Option("--symbol", help="Restrict to these underlyings. Repeatable."),
+    ] = None,
+) -> None:
+    """Evaluate risk for a contract run without sizing or persisting. (read-only)
+
+    Answers only *would this be permitted?* — the quantity is the allocation
+    engine's answer, and nothing here is written to the ledger.
+    """
+    from trading_system.allocation.report import render_evaluation
+
+    # A dry run computes every verdict and persists nothing, which is exactly
+    # what this command wants; the evaluations it prints are the ones the
+    # engine actually produced rather than a second, parallel calculation.
+    service = _allocation_service()
+    run = service.run(
+        dry_run=True, contract_run_id=run_id, symbols=list(symbol) if symbol else None
+    )
+
+    if not run.result.allocations:
+        console.print(
+            f"[yellow]UNAVAILABLE[/yellow]  {run.result.status.value}: "
+            f"{run.result.status_detail or 'nothing to evaluate.'}"
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    for allocation in run.result.allocations:
+        console.print(render_evaluation(allocation.risk_evaluation))
+        console.print()
+    console.print("Nothing was persisted, no quantity was authorised and 0 orders were submitted.")
+
+
+@risk_app.command("show")
+def risk_show(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="A specific allocation run. Defaults to the most recent."),
+    ] = None,
+) -> None:
+    """Show the risk verdicts of a stored allocation run. (read-only)"""
+    from trading_system.allocation.report import render_evaluation
+
+    service = _allocation_service()
+    result = service.get(run_id) if run_id else service.latest()
+    if result is None:
+        console.print(
+            "[yellow]UNAVAILABLE[/yellow]  "
+            + (
+                f"no allocation run with id {run_id!r}."
+                if run_id
+                else "no allocation run exists yet. Run 'allocation run' first."
+            )
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    for allocation in result.allocations:
+        console.print(render_evaluation(allocation.risk_evaluation))
+        console.print()
+
+
+@risk_app.command("explain")
+def risk_explain(
+    symbol: Annotated[str, typer.Option("--symbol", help="Underlying to explain.")],
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="A specific allocation run. Defaults to the most recent."),
+    ] = None,
+) -> None:
+    """Explain one underlying's risk verdict, check by check. (read-only)"""
+    from trading_system.allocation.report import render_evaluation
+
+    service = _allocation_service()
+    result = service.get(run_id) if run_id else service.latest()
+    allocation = result.allocation(symbol) if result else None
+    if result is None or allocation is None:
+        console.print(
+            f"[yellow]UNAVAILABLE[/yellow]  no stored risk verdict for "
+            f"{symbol.strip().upper()}. Run 'allocation run' first."
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    console.print(render_evaluation(allocation.risk_evaluation))
+    console.print(
+        "\nEvery line above is generated from the stored check list. No model wrote any of it, "
+        "and no model could have changed any of it."
+    )
+
+
+@allocation_app.command("validate")
+def allocation_validate(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="Re-check a stored run instead of the configuration."),
+    ] = None,
+) -> None:
+    """Validate the campaign and allocation policy, or re-check a stored run. (read-only)
+
+    Without ``--run-id`` this prints the campaign envelope and the policy in
+    force, and reports whether an account snapshot is available. With one, it
+    re-checks the stored run's own accounting.
+    """
+    if run_id is not None:
+        _allocation_validate_run(run_id)
+        return
+
+    service = _allocation_service()
+    limits = service.limits()
+    campaign = service.campaign_snapshot(_now())
+
+    console.print("\n[bold]CAMPAIGN AND ALLOCATION POLICY[/bold]")
+    console.print(f"Campaign       : {campaign.campaign_id}")
+    console.print(f"Currency       : {campaign.currency}")
+    console.print(f"Budget source  : {campaign.budget_source}")
+    console.print("Model involved : [green]none[/green] — allocation is deterministic")
+
+    table = Table(title="Campaign", show_header=True, header_style="bold")
+    table.add_column("Setting")
+    table.add_column("Value")
+    for name, value in (
+        ("budget", str(campaign.budget)),
+        ("reserve (never spent)", str(campaign.reserve)),
+        ("allocatable", str(campaign.allocatable)),
+        ("already allocated", str(campaign.allocated)),
+        ("available", str(campaign.available)),
+        ("open reservations", str(campaign.position_count)),
+        ("open risk", str(campaign.open_risk)),
+    ):
+        table.add_row(name, value)
+    console.print(table)
+
+    account = service.account_snapshot(_now())
+    if account is None:
+        console.print(
+            "[yellow]No account snapshot.[/yellow]  Capture one with "
+            "'risk capture-account'. Without it, allocation fails closed rather than "
+            "assuming the money is there."
+        )
+    else:
+        console.print(
+            f"Account snapshot: {account.snapshot_id} "
+            f"(as of {account.as_of.isoformat()}, spendable {_or_dash(account.spendable)})"
+        )
+
+    console.print(
+        "\nThe campaign budget is independent of the broker account balance. The most "
+        "restrictive relevant limit wins."
+    )
+    if limits.require_account_snapshot and account is None:
+        _fail("configuration requires an account snapshot and none is available")
+    console.print("[green]PASS[/green]  Configuration is valid. No orders were submitted.")
+
+
+@allocation_app.command("run")
+def allocation_run_command(
+    run_id: Annotated[
+        str | None,
+        typer.Option(
+            "--run-id",
+            "--contract-run-id",
+            help="The contract run to allocate against. Defaults to the most recent.",
+        ),
+    ] = None,
+    symbol: Annotated[
+        list[str] | None,
+        typer.Option("--symbol", help="Restrict to these underlyings. Repeatable."),
+    ] = None,
+    account_snapshot: Annotated[
+        str | None,
+        typer.Option("--account-snapshot", help="A specific stored account snapshot id."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Run everything but persist nothing."),
+    ] = False,
+) -> None:
+    """Allocate campaign capital across a contract run. (writes authorisations)
+
+    Submits no orders and constructs no order. An authorisation says how much
+    capital and risk is permitted; turning one into an order is Milestone 8.
+
+    There is deliberately no ``--as-of``: the instant comes from the contract
+    run, so an authorisation reconstructs exactly the prices that were visible
+    when the contract was chosen.
+    """
+    from trading_system.allocation.report import render_allocation_run
+    from trading_system.domain.enums import AllocationRunStatus
+
+    service = _allocation_service()
+    run = service.run(
+        dry_run=dry_run,
+        contract_run_id=run_id,
+        symbols=list(symbol) if symbol else None,
+        account_snapshot_id=account_snapshot,
+    )
+    console.print()
+    console.print(render_allocation_run(run.result, verbose=True))
+
+    if dry_run:
+        console.print(
+            "\n[yellow]DRY RUN[/yellow]  Nothing was persisted and no capital was reserved. "
+            "Authoritative history is unchanged."
+        )
+    else:
+        console.print(f"\n[green]Stored[/green] run {run.result.run_id}")
+
+    if run.result.status is not AllocationRunStatus.SUCCESS:
+        _fail(
+            f"allocation ended as {run.result.status.value}; no capital was authorised. "
+            f"NO_ALLOCATION is a valid outcome — a valid strategy is not an entitlement "
+            f"to capital."
+        )
+
+
+@allocation_app.command("show")
+def allocation_show(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="A specific run. Defaults to the most recent."),
+    ] = None,
+    symbol: Annotated[
+        str | None,
+        typer.Option("--symbol", help="Restrict to one underlying."),
+    ] = None,
+) -> None:
+    """Show the latest (or a named) allocation run. (read-only)"""
+    from trading_system.allocation.report import render_allocation, render_allocation_run
+
+    service = _allocation_service()
+    result = service.get(run_id) if run_id else service.latest()
+    if result is None:
+        console.print(
+            "[yellow]UNAVAILABLE[/yellow]  "
+            + (
+                f"no allocation run with id {run_id!r}."
+                if run_id
+                else "no allocation run exists yet. Run 'allocation run' first."
+            )
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    if symbol is None:
+        console.print(render_allocation_run(result, verbose=True))
+        return
+
+    allocation = result.allocation(symbol)
+    if allocation is None:
+        console.print(
+            f"[yellow]{symbol.strip().upper()} had no decision in run {result.run_id}.[/yellow]"
+        )
+        raise typer.Exit(code=EXIT_OK)
+    console.print(render_allocation(allocation))
+
+
+@allocation_app.command("explain")
+def allocation_explain(
+    symbol: Annotated[str, typer.Option("--symbol", help="Underlying to explain.")],
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="A specific run. Defaults to the most recent."),
+    ] = None,
+) -> None:
+    """Explain one allocation: the quantity, and every ceiling it fitted. (read-only)"""
+    from trading_system.allocation.report import render_allocation
+
+    service = _allocation_service()
+    result = service.get(run_id) if run_id else service.latest()
+    allocation = result.allocation(symbol) if result else None
+    if result is None or allocation is None:
+        console.print(
+            f"[yellow]UNAVAILABLE[/yellow]  no stored allocation for "
+            f"{symbol.strip().upper()}. Run 'allocation run' first."
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    console.print(render_allocation(allocation))
+    console.print(
+        "\nEvery figure above is derived from the stored record. No model determined the "
+        "quantity, the capital or the maximum loss."
+    )
+
+
+@allocation_app.command("history")
+def allocation_history(
+    symbol: Annotated[
+        str | None,
+        typer.Option("--symbol", help="One underlying's allocation history."),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Maximum entries to show.")] = 20,
+) -> None:
+    """Show past allocation decisions. (read-only)"""
+    service = _allocation_service()
+
+    if symbol is not None:
+        entries = service.symbol_history(symbol, limit=limit)
+        if not entries:
+            console.print(
+                f"[yellow]UNAVAILABLE[/yellow]  no allocation history for {symbol.strip().upper()}."
+            )
+            raise typer.Exit(code=EXIT_OK)
+        table = Table(
+            title=f"Allocation history — {symbol.strip().upper()}",
+            show_header=True,
+            header_style="bold",
+        )
+        for column in ("Decided", "Run id", "Outcome", "Strategy", "Qty", "Capital", "Max loss"):
+            table.add_column(column)
+        for entry in entries:
+            style = "green" if entry.outcome == "APPROVED" else "yellow"
+            table.add_row(
+                entry.decided_at.isoformat(timespec="seconds"),
+                entry.run_id,
+                f"[{style}]{entry.outcome}[/{style}]",
+                entry.strategy,
+                str(entry.quantity),
+                entry.capital_committed,
+                entry.max_loss,
+            )
+        console.print(table)
+        console.print(f"{len(entries)} decision(s). Nothing here is ever rewritten.")
+        return
+
+    runs = service.history(limit=limit)
+    if not runs:
+        console.print("[yellow]UNAVAILABLE[/yellow]  no allocation runs have been recorded yet.")
+        raise typer.Exit(code=EXIT_OK)
+
+    table = Table(title="Allocation runs", show_header=True, header_style="bold")
+    for column in ("Generated", "Run id", "Status", "Approved", "Allocated", "Available after"):
+        table.add_column(column)
+    for run in runs:
+        style = "green" if run.status == "SUCCESS" else "yellow"
+        table.add_row(
+            run.generated_at.isoformat(timespec="seconds"),
+            run.run_id,
+            f"[{style}]{run.status}[/{style}]",
+            str(run.approved),
+            run.allocated,
+            run.available_after,
+        )
+    console.print(table)
+    console.print(f"{len(runs)} run(s). Nothing here is ever rewritten.")
+
+
+def _allocation_validate_run(run_id: str) -> None:
+    """Re-check a stored allocation run's own accounting."""
+    service = _allocation_service()
+    result = service.get(run_id)
+    if result is None:
+        console.print(f"[yellow]UNAVAILABLE[/yellow]  no allocation run with id {run_id!r}.")
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print(f"\n[bold]VALIDATING[/bold] allocation run {result.run_id}")
+    problems: list[str] = []
+    committed = sum(a.capital_committed for a in result.allocations if a.approved)
+    if committed != result.allocated_this_run:
+        problems.append(
+            f"approved allocations total {committed} but the run reports "
+            f"{result.allocated_this_run}"
+        )
+    total = result.allocated_before + result.allocated_this_run + result.available_after
+    if total != result.budget - result.reserve:
+        problems.append(
+            f"allocated plus available is {total}, not the allocatable "
+            f"{result.budget - result.reserve}"
+        )
+    for allocation in result.allocations:
+        if allocation.approved and allocation.risk_outcome.value != "APPROVED":
+            problems.append(f"{allocation.symbol}: approved over a risk rejection")
+        if not allocation.approved and allocation.quantity:
+            problems.append(f"{allocation.symbol}: a refusal carries a quantity")
+
+    table = Table(show_header=True, header_style="bold")
+    for column in ("Symbol", "Outcome", "Qty", "Capital", "Max loss", "Bound by"):
+        table.add_column(column)
+    for allocation in sorted(result.allocations, key=lambda a: (a.rank, a.symbol)):
+        style = "green" if allocation.approved else "yellow"
+        table.add_row(
+            allocation.symbol,
+            f"[{style}]{allocation.outcome.value}[/{style}]",
+            str(allocation.quantity),
+            str(allocation.capital_committed),
+            str(allocation.total_max_loss),
+            allocation.calculation.binding_constraint.value if allocation.calculation else "-",
+        )
+    console.print(table)
+
+    if problems:
+        for problem in problems:
+            console.print(f"  [red]{problem}[/red]")
+        _fail(f"{len(problems)} problem(s) found in stored run {result.run_id}")
+    console.print(
+        f"[green]PASS[/green]  {len(result.allocations)} decision(s) satisfy the stored-run "
+        f"invariants and the campaign accounting balances. No orders were submitted."
+    )
+
+
+def _now() -> datetime:
+    """Wall clock, for the read-only inspection commands only.
+
+    Never used inside a calculation: both engines take the decision instant as
+    an argument, and every stored decision is anchored at the contract run's
+    ``as_of`` rather than at whenever someone happened to run a command.
+    """
+    from trading_system.infrastructure.clock import utc_now
+
+    return utc_now()
 
 
 # ---------------------------------------------------------------------------

@@ -26,7 +26,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum, unique
 
-from trading_system.domain.enums import Direction, LegAction, OptionRight, StrategyType
+from trading_system.domain.enums import (
+    Direction,
+    LegAction,
+    MaxLossBasis,
+    OptionRight,
+    StrategyType,
+)
 from trading_system.infrastructure.settings import StrategyLegConfig
 
 __all__ = [
@@ -87,6 +93,16 @@ class StrategyStructure:
     strategy_type: StrategyType
     legs: tuple[LegTemplate, ...]
     directional_view: Direction
+    #: How much this structure can lose, as a *model* rather than a number.
+    #: Declared here, with the structure, because it is a property of the
+    #: payoff and not of any configuration: a long call cannot lose more than
+    #: its premium whatever delta it targets. The risk engine reads this rather
+    #: than assuming one formula fits every strategy — the first credit spread
+    #: added to this system would break that assumption silently, and the
+    #: honest answer for a structure with no computable bound is
+    #: :attr:`~trading_system.domain.enums.MaxLossBasis.NOT_DEFINED`, which the
+    #: risk engine refuses to size.
+    max_loss_basis: MaxLossBasis = MaxLossBasis.NOT_DEFINED
     strike_relationship: StrikeRelationship = StrikeRelationship.NONE
     #: Whether every leg must share one expiration. True for every multi-leg
     #: strategy shipped today; a calendar spread would set it False, and does

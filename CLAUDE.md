@@ -4,27 +4,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Milestones 1–6 of 12 are complete.** Built and tested: the domain layer (models, enums,
-events, state machine), YAML configuration, the 20 JSON workflow schemas, the CLI surface,
+**Milestones 1–7 of 12 are complete.** Built and tested: the domain layer (models, enums,
+events, state machine), YAML configuration, the 26 JSON workflow schemas, the CLI surface,
 structured logging, an injectable clock, the `Broker` abstraction with `SimulatedBroker` and a
 read-only `IBKRBroker`, the read-only broker diagnostics, the reconciliation foundation, the
 data layer (providers, canonical models, quality engine, point-in-time snapshots,
 append-only history, repository), **universe selection** — the deterministic pre-filter,
 the first AI agent, and immutable universe runs — **market research**: point-in-time
 evidence assembly, news deduplication, the market researcher agent, deterministic hypothesis
-and confidence validation, and immutable research reports — and **strategy and contract
+and confidence validation, and immutable research reports — **strategy and contract
 selection**: the strategy registry, the strategy selector agent, deterministic decision
 validation, and the *deterministic* contract selector with immutable decision and selection
-records. 2240 passing tests; ruff, ruff format and mypy clean.
+records — and **allocation and risk**: the campaign envelope, the deterministic risk engine,
+the deterministic allocation engine, account snapshots, and an immutable allocation ledger.
+2735 passing tests; ruff, ruff format and mypy clean.
 
-**Not built, by design:** allocation, risk validation, order execution, autonomous trading,
-live trading. The CLI exposes those commands but they exit `3` naming the milestone that
+**Not built, by design:** order execution, position lifecycle, autonomous trading, live
+trading. The CLI exposes those commands but they exit `3` naming the milestone that
 delivers them — they never fabricate output. Follow that pattern for anything still pending.
 
-**Milestone 7 is next: allocation and risk** — the campaign budget allocator and the
-deterministic risk engine. It consumes the purchase candidates Milestone 6 produces: a
-contract selection carries legs and the cost of *one unit* of the structure, and nothing
-before Milestone 7 may decide a quantity or an amount of money.
+**Milestone 8 is next: execution** — the order builder, the simulator execution path, IBKR
+Paper execution and fill tracking. It consumes the authorisations Milestone 7 produces: a
+`CampaignAllocation` carries legs, a quantity, the capital committed and the maximum loss,
+and *nothing* in it is an order. Milestone 8 decides how to execute an authorisation and
+stays bound by every figure in it.
 
 [CLOUD_CODE_IMPLEMENTATION_SPEC.md](CLOUD_CODE_IMPLEMENTATION_SPEC.md) remains the source of
 truth for module layout, CLI surface, schemas, testing layers, and milestone order. Read the
@@ -121,7 +124,16 @@ full tree; the boundaries that matter:
   and no selector; the selector half imports no agent and no LLM client, and a test asserts
   both transitively. `strategies/__init__.py` defers everything that touches a repository
   through `__getattr__`, for the same reason `research/__init__.py` does.
-- `risk/`, `allocation/` — the remaining deterministic layer (Milestone 7).
+- `risk/` — the deterministic risk engine: *is this position permitted?* `models · limits ·
+  exposure · guards · account · engine · store`. The engine is a pure function of its
+  arguments — no clock, no broker, no repository, no model — so a stored verdict is
+  reproducible. Account state arrives as a captured `AccountSnapshot`, never from a live
+  request.
+- `allocation/` — the deterministic allocation engine: *how many units?* `models ·
+  candidates · campaign · scorer · budget_allocator · store · service · report`. It imports
+  `risk/`, never the reverse, and a test asserts it. `allocation/service.py` is the single
+  composition root; both `risk/__init__.py` and `allocation/__init__.py` defer everything
+  that touches a repository through `__getattr__`, for the same reason the other packages do.
 - `monitoring/` — position monitor, thesis monitor, reconciliation loop, scheduler.
 
 **Two loops, different cadences.** The Opportunity Discovery loop (universe → research → strategy →
@@ -264,17 +276,94 @@ through `config/data.yaml`'s market calendar — counting from a UTC date is wro
 most of the evening. An expiration on a day the calendar says is closed is rejected; a year the
 calendar does not cover answers `UNKNOWN` and is accepted as such.
 
+## Allocation and risk (Milestone 7)
+
+> **The campaign budget is independent of the broker account balance, and the most
+> restrictive relevant limit always wins.**
+
+The milestone where the system stops proposing and starts committing capital. Quantity and
+money appear here for the first time and nowhere earlier. Two engines, deliberately separate:
+
+```
+purchase candidate (M6)  ->  RiskEngine       -> is this permitted?
+                             AllocationEngine -> how many units?
+                             immutable allocation ledger
+```
+
+`RiskEngine` tests *one whole unit* against every limit and can reject before a quantity
+exists — a refusal reported as "we computed zero" tells nobody which limit to look at, whereas
+`MAX_ALLOCATION_PER_TRADE_EXCEEDED` with an actual and a limit value tells them exactly.
+`AllocationEngine` then sizes only what risk already approved, and can never overrule it.
+
+Eight rules govern it, each with tests that fail loudly:
+
+- **The campaign is not the account.** EUR 5,000 is the shipped envelope; the paper account's
+  balance is irrelevant to it. A million-euro balance cannot widen the campaign, and an
+  account holding less than the campaign permits binds instead. Both directions are tested.
+- **No AI decides money.** Neither engine has a parameter, field or import through which a
+  model could speak. Confidence *bands* from validated upstream artifacts feed the ordering
+  and can never change a quantity, a limit or a permission — a test asserts that two
+  candidates scoring 99 and 71 receive the same size.
+- **Quantity is a floor, and a whole number.** `max_units()` computes an exact floor and then
+  *verifies it by multiplication* in both directions, because a division that rounded the
+  wrong way in the last digit would commit one contract more than any limit authorised, every
+  time, silently. Boundary tests sit at exact fits and one cent either side.
+- **Maximum loss comes from the strategy, not from a formula.** `MaxLossBasis` is declared on
+  each `StrategyStructure` in code. "Max loss is the premium" is true of the four long-debit
+  strategies shipped today and false of the first credit spread anyone adds; a basis the
+  engine cannot compute is `MAX_LOSS_UNDEFINED` — a rejection, not an estimate.
+- **A child limit may narrow a parent; it may never widen one.** `risk.yaml` → `campaign.yaml`
+  → `config/strategies/*.yaml` → the position. Widening is a configuration *load failure*,
+  never a clamp, and `RiskLimits.scopes` records which layer supplied each effective value.
+- **An unevaluated limit is not a satisfied one.** `NOT_EVALUATED` is a distinct check
+  outcome. Realised daily profit and loss is not tracked until Milestone 9, so the daily-loss
+  limit is recorded as unevaluated rather than passed; `campaign.account.require_daily_loss_tracking`
+  decides whether that unknown blocks a trade.
+- **One opportunity, one reservation.** An opportunity's id is derived from the research
+  report, strategy decision and contract selection it descends from, so a re-run recognises
+  its own earlier authorisation and records `ALREADY_ALLOCATED` rather than reserving the
+  capital twice. Campaign state is *replayed from the ledger*, never kept as a running total.
+- **An authorisation is not an order.** No order type, no side, no limit price, no
+  time-in-force, no broker order id — and no broker anywhere in either package's import
+  graph. Milestone 7 ends at an authorisation boundary.
+
+`NO_TRADE` is a first-class outcome, and so is `NO_ALLOCATION` at the run level: a valid
+strategy and a valid contract are not an entitlement to capital, and a run that authorised
+nothing because the campaign is committed is the ordinary answer rather than a failure.
+`ACCOUNT_SNAPSHOT_UNAVAILABLE` is deliberately distinct — "we declined" and "we could not
+look" are different facts.
+
+**The broker is touched in exactly one place.** `risk capture-account` reads the account once
+and stores an immutable `AccountSnapshot`; the engines read it back by id and hold no broker.
+That is a safety property as well as an architectural one: Milestone 2 established that a
+second uncached round trip on one IBKR connection can go unanswered indefinitely, so a risk
+check that fetched its own account state could hang the process at the worst possible moment.
+`risk/account.py` is a pure function over `BrokerAccount` and `BrokerPosition`; the CLI, which
+already holds a broker, performs the read.
+
+The score is a **weighted sum of structured upstream facts**, with every component and every
+weight recorded on the stored decision so a total can be recomputed by hand. It decides
+**order** only — never permission, never size. There is no hidden scoring anywhere.
+
+Development guidance, including what to do when adding a strategy or a limit, is in
+[skills/risk-allocation/README.md](skills/risk-allocation/README.md). Milestone 7 introduces
+**no agent**, so there is deliberately no `.claude/agents/` entry for it — one would imply a
+model is involved somewhere, and none is.
+
 **Configuration over hardcoding.** Schedules live in `config/schedules.yaml`, risk in `risk.yaml`,
 strategies in `config/strategies/*.yaml`, data policy in `data.yaml`, the candidate pool,
 eligibility filters and ranking policy in `universe.yaml`, the research horizon, data
 windows, cost ceilings, deduplication and confidence policy in `research.yaml`, the strategy
-stage's eligibility gates and agent in `strategy.yaml`, and the expiration rule, strike
-policy, quote requirements and liquidity policy in `contract_selection.yaml`. Note the split:
-`strategy.yaml` configures the *stage*, `config/strategies/*.yaml` configure the *payoffs* —
-one is an agent, the others are instruments. Source trust lives in `sources.yaml` and
-**nowhere else** — `research/sources.py` reads it, it does not define a second ranking. DTE
-policy is per-strategy, not one universal number. Ports come from config. If a requirement is
-ambiguous, add a documented config option rather than a hidden assumption.
+stage's eligibility gates and agent in `strategy.yaml`, the expiration rule, strike
+policy, quote requirements and liquidity policy in `contract_selection.yaml`, and the campaign
+envelope, allocation policy, position limits, currency policy and ranking weights in
+`campaign.yaml`. Note the splits: `strategy.yaml` configures the *stage*,
+`config/strategies/*.yaml` configure the *payoffs* — one is an agent, the others are
+instruments; and `risk.yaml` states the outer boundary of the whole system while
+`campaign.yaml` states what *this* campaign permits inside it. Source trust lives in
+`sources.yaml` and **nowhere else** — `research/sources.py` reads it, it does not define a
+second ranking. DTE policy is per-strategy, not one universal number. Ports come from config.
+If a requirement is ambiguous, add a documented config option rather than a hidden assumption.
 
 ## Data and persistence layout
 
@@ -394,12 +483,34 @@ python -m trading_system.cli contract select --run-id <strategy-run-id>
 python -m trading_system.cli contract show [--run-id <ID>] [--symbol NVDA]
 python -m trading_system.cli contract history [--symbol NVDA]
 
+# Risk. Deterministic: no model is consulted. Submits 0 orders.
+python -m trading_system.cli risk validate              # the limits in force, by layer
+python -m trading_system.cli risk capture-account       # the ONE broker boundary
+python -m trading_system.cli risk capture-account --simulated
+python -m trading_system.cli risk evaluate              # permitted? persists nothing
+python -m trading_system.cli risk show [--run-id <ID>]
+python -m trading_system.cli risk explain --symbol NVDA [--run-id <ID>]
+
+# Allocation. Deterministic; authorises capital, never an order. Submits 0 orders.
+python -m trading_system.cli allocation validate        # campaign envelope + policy
+python -m trading_system.cli allocation validate --run-id <ID>
+python -m trading_system.cli allocation run --dry-run   # reserves nothing
+python -m trading_system.cli allocation run
+python -m trading_system.cli allocation run --run-id <contract-run-id>
+python -m trading_system.cli allocation run --symbol NVDA
+python -m trading_system.cli allocation show [--run-id <ID>] [--symbol NVDA]
+python -m trading_system.cli allocation explain --symbol NVDA [--run-id <ID>]
+python -m trading_system.cli allocation history [--symbol NVDA]
+
 pytest -m "not ibkr and not llm"                # default: no gateway, no API key needed
 pytest tests/universe                           # filters, point-in-time, snapshots, CLI
 pytest tests/research                           # evidence, dedup, validation, snapshots, CLI
 pytest tests/strategy                           # registry, boundaries, validation, service, CLI
 pytest tests/strategies                         # one suite per strategy specification
 pytest tests/contract_selection                 # policy, point-in-time, determinism
+pytest tests/risk                               # limits, engine, account snapshots, boundaries
+pytest tests/allocation                         # quantity, allocator, scorer, service, CLI
+pytest tests/integration/test_research_to_allocation.py   # the whole chain; 0 orders
 pytest tests/agents/test_universe_selector.py   # agent contract; needs no API key
 pytest tests/agents/test_research_agent.py      # agent contract; needs no API key
 pytest tests/agents/test_strategy_selector.py   # agent contract; needs no API key
@@ -423,6 +534,13 @@ cover is refused rather than decided. `contract select` deliberately takes no `-
 instant comes from each decision, so a selection reconstructs exactly the data that was
 visible when the strategy was chosen, and a selection made against a later chain would answer
 a question nobody asked.
+
+`allocation run` consumes a stored contract run and takes no `--as-of` for the same reason:
+the instant comes from the run being allocated against, so an authorisation reconstructs
+exactly the prices that were visible when the contract was chosen. It requires a stored
+account snapshot and reports `ACCOUNT_SNAPSHOT_UNAVAILABLE` rather than assuming the money is
+there — run `risk capture-account` first. Re-running over the same upstream artifacts is
+idempotent: the second run records `ALREADY_ALLOCATED` and reserves nothing.
 
 Every other command exits `3` until its milestone lands. Command help is tagged `(read-only)` or
 `(mutates state)` — keep that up when adding commands, and note that Rich swallows
@@ -580,6 +698,39 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   chain metadata alone every selection ends `REQUIRED_DATA_UNAVAILABLE` — correctly. Collect
   `data collect-options --quotes` first, and note that only the simulator supplies per-contract
   quotes today: the IBKR path is still deferred behind the one-round-trip constraint.
+- **The shipped EUR campaign refuses a USD-quoted contract, and that is correct.** The
+  universe is US-listed, the campaign is denominated in EUR, and no FX rate source is
+  configured — so every US option is rejected with `CURRENCY_MISMATCH`. Converting at an
+  invented rate would size a position wrongly by an amount nobody recorded. Two explicit ways
+  forward: denominate the campaign in the currency it actually trades, or add the currency to
+  `campaign.currency_policy.treat_as_campaign_currency` and accept that the two are being
+  treated as one unit of account. `allow_conversion: true` deliberately *fails to load* until a
+  deterministic rate source exists. `tests/risk/test_engine.py` pins the behaviour so it cannot
+  surprise anyone.
+- **`risk.yaml`'s 300-second staleness window is measured against the decision instant, not
+  wall clock.** The whole chain is anchored at one `as_of`, so a quote captured at that instant
+  has age zero however long ago the run happened. That is what lets a strict risk-layer window
+  coexist with `contract_selection.yaml`'s 86,400-second selection window: the risk layer is
+  stricter, which is the hierarchy working. A quote that was *already* 12 hours old when the
+  strategy was chosen is genuinely stale and is refused.
+- **An allocation run's id includes the campaign's committed state, not only its inputs.** The
+  same candidates against a campaign that has since reserved capital are a different decision
+  and reach a different answer, so a run id derived from the contract run alone would collide
+  the two and the immutable store would refuse the second. An unchanged re-run still lands on
+  the same id, which is what makes it idempotent rather than a second record of one event.
+- **A Milestone 7 authorisation that was never executed still consumes campaign budget.**
+  Milestone 7 cannot know whether an order filled. Double-authorising the same capital is the
+  failure worth preventing; releasing stale reservations belongs to the milestone that learns
+  what actually happened to them. `allocation/campaign.py` says so where it replays the ledger.
+- **`ALREADY_ALLOCATED` is a risk rejection, not a third kind of outcome.** It carries
+  `risk_outcome=REJECTED` with `DUPLICATE_OPPORTUNITY`, and both the model validator and
+  `schemas/campaign_allocation.json` permit exactly `REJECTED` and `ALREADY_ALLOCATED` under a
+  risk rejection. Narrowing that to `REJECTED` alone breaks idempotent re-runs.
+- **`RiskReasonCode` was extended rather than forked.** Milestone 7 needed codes the Milestone 1
+  vocabulary lacked (`INSUFFICIENT_BUYING_POWER`, `CURRENCY_MISMATCH`, `POINT_IN_TIME_ERROR`
+  and the rest). Adding members is additive and keeps *one* authoritative list evaluation can
+  aggregate across milestones; a parallel enum would have guaranteed the two drifted.
+  `schemas/risk_decision.json` enumerates the same set and must be updated with it.
 
 This directory is its own git repository (`git init`-ed, one commit: the specification). The
 enclosing `/home/dmytro/git/` is a separate repo full of unrelated projects; nothing here should

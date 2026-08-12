@@ -157,8 +157,6 @@ def test_config_validates_and_prints() -> None:
         # The IBKR diagnostics and `test reconciliation` landed in Milestone 2;
         # they are covered by tests/broker and tests/integration.
         ["test", "ibkr-order-simulation"],
-        ["test", "allocation"],
-        ["test", "risk"],
         ["test", "e2e-dry-run"],
         ["test", "e2e-paper"],
         ["test", "workflow", "research"],
@@ -173,6 +171,10 @@ def test_config_validates_and_prints() -> None:
         # non-dry run would write into the repository's own data/research/.
         # The `strategy` and `contract` groups landed in Milestone 6 and are
         # covered by tests/strategy/test_cli.py, for the same reason.
+        # The `risk` and `allocation` groups, and `test risk` / `test
+        # allocation`, landed in Milestone 7 and are covered by
+        # tests/allocation/test_cli.py, which repoints the service at tmp_path
+        # so no command touches the repository's own data/.
         ["reports", "daily"],
         ["reports", "performance"],
     ],
@@ -190,8 +192,24 @@ def test_unimplemented_command_names_its_milestone() -> None:
     result = runner.invoke(app, ["run", "opportunities"])
     text = _text(result)
     assert "NOT IMPLEMENTED" in text
-    assert "Milestone 7" in text
+    assert "Milestone 8" in text
     assert "No broker connection was attempted" in text
+
+
+@pytest.mark.unit
+def test_milestone_7_diagnostics_are_implemented() -> None:
+    """``test risk`` and ``test allocation`` exited 3 before Milestone 7.
+
+    They now inspect stored decisions. With no allocation run recorded they
+    report UNAVAILABLE and exit 0 — honest about having nothing to show rather
+    than pretending the command does not exist. Producing a run is covered by
+    tests/allocation/test_cli.py, which points the service at a temporary
+    store so nothing is written into the repository's own data/.
+    """
+    for args in (["test", "risk"], ["test", "allocation"]):
+        result = runner.invoke(app, args)
+        assert result.exit_code == EXIT_OK, f"{args} -> {result.output}"
+        assert "NOT IMPLEMENTED" not in _text(result)
 
 
 @pytest.mark.unit

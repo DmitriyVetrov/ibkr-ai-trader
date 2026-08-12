@@ -893,6 +893,234 @@ def allocation_decision(versions: SystemVersions) -> AllocationDecision:
 
 
 @pytest.fixture
+def account_snapshot():
+    """A Milestone 7 account snapshot: broker reality, captured once."""
+    from trading_system.risk.models import AccountPosition, AccountSnapshot
+
+    return AccountSnapshot(
+        snapshot_id="account-20260810T143000Z-abcdef0123456789",
+        as_of=FIXED_NOW,
+        captured_at=FIXED_NOW,
+        broker="SIMULATOR",
+        account_id="DU0000000",
+        currency="EUR",
+        trading_mode=TradingMode.PAPER,
+        cash=Decimal("100000.00"),
+        net_liquidation=Decimal("100000.00"),
+        buying_power=Decimal("400000.00"),
+        available_funds=Decimal("98000.00"),
+        positions=[
+            AccountPosition(
+                symbol="SPY",
+                security_type="STOCK",
+                quantity=Decimal("100"),
+                average_cost=Decimal("450.00"),
+                currency="USD",
+            )
+        ],
+        read_only=True,
+        orders_submitted=0,
+        simulated=True,
+    )
+
+
+@pytest.fixture
+def campaign_snapshot():
+    """A Milestone 7 campaign: EUR 5,000 with a 20% reserve, nothing committed."""
+    from trading_system.risk.models import CampaignSnapshot
+
+    return CampaignSnapshot(
+        campaign_id="campaign-001",
+        as_of=FIXED_NOW,
+        currency="EUR",
+        budget=Decimal("5000"),
+        reserve=Decimal("1000.00"),
+        open_positions=[],
+        realized_pnl_today=None,
+    )
+
+
+@pytest.fixture
+def eur_contract_selection(contract_selection_result):
+    """The Milestone 6 selection, priced in the campaign's own currency.
+
+    The shipped ``contract_selection_result`` is a US-listed contract quoted in
+    USD, and the shipped campaign is denominated in EUR with no FX rate source
+    configured — so the risk engine rejects it with ``CURRENCY_MISMATCH``. That
+    is the correct behaviour and is asserted directly in
+    ``tests/risk/test_engine.py``; converting at an invented rate would size a
+    position wrongly by an amount nobody recorded.
+
+    The allocation fixtures below need an *approved* authorisation to describe
+    the boundary with, so this re-denominates the same contract rather than
+    weakening the currency policy to accommodate a fixture.
+    """
+    legs = [leg.model_copy(update={"currency": "EUR"}) for leg in contract_selection_result.legs]
+    cost = contract_selection_result.cost
+    assert cost is not None
+    return contract_selection_result.model_copy(
+        update={"legs": legs, "cost": cost.model_copy(update={"currency": "EUR"})}
+    )
+
+
+@pytest.fixture
+def allocation_candidate(eur_contract_selection, strategy_decision_record):
+    """A Milestone 7 purchase candidate, carried across from Milestone 6.
+
+    Built through the real builder rather than by hand: the contract tests
+    assert that the *boundary* is crossed correctly, and a hand-assembled
+    candidate would pass even if the translation were broken.
+    """
+    from trading_system.allocation.candidates import build_candidate
+    from trading_system.domain.enums import ExpectedMagnitude, StrategyType
+    from trading_system.infrastructure.settings import CampaignRankingConfig
+    from trading_system.strategies.registry import StrategyRegistry
+
+    registry = StrategyRegistry.from_config(load_config(default_config_dir()))
+    specification = registry.get(StrategyType.LONG_CALL)
+    assert specification is not None
+
+    return build_candidate(
+        eur_contract_selection,
+        specification,
+        CampaignRankingConfig(),
+        decision=strategy_decision_record,
+        expected_magnitude=ExpectedMagnitude.MODERATE,
+    )
+
+
+@pytest.fixture
+def risk_evaluation(allocation_candidate, campaign_snapshot, account_snapshot):
+    """The deterministic verdict on the candidate above."""
+    from trading_system.risk.engine import RiskEngine
+    from trading_system.risk.limits import resolve_limits
+
+    limits = resolve_limits(load_config(default_config_dir()))
+    return RiskEngine(limits).evaluate(
+        allocation_candidate,
+        campaign_snapshot,
+        as_of=FIXED_NOW,
+        account=account_snapshot,
+        trading_mode=TradingMode.PAPER,
+    )
+
+
+@pytest.fixture
+def campaign_allocation(
+    versions: SystemVersions,
+    allocation_candidate,
+    campaign_snapshot,
+    account_snapshot,
+    risk_evaluation,
+):
+    """One capital authorisation: the Milestone 7 to Milestone 8 boundary."""
+    from trading_system.allocation.budget_allocator import AllocationEngine
+    from trading_system.allocation.models import CampaignAllocation, allocation_identifier
+    from trading_system.domain.enums import AllocationOutcome
+    from trading_system.risk.engine import RiskEngine
+    from trading_system.risk.exposure import would_add
+    from trading_system.risk.limits import resolve_limits
+
+    limits = resolve_limits(load_config(default_config_dir()))
+    [decision] = AllocationEngine(limits, RiskEngine(limits)).allocate(
+        [allocation_candidate],
+        campaign_snapshot,
+        as_of=FIXED_NOW,
+        account=account_snapshot,
+    )
+    assert decision.outcome is AllocationOutcome.APPROVED, decision.evaluation.explain()
+    calculation = decision.calculation
+    assert calculation is not None
+
+    return CampaignAllocation(
+        allocation_id=allocation_identifier(
+            run_id="allocation-run-001",
+            opportunity_id=allocation_candidate.opportunity_id,
+            outcome=decision.outcome,
+            quantity=decision.quantity,
+            capital_committed=decision.capital_committed,
+        ),
+        run_id="allocation-run-001",
+        opportunity_id=allocation_candidate.opportunity_id,
+        campaign_id="campaign-001",
+        symbol="NVDA",
+        as_of=FIXED_NOW,
+        decided_at=FIXED_NOW,
+        outcome=decision.outcome,
+        strategy=allocation_candidate.strategy,
+        strategy_version="1.0.0",
+        direction=allocation_candidate.risk_profile.directional_view,
+        legs=list(allocation_candidate.legs),
+        expiration=allocation_candidate.expiration,
+        dte=allocation_candidate.dte,
+        quantity=decision.quantity,
+        unit_cost=calculation.unit_cost,
+        capital_committed=decision.capital_committed,
+        unit_max_loss=calculation.unit_max_loss,
+        total_max_loss=decision.total_max_loss,
+        risk_basis=calculation.max_loss_basis,
+        price_source=allocation_candidate.price.source,
+        currency=allocation_candidate.price.currency,
+        calculation=calculation,
+        risk_outcome=decision.evaluation.outcome,
+        reason_codes=list(decision.evaluation.reason_codes),
+        allocation_reasons=list(decision.reasons),
+        opportunity_score=allocation_candidate.score,
+        rank=decision.rank,
+        risk_evaluation=decision.evaluation,
+        exposure_after=would_add(
+            campaign_snapshot,
+            allocation_candidate,
+            quantity=decision.quantity,
+            unit_cost=calculation.unit_cost,
+            unit_max_loss=calculation.unit_max_loss,
+        ),
+        contract_selection_id=allocation_candidate.contract_selection_id,
+        contract_run_id=allocation_candidate.contract_run_id,
+        strategy_decision_id=allocation_candidate.strategy_decision_id,
+        strategy_run_id=allocation_candidate.strategy_run_id,
+        research_report_id=allocation_candidate.research_report_id,
+        account_snapshot_id=account_snapshot.snapshot_id,
+        campaign_snapshot_as_of=campaign_snapshot.as_of,
+        input_snapshot_ids=list(allocation_candidate.input_snapshot_ids),
+        trading_mode=TradingMode.PAPER,
+        versions=versions,
+    )
+
+
+@pytest.fixture
+def allocation_run(versions: SystemVersions, campaign_snapshot, campaign_allocation):
+    """The immutable record of one Milestone 7 allocation run."""
+    from trading_system.allocation.models import AllocationRunCounts, AllocationRunResult
+    from trading_system.domain.enums import AllocationPolicy, AllocationRunStatus
+
+    return AllocationRunResult(
+        run_id="allocation-run-001",
+        campaign_id="campaign-001",
+        as_of=FIXED_NOW,
+        generated_at=FIXED_NOW,
+        status=AllocationRunStatus.SUCCESS,
+        policy=AllocationPolicy.PRIORITY_FIRST_FIT,
+        policy_version="1.0.0",
+        trading_mode=TradingMode.PAPER,
+        campaign_before=campaign_snapshot,
+        account_snapshot_id=campaign_allocation.account_snapshot_id,
+        budget=campaign_snapshot.budget,
+        reserve=campaign_snapshot.reserve,
+        allocated_before=campaign_snapshot.allocated,
+        allocated_this_run=campaign_allocation.capital_committed,
+        available_after=campaign_snapshot.available - campaign_allocation.capital_committed,
+        risk_authorized_this_run=campaign_allocation.total_max_loss,
+        allocations=[campaign_allocation],
+        counts=AllocationRunCounts(candidates_considered=1, approved=1),
+        contract_run_id=campaign_allocation.contract_run_id,
+        strategy_run_id=campaign_allocation.strategy_run_id,
+        research_run_id="research-run-001",
+        versions=versions,
+    )
+
+
+@pytest.fixture
 def risk_decision(versions: SystemVersions) -> RiskDecision:
     return RiskDecision(
         decision_id="risk-001",

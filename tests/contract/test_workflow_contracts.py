@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -704,3 +705,325 @@ def test_execution_result_counts_submitted_orders(execution_result: ExecutionRes
     """Read-only broker tests assert this is zero; it must therefore be tracked."""
     assert execution_result.orders_submitted == 1
     assert "orders_submitted" in _dump(execution_result)
+
+
+# ---------------------------------------------------------------------------
+# Milestone 7: allocation and risk
+#
+# The audit artifacts of the allocation stage, and the boundary they hand to
+# execution. `allocation_decision` and `risk_decision` above stay the narrow
+# Milestone 1 contracts; `campaign_allocation` is the wider record that
+# projects onto the first, exactly as `market_research_report` does for
+# `research_report`.
+# ---------------------------------------------------------------------------
+@pytest.mark.contract
+@pytest.mark.parametrize(
+    ("fixture_name", "schema_name"),
+    [
+        ("account_snapshot", "account_snapshot"),
+        ("campaign_snapshot", "campaign_snapshot"),
+        ("allocation_candidate", "allocation_candidate"),
+        ("risk_evaluation", "risk_evaluation"),
+        ("campaign_allocation", "campaign_allocation"),
+        ("allocation_run", "allocation_run"),
+    ],
+)
+def test_a_milestone_7_artifact_validates_against_its_own_schema(
+    fixture_name: str,
+    schema_name: str,
+    request: pytest.FixtureRequest,
+    load_schema: Callable[[str], dict[str, Any]],
+) -> None:
+    model = request.getfixturevalue(fixture_name)
+    _validator(load_schema(schema_name)).validate(_dump(model))
+
+
+@pytest.mark.contract
+@pytest.mark.parametrize(
+    ("fixture_name", "schema_name"),
+    [
+        ("account_snapshot", "account_snapshot"),
+        ("campaign_snapshot", "campaign_snapshot"),
+        ("allocation_candidate", "allocation_candidate"),
+        ("risk_evaluation", "risk_evaluation"),
+        ("campaign_allocation", "campaign_allocation"),
+        ("allocation_run", "allocation_run"),
+    ],
+)
+def test_a_milestone_7_schema_rejects_unknown_fields(
+    fixture_name: str,
+    schema_name: str,
+    request: pytest.FixtureRequest,
+    load_schema: Callable[[str], dict[str, Any]],
+) -> None:
+    payload = _dump(request.getfixturevalue(fixture_name))
+    payload["smuggled_field"] = "surprise"
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema(schema_name)).validate(payload)
+
+
+@pytest.mark.contract
+@pytest.mark.parametrize(
+    ("fixture_name", "schema_name"),
+    [
+        ("account_snapshot", "account_snapshot"),
+        ("campaign_snapshot", "campaign_snapshot"),
+        ("allocation_candidate", "allocation_candidate"),
+        ("risk_evaluation", "risk_evaluation"),
+        ("campaign_allocation", "campaign_allocation"),
+        ("allocation_run", "allocation_run"),
+    ],
+)
+def test_a_milestone_7_schema_requires_its_required_fields(
+    fixture_name: str,
+    schema_name: str,
+    request: pytest.FixtureRequest,
+    load_schema: Callable[[str], dict[str, Any]],
+) -> None:
+    schema = load_schema(schema_name)
+    payload = _dump(request.getfixturevalue(fixture_name))
+
+    for field in schema["required"]:
+        broken = copy.deepcopy(payload)
+        del broken[field]
+        with pytest.raises(ValidationError):
+            _validator(schema).validate(broken)
+
+
+@pytest.mark.contract
+def test_the_allocation_schema_rejects_money_as_a_json_number(
+    campaign_allocation, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    payload = _dump(campaign_allocation)
+    payload["capital_committed"] = 1210.00
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("campaign_allocation")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_allocation_schema_rejects_a_timestamp_of_the_wrong_type(
+    campaign_allocation, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """The type constraint, which the schema enforces on its own.
+
+    Deliberately not a malformed *string*: ``format: date-time`` is only
+    enforced by ``jsonschema`` when an optional RFC 3339 validator is
+    installed, and this project does not depend on one. Asserting a check that
+    is silently inactive would be worse than not asserting it — the model's
+    ``UtcDatetime`` is what actually rejects an unparseable instant, and
+    ``tests/unit/test_domain_models.py`` covers that.
+    """
+    payload = _dump(campaign_allocation)
+    payload["decided_at"] = 1_754_000_000
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("campaign_allocation")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_allocation_schema_rejects_an_invalid_enum(
+    campaign_allocation, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    payload = _dump(campaign_allocation)
+    payload["outcome"] = "PROBABLY"
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("campaign_allocation")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_allocation_schema_rejects_a_refusal_that_commits_capital(
+    campaign_allocation, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """Only an approval commits capital, in the schema as well as the model."""
+    payload = _dump(campaign_allocation)
+    payload["outcome"] = "NO_TRADE"  # quantity and capital are still set
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("campaign_allocation")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_allocation_schema_rejects_an_approval_over_a_risk_rejection(
+    campaign_allocation, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """No layer may override the risk engine."""
+    payload = _dump(campaign_allocation)
+    payload["risk_outcome"] = "REJECTED"
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("campaign_allocation")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_risk_schema_rejects_an_approval_with_a_rejection_code(
+    risk_evaluation, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    payload = _dump(risk_evaluation)
+    payload["reason_codes"] = ["SPREAD_TOO_WIDE"]
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("risk_evaluation")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_risk_schema_requires_a_reason_on_a_failed_check(
+    risk_evaluation, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """Every rejection must be machine-readable."""
+    payload = _dump(risk_evaluation)
+    payload["outcome"] = "REJECTED"
+    payload["reason_codes"] = ["SPREAD_TOO_WIDE"]
+    payload["checks"] = [
+        {"name": "bid_ask_spread", "scope": "STRATEGY", "outcome": "FAIL", "reason_code": None}
+    ]
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("risk_evaluation")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_account_schema_rejects_a_snapshot_claiming_a_submitted_order(
+    account_snapshot, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """Capturing an account reads and does nothing else."""
+    payload = _dump(account_snapshot)
+    payload["orders_submitted"] = 1
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("account_snapshot")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_candidate_schema_requires_a_broker_contract_id_on_every_leg(
+    allocation_candidate, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    payload = _dump(allocation_candidate)
+    del payload["legs"][0]["contract_id"]
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("allocation_candidate")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_candidate_schema_rejects_a_price_with_no_figure_and_no_reason(
+    allocation_candidate, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """An unavailable price says why; an available one states a number."""
+    payload = _dump(allocation_candidate)
+    payload["price"] = {"available": False, "source": None, "unit_cost": None}
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("allocation_candidate")).validate(payload)
+
+
+# ---------------------------------------------------------------------------
+# Producer output is consumable by the next stage
+# ---------------------------------------------------------------------------
+@pytest.mark.contract
+def test_a_contract_selection_feeds_the_allocation_candidate(
+    contract_selection_result, allocation_candidate
+) -> None:
+    """Milestone 6 -> Milestone 7.
+
+    The candidate names the selection it descends from and carries the unit
+    cost that selection established. Nothing is upgraded on the way through.
+    """
+    assert allocation_candidate.contract_selection_id == contract_selection_result.selection_id
+    assert allocation_candidate.symbol == contract_selection_result.symbol
+    assert allocation_candidate.strategy == contract_selection_result.strategy
+    assert contract_selection_result.cost is not None
+    assert allocation_candidate.price.unit_cost == contract_selection_result.cost.estimated_debit
+
+
+@pytest.mark.contract
+def test_the_candidate_carries_no_quantity_or_allocation(allocation_candidate) -> None:
+    """Quantity is introduced by the allocation engine, not before it."""
+    payload = _dump(allocation_candidate)
+
+    for field in ("quantity", "capital_committed", "allocated_eur", "budget"):
+        assert field not in payload
+
+
+@pytest.mark.contract
+def test_a_risk_evaluation_answers_the_candidate(allocation_candidate, risk_evaluation) -> None:
+    assert risk_evaluation.opportunity_id == allocation_candidate.opportunity_id
+    assert risk_evaluation.symbol == allocation_candidate.symbol
+    assert risk_evaluation.unit_cost == allocation_candidate.price.unit_cost
+
+
+@pytest.mark.contract
+def test_an_allocation_descends_from_its_risk_evaluation(
+    campaign_allocation, risk_evaluation
+) -> None:
+    assert campaign_allocation.risk_evaluation.opportunity_id == risk_evaluation.opportunity_id
+    assert campaign_allocation.risk_outcome.value == "APPROVED"
+    assert campaign_allocation.quantity >= 1
+
+
+@pytest.mark.contract
+def test_an_allocation_run_projects_onto_the_milestone_1_boundary(
+    allocation_run, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """Milestone 7 -> the narrow ``allocation_decision`` contract.
+
+    The full run is the audit artifact; this is what the rest of the chain was
+    built against. ``allocated + reserve == budget`` has to hold exactly.
+    """
+    projected = allocation_run.to_allocation_decision()
+
+    _validator(load_schema("allocation_decision")).validate(_dump(projected))
+    assert projected.campaign_id == allocation_run.campaign_id
+    assert projected.total_budget_eur == allocation_run.budget
+    assert projected.allocated_eur + projected.reserve_eur == projected.total_budget_eur
+
+
+@pytest.mark.contract
+def test_the_allocation_arithmetic_survives_serialisation(campaign_allocation) -> None:
+    """Money crosses the boundary as an exact string, never as a float."""
+    payload = _dump(campaign_allocation)
+
+    assert isinstance(payload["capital_committed"], str)
+    assert isinstance(payload["unit_cost"], str)
+    assert Decimal(payload["capital_committed"]) == Decimal(payload["unit_cost"]) * Decimal(
+        payload["quantity"]
+    )
+    assert Decimal(payload["total_max_loss"]) == Decimal(payload["unit_max_loss"]) * Decimal(
+        payload["quantity"]
+    )
+
+
+@pytest.mark.contract
+def test_the_allocation_is_an_authorisation_and_not_an_order(campaign_allocation) -> None:
+    """Milestone 7 ends at an authorisation boundary (brief section 42)."""
+    payload = _dump(campaign_allocation)
+
+    for field in (
+        "order_type",
+        "side",
+        "limit_price",
+        "time_in_force",
+        "broker_order_id",
+        "execution_price",
+    ):
+        assert field not in payload
+
+
+@pytest.mark.contract
+def test_the_allocation_names_every_upstream_artifact(campaign_allocation) -> None:
+    """The chain has to be walkable by id, in both directions."""
+    payload = _dump(campaign_allocation)
+
+    for field in (
+        "contract_selection_id",
+        "contract_run_id",
+        "strategy_decision_id",
+        "research_report_id",
+        "account_snapshot_id",
+        "campaign_id",
+        "opportunity_id",
+        "allocation_id",
+    ):
+        assert payload[field], f"{field} is empty"

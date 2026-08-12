@@ -134,7 +134,7 @@ python -m trading_system.cli universe show
 python -m trading_system.cli universe explain --run-id <ID> --symbol SPY
 ```
 
-### `research/`, `strategy/`, `contracts/`
+### `research/`, `strategy/`, `contracts/`, `allocation/`
 
 The later decision records, each with the same discipline and for the same
 reasons — immutable run files, an append-only `history.jsonl`, and a per-symbol
@@ -144,13 +144,14 @@ index so one underlying's history can be read without loading every run:
 research/runs/<generated>-<run_id>.json     research/history.jsonl     research/symbols/<SYMBOL>.jsonl
 strategy/runs/<generated>-<run_id>.json     strategy/history.jsonl     strategy/symbols/<SYMBOL>.jsonl
 contracts/runs/<generated>-<run_id>.json    contracts/history.jsonl    contracts/symbols/<SYMBOL>.jsonl
+allocation/runs/<generated>-<run_id>.json   allocation/history.jsonl   allocation/symbols/<SYMBOL>.jsonl
 ```
 
 Together with `universe/` they form the provenance chain a trade is
 reconstructed from:
 
 ```
-universe run -> research report -> strategy decision -> contract selection
+universe run -> research report -> strategy decision -> contract selection -> capital authorisation
 ```
 
 Each record names the one before it by id and lists the data snapshots it rests
@@ -158,13 +159,50 @@ on, so "why is this contract here" is answered by following identifiers rather
 than by inference. A strategy decision additionally records which model chose
 it, under which prompt version and fingerprint; a contract selection records
 the deterministic policy version, the reference price and the field it came
-from, and every candidate it rejected with the reason.
+from, and every candidate it rejected with the reason. An allocation records
+the quantity, the capital committed, the maximum loss, every ceiling the
+quantity was the floor of, and the account and campaign state it was decided
+against.
 
 ```bash
 python -m trading_system.cli research show
 python -m trading_system.cli strategy show --symbol NVDA
 python -m trading_system.cli contract show --symbol NVDA
+python -m trading_system.cli allocation show --symbol NVDA
 ```
+
+`allocation/` is the campaign's **accounting**, which makes it the one store
+here whose integrity affects what the system may do next: campaign state is
+replayed from it rather than kept as a running total, because a running balance
+is a second copy of the truth and there is no way to tell which copy is wrong
+when they disagree. Two consequences follow:
+
+- **a `--dry-run` is never written here.** A diagnostic result in the ledger
+  would consume budget nobody committed, and the repository refuses to store
+  one;
+- **an authorisation that was never executed still consumes budget.** Milestone
+  7 cannot know whether an order filled; double-authorising the same capital is
+  the failure worth preventing.
+
+### `accounts/`
+
+Immutable account snapshots — the single boundary between broker reality and
+the deterministic risk engine:
+
+```
+accounts/snapshots/<as_of>-<snapshot_id>.json      accounts/history.jsonl
+```
+
+Written by `risk capture-account`, which reads the broker once and does nothing
+else; the snapshot records the order counter it read off the broker, so the
+zero is evidence rather than an assertion. The engines read these back by id
+and hold no broker at all.
+
+Ids are content-derived, so capturing an unchanged account twice is recognised
+as one observation rather than stored as two different balances — the same
+reasoning that governs snapshot ids everywhere else here. Every monetary field
+the broker omitted stays `null`: "no buying power reported" and "zero buying
+power" are different facts about an account.
 
 ## Required metadata
 

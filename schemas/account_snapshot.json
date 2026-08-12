@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/account_snapshot.json",
+  "title": "AccountSnapshot",
+  "description": "What the broker said about the account at one instant, captured once and stored. The single boundary between broker reality and deterministic risk: the engines read this, never a broker. Every monetary field the broker may omit is null, which is not zero. orders_submitted must be 0 — capturing an account reads and does nothing else.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "snapshot_id",
+    "as_of",
+    "captured_at",
+    "broker",
+    "account_id",
+    "currency",
+    "trading_mode"
+  ],
+  "properties": {
+    "snapshot_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "captured_at": {
+      "description": "When we looked. Retrieval binds: a snapshot captured after an instant was not available at it, however recent the state it describes.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "broker": {
+      "type": "string",
+      "minLength": 1
+    },
+    "account_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "currency": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 8
+    },
+    "trading_mode": {
+      "enum": [
+        "DRY_RUN",
+        "PAPER",
+        "LIVE"
+      ]
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cash": {
+      "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "net_liquidation": {
+      "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "buying_power": {
+      "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "available_funds": {
+      "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "excess_liquidity": {
+      "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "unrealized_pnl": {
+      "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "realized_pnl": {
+      "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "positions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/account_position"
+      }
+    },
+    "read_only": {
+      "type": "boolean"
+    },
+    "orders_submitted": {
+      "description": "Read off the broker's own counter, so the zero is evidence rather than an assertion. Any other value is invalid.",
+      "type": "integer",
+      "const": 0
+    },
+    "simulated": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "money": {
+      "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "nullable_money": {
+      "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "account_position": {
+      "description": "One broker-reported position, reduced to what risk needs. Signed quantity; a Decimal because that is what the broker reports.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "symbol",
+        "security_type",
+        "quantity"
+      ],
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "minLength": 1
+        },
+        "security_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quantity": {
+          "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "contract_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "multiplier": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "average_cost": {
+          "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "market_value": {
+          "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "unrealized_pnl": {
+          "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "expiration": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "strike": {
+          "description": "An amount, or null when it was never reported. Null is not zero: 'no buying power reported' and 'zero buying power' are different facts.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "right": {
+          "enum": [
+            "CALL",
+            "PUT",
+            null
+          ]
+        }
+      }
+    }
+  }
+}

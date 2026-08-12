@@ -9,7 +9,13 @@ assumed.
 
 from __future__ import annotations
 
-from trading_system.domain.enums import Direction, LegAction, OptionRight, StrategyType
+from trading_system.domain.enums import (
+    Direction,
+    LegAction,
+    MaxLossBasis,
+    OptionRight,
+    StrategyType,
+)
 from trading_system.strategies.base import LegTemplate, StrategyStructure, StrikeRelationship
 
 __all__ = ["STRUCTURE"]
@@ -18,6 +24,9 @@ STRUCTURE = StrategyStructure(
     strategy_type=StrategyType.LONG_PUT,
     legs=(LegTemplate(action=LegAction.BUY, right=OptionRight.PUT, ratio=1),),
     directional_view=Direction.BEARISH,
+    # Bought outright, so the most that can be lost is what was paid:
+    # one premium, paid once. Nothing beyond the debit is at risk.
+    max_loss_basis=MaxLossBasis.NET_DEBIT_PAID,
     strike_relationship=StrikeRelationship.NONE,
     same_expiration=True,
     single_position=True,

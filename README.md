@@ -10,12 +10,12 @@ not reachable by configuration alone — see [Trading modes](#trading-modes).
 
 ## Status
 
-**Milestone 6 of 12 — strategy and contract selection.** What exists today:
+**Milestone 7 of 12 — allocation and risk.** What exists today:
 
 - domain models, enums, events and the position state machine;
 - YAML configuration for campaign, risk, schedules, sources, strategies, data,
   universe and research;
-- the 18 JSON schemas for the workflow boundaries;
+- the 26 JSON schemas for the workflow boundaries;
 - structured logging and an injectable clock;
 - a `Broker` abstraction with a deterministic `SimulatedBroker` and a
   **read-only** `IBKRBroker` over IB Gateway;
@@ -36,10 +36,15 @@ not reachable by configuration alone — see [Trading modes](#trading-modes).
 - **contract selection**: a fully deterministic selector — no model, at all —
   that resolves a strategy into concrete legs from a stored option chain, or
   reports explicitly that no valid contract exists;
+- **allocation and risk**: a campaign capital envelope independent of the broker
+  account balance, a deterministic risk engine whose rejections no agent can
+  override, a deterministic allocation engine that sizes positions by exact
+  decimal arithmetic, immutable account snapshots, and an append-only
+  allocation ledger;
 - the CLI surface, with every command tagged read-only or state-mutating.
 
-What deliberately does **not** exist yet: allocation, risk validation, order
-execution, autonomous trading and any form of live trading. Commands covering
+What deliberately does **not** exist yet: order execution, the position
+lifecycle, autonomous trading and any form of live trading. Commands covering
 those exist in the CLI but exit `3` naming the milestone that delivers them.
 They never fabricate output.
 
@@ -191,6 +196,35 @@ structural rather than a check performed at the end.
 `--symbol` research did not cover is refused. `contract select` takes no
 `--as-of` on purpose — the instant comes from each decision, so a selection
 reconstructs exactly the data that was visible when the strategy was chosen.
+
+### Allocation and risk
+
+```bash
+# The one command that reads the broker. Read-only; submits zero orders.
+python -m trading_system.cli risk capture-account --simulated
+
+python -m trading_system.cli risk validate            # the limits in force, by layer
+python -m trading_system.cli risk evaluate            # permitted? persists nothing
+python -m trading_system.cli risk explain --symbol NVDA
+
+python -m trading_system.cli allocation validate      # campaign envelope + policy
+python -m trading_system.cli allocation run --dry-run # reserves nothing
+python -m trading_system.cli allocation run
+python -m trading_system.cli allocation show [--run-id <ID>] [--symbol NVDA]
+python -m trading_system.cli allocation explain --symbol NVDA
+python -m trading_system.cli allocation history [--symbol NVDA]
+```
+
+Every one submits zero orders, and neither engine constructs a broker, so that
+is structural rather than a check performed at the end.
+
+`allocation run` consumes a stored contract run and takes no `--as-of` for the
+same reason `contract select` does not: the instant comes from the run being
+allocated against, so an authorisation reconstructs exactly the prices that
+were visible when the contract was chosen. It requires a stored account
+snapshot and reports `ACCOUNT_SNAPSHOT_UNAVAILABLE` rather than assuming the
+money is there. Re-running over the same upstream artifacts is idempotent: the
+second run records `ALREADY_ALLOCATED` and reserves nothing.
 
 ## Data architecture
 
@@ -372,6 +406,102 @@ Milestone 6 ends at a **purchase candidate**: legs, and what one unit of the
 structure would cost. There is no quantity and no allocation — those belong to
 the risk and allocation engines, and no artifact here has a field for them.
 
+## Allocation and risk
+
+```
+PURCHASE CANDIDATE        legs, and the cost of ONE unit
+    |
+ACCOUNT SNAPSHOT          captured once, stored, read back by id
+CAMPAIGN SNAPSHOT         replayed from the allocation ledger
+    |
+RISK ENGINE               is this permitted?  APPROVED / REJECTED + reason codes
+    |
+ALLOCATION ENGINE         how many units?  floor(min(every ceiling))
+    |
+CAMPAIGN ALLOCATION       an authorisation, never an order
+```
+
+> **The campaign budget is independent of the broker account balance, and the
+> most restrictive relevant limit always wins.**
+
+```
+IBKR paper account:   EUR 1,000,000    <- irrelevant to what may be spent
+configured campaign:  EUR 5,000        <- the envelope
+less a 20% reserve:   EUR 4,000        <- the most that may ever be committed
+```
+
+A large account balance can never widen the campaign. A small one *can* narrow
+it: where the broker reports less available capital than the campaign permits,
+the account binds instead.
+
+**No AI is involved at any point in this milestone.** Neither engine has a
+parameter, a field or an import through which a model could speak. Confidence
+bands from validated upstream artifacts decide the *order* candidates are
+considered in; they can never change a quantity, a limit or a permission — two
+candidates scoring 99 and 71 receive the same size, and a test asserts it.
+
+Limits form a hierarchy in which a child may narrow a parent and may never
+widen one:
+
+```
+config/risk.yaml           GLOBAL     the outer boundary of the whole system
+config/campaign.yaml       CAMPAIGN   what this campaign permits within it
+config/strategies/*.yaml   STRATEGY   what this strategy permits within that
+the candidate itself       POSITION   what one position may commit
+```
+
+Widening is a configuration **load failure**, never a silent clamp — a clamped
+limit runs correctly and is invisible in the diff that introduced it.
+
+Quantity is the floor of the tightest ceiling, computed in exact decimal and
+then verified by multiplication:
+
+```
+quantity = floor(min(
+    campaign budget remaining / unit cost,
+    risk budget remaining     / unit max loss,
+    per-trade allocation cap  / unit cost,
+    concentration room        / unit cost,
+    contract count cap,
+    broker available funds    / unit cost,
+))
+```
+
+It never rounds up and is never fractional. Every ceiling is recorded on the
+stored decision, so "why two contracts and not three" is answerable from the
+record without re-deriving anything.
+
+Maximum loss comes from the strategy's own declared `MaxLossBasis`, not from a
+generic formula: "max loss is the premium" is true of the four long-debit
+strategies shipped today and false of the first credit spread anyone adds. A
+basis the engine cannot compute is a rejection, not an estimate.
+
+The broker is touched in exactly **one** place — `risk capture-account`, which
+reads the account once and stores an immutable snapshot. The engines read it
+back by id and hold no broker, which is a safety property as much as an
+architectural one: a second uncached round trip on one IBKR connection can go
+unanswered indefinitely (see [IBKR architecture](#ibkr-architecture)), so a
+risk check that fetched its own account state could hang the process.
+
+Milestone 7 ends at an **authorisation**, which is not an order. There is no
+order type, no side, no limit price, no time-in-force and no broker order id
+anywhere in the artifact, and tests assert their absence. Milestone 8 decides
+how to execute an authorisation and stays bound by every figure in it.
+
+Known limitations, stated rather than hidden:
+
+- realised daily profit and loss is not tracked until Milestone 9, so the
+  daily-loss limit is recorded as `NOT_EVALUATED` — never as passed;
+- an authorisation that was never executed still consumes campaign budget;
+  releasing stale reservations belongs to the milestone that learns whether an
+  order filled;
+- the shipped EUR campaign refuses a USD-quoted contract with
+  `CURRENCY_MISMATCH`, because no FX rate is invented. Either denominate the
+  campaign in the currency it trades, or list the currency explicitly in
+  `campaign.currency_policy.treat_as_campaign_currency`;
+- correlation is not modelled. Concentration is explicit and countable: per
+  underlying, per strategy, per direction, plus a position count.
+
 ## IBKR architecture
 
 ```
@@ -473,6 +603,10 @@ make test-research     # evidence, deduplication, point-in-time, validation, CLI
 make test-strategy     # registry, agent boundary, decision validation, service, CLI
 make test-strategies   # one suite per strategy specification
 make test-contract-selection  # policy, point-in-time, determinism, boundaries
+make test-risk         # limits, engine, account snapshots, boundaries
+make test-allocation   # quantity, allocator, scorer, service, CLI
+make test-allocation-unit         # the engine arithmetic alone
+make test-allocation-integration  # research -> allocation, end to end
 make test-agents       # AI agent contract tests; needs no API key
 make test-contract     # workflow-boundary schema compatibility
 make test-integration  # multi-component, simulated broker
@@ -620,9 +754,11 @@ src/
   universe/        candidate pool, pre-filter, ranking, immutable runs
   research/        point-in-time evidence, hypothesis validation, immutable reports
   strategies/      registry, strategy structures, deterministic contract selector
+  risk/            deterministic risk engine, limits, exposure, account snapshots
+  allocation/      deterministic campaign allocation, scoring, immutable ledger
   agents/          LLM agents and their shipped prompts
   infrastructure/  settings, config loading, logging, clock
-skills/            per-strategy specifications (documentation, never executable)
+skills/            strategy specifications and development guidance (never executable)
 data/              market data, snapshots and caches (contents git-ignored)
 trades/            immutable per-trade artifact directories (contents git-ignored)
 reports/           generated reports (contents git-ignored)

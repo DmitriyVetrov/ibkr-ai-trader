@@ -1,7 +1,18 @@
-# Campaign capital.
+# Campaign capital and the deterministic allocation policy (Milestone 7).
 #
 # This budget is INDEPENDENT of IBKR account buying power. The paper account
 # holds a large simulated balance; that balance is not permission to spend.
+# When the two disagree, the more restrictive one wins — a campaign cannot
+# exceed its own envelope, and it cannot spend money the account does not have.
+#
+# This file is the CHILD of risk.yaml in the limit hierarchy:
+#
+#     config/risk.yaml   ->   config/campaign.yaml   ->   config/strategies/*.yaml
+#          global                  campaign                     strategy
+#
+# A child may NARROW a parent limit and may never widen one. Loading refuses to
+# start if one tries; nothing is silently clamped, because a clamped limit is a
+# limit nobody can see.
 #
 # Monetary values are quoted strings or integers so they parse as exact
 # decimals. An unquoted 0.50 would be a binary float and is rejected.
@@ -11,7 +22,8 @@ currency: EUR
 budget_eur: "5000"
 
 # Fraction of the budget held back and never allocated. The allocator must not
-# spend the whole budget merely because candidates exist.
+# spend the whole budget merely because candidates exist. Maximum campaign
+# utilisation is the complement of this and is deliberately not stated twice.
 reserve_fraction: 0.20
 
 min_allocation_eur: "250"
@@ -20,3 +32,76 @@ max_open_positions: 5
 
 # Opportunities scoring below this never reach allocation.
 min_opportunity_score: 70.0
+
+# --- how much may be lost, as opposed to how much may be committed ---------
+#
+# Allocation answers "how much capital can we commit"; risk answers "how much
+# can we afford to lose". For a long-debit structure the two coincide, but the
+# engine keeps them separate so the first strategy where they diverge does not
+# quietly inherit the wrong limit.
+max_risk_per_trade_eur: "1500"
+
+# --- position and concentration limits -------------------------------------
+limits:
+  # One structure per underlying. Raise it deliberately: two structures on one
+  # name are one bet held twice, and correlation is not modelled here.
+  max_positions_per_underlying: 1
+  # Ceiling on contract count regardless of price. A very cheap option would
+  # otherwise buy a position of a size nobody intended.
+  max_contracts_per_trade: 20
+  # New authorisations per run, so one run cannot commit the whole campaign
+  # before an operator has seen any of it.
+  max_new_positions_per_run: 3
+
+# --- account snapshot policy ------------------------------------------------
+account:
+  # An allocation without a view of the account is an allocation against an
+  # unknown balance. Fail closed rather than assume the money is there.
+  require_account_snapshot: true
+  # An account snapshot older than this cannot support an authorisation.
+  max_snapshot_age_seconds: 86400
+  # Whether the daily-loss limit must be evaluable before capital is
+  # authorised. Realised profit and loss is not tracked until Milestone 9, so
+  # this is false today and the check is recorded as NOT_EVALUATED rather than
+  # silently passed. Milestone 9 sets it true.
+  require_daily_loss_tracking: false
+
+# --- currency policy --------------------------------------------------------
+currency_policy:
+  # No deterministic FX source is configured, so a price in another currency is
+  # a rejection rather than a conversion at an arbitrary rate.
+  allow_conversion: false
+  # Currencies a contract may be quoted in and still be treated as the campaign
+  # currency without conversion. Empty means: only the campaign currency.
+  # USD is listed because the shipped universe is US-listed and the paper
+  # account reports in EUR; treating the two as interchangeable would be
+  # inventing a rate, so this list is deliberately empty by default.
+  treat_as_campaign_currency: []
+
+# --- allocation policy ------------------------------------------------------
+allocation:
+  # Order candidates by deterministic priority, then fund each in turn with
+  # whatever the limits still permit. Transparent, reproducible, explainable —
+  # and replaceable, which is why the policy is named rather than implied.
+  policy: PRIORITY_FIRST_FIT
+  # Stamped onto every stored allocation, so a past authorisation traces to the
+  # exact policy that produced it.
+  policy_version: "1.0.0"
+  # Unit cost is taken from the ask by default: what it would actually cost to
+  # buy. MID_DEBIT is available but assumes a fill nobody has been offered.
+  price_source: ASK_DEBIT
+  # Rejected and unfunded candidates kept on the stored run record.
+  max_candidates_recorded: 50
+
+# --- deterministic opportunity ranking -------------------------------------
+#
+# Weights, not a model. Every component below is read from a structured
+# upstream fact — never from prose, never from a model's own opinion of its
+# work — and every component's value is recorded on the stored decision, so a
+# score can be recomputed by hand from the record. Weights must sum to 1.
+ranking:
+  research_confidence_weight: 0.30
+  strategy_confidence_weight: 0.20
+  expected_magnitude_weight: 0.15
+  spread_quality_weight: 0.20
+  data_quality_weight: 0.15
