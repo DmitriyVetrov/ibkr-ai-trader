@@ -21,10 +21,16 @@ Three properties hold for every agent here:
   deterministic validator enforces them, and rejects a violating response in
   full rather than repairing it.
 
-Delivered so far: the Universe Selector (Milestone 4). The remaining five —
-market researcher, options strategist, thesis monitor, position manager,
-evaluation analyst — arrive in Milestones 5 onwards and are absent rather than
-stubbed.
+Delivered so far: the Universe Selector (Milestone 4), the Market Researcher
+(Milestone 5) and the Strategy Selector (Milestone 6). The remaining three —
+thesis monitor, position manager, evaluation analyst — arrive in Milestones 9
+onwards and are absent rather than stubbed.
+
+Note what the Strategy Selector does *not* do, because it is the boundary
+Milestone 6 exists to draw: it chooses a strategy, never a contract. The
+strike, the expiration and the legs are resolved deterministically by
+:mod:`trading_system.strategies.contract_selector`, which consults no model at
+all.
 """
 
 from trading_system.agents.base import (

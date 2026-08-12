@@ -29,10 +29,16 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from trading_system.domain.enums import (
+    ConfidenceLevel,
+    ExpirationSelectionPolicy,
+    LegAction,
     MarketHypothesis,
+    OptionDataField,
+    OptionRight,
     SecurityType,
     SourceTier,
     StrategyType,
+    StrikeSelectionPolicy,
     TradingMode,
     UniverseSourceKind,
 )
@@ -46,6 +52,11 @@ __all__ = [
     "CampaignConfig",
     "CollectionConfig",
     "ConfigError",
+    "ContractExpirationConfig",
+    "ContractLimitsConfig",
+    "ContractQuoteConfig",
+    "ContractSelectionConfig",
+    "ContractStrikeConfig",
     "DataConfig",
     "DeduplicationConfig",
     "ExitPolicyConfig",
@@ -56,6 +67,7 @@ __all__ = [
     "OptionabilityPolicy",
     "PlausibilityConfig",
     "ProvidersConfig",
+    "ReferencePriceField",
     "ResearchAgentConfig",
     "ResearchConfidenceConfig",
     "ResearchConfig",
@@ -70,11 +82,18 @@ __all__ = [
     "Settings",
     "SourcesConfig",
     "StorageConfig",
+    "StrategyAgentConfig",
     "StrategyConfig",
+    "StrategyEligibilityConfig",
+    "StrategyExpirationConfig",
+    "StrategyLegConfig",
+    "StrategyLimitsConfig",
+    "StrategyStageConfig",
     "SystemConfig",
     "UniverseConfig",
     "UniverseFilterConfig",
     "UniverseSourceConfig",
+    "UnknownLiquidityPolicy",
     "default_config_dir",
     "load_config",
     "load_settings",
@@ -309,6 +328,48 @@ class ExitPolicyConfig(_ConfigModel):
     allow_independent_leg_exit: bool = False
 
 
+class StrategyLegConfig(_ConfigModel):
+    """One leg of a configured strategy (Milestone 6 brief section 30).
+
+    The leg says *which policy* picks its strike; the numeric parameter comes
+    from the leg when it states one and from the strategy otherwise, so a
+    strategy that uses one delta or one offset for every leg states it once and
+    cannot drift between legs.
+
+    There is deliberately no strike, no expiry and no contract id here: this is
+    a template the deterministic selector resolves against a real chain, not a
+    contract.
+    """
+
+    action: LegAction = LegAction.BUY
+    right: OptionRight
+    ratio: int = Field(default=1, ge=1)
+    strike_policy: StrikeSelectionPolicy
+    target_delta: float | None = Field(default=None, ge=-1.0, le=1.0)
+    strike_offset_pct: float | None = Field(default=None, ge=0.0)
+
+
+class StrategyExpirationConfig(_ConfigModel):
+    """How a strategy's expiration is chosen (brief section 17).
+
+    Named rather than inferred. ``EVENT_ALIGNED`` is only honoured for a
+    strategy whose configuration asks for it, and only against an event the
+    research report actually carried.
+    """
+
+    rule: ExpirationSelectionPolicy = ExpirationSelectionPolicy.TARGET_DTE
+    target_dte: int | None = Field(default=None, ge=0)
+    #: ``EVENT_ALIGNED`` only: how far after the event an expiration may fall
+    #: and still count as aligned to it.
+    event_max_days_after: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _rule_has_what_it_needs(self) -> StrategyExpirationConfig:
+        if self.rule is ExpirationSelectionPolicy.TARGET_DTE and self.target_dte is None:
+            raise ValueError("expiration rule TARGET_DTE requires 'target_dte'")
+        return self
+
+
 class StrategyConfig(_ConfigModel):
     """One entry from ``config/strategies/``. Absence here means untradeable."""
 
@@ -319,11 +380,28 @@ class StrategyConfig(_ConfigModel):
     description: str = ""
 
     applicable_hypotheses: list[MarketHypothesis] = Field(min_length=1)
+    #: Instrument classes this strategy may be written on. An underlying whose
+    #: security type is not listed is not tradeable with it.
+    allowed_underlying_types: list[SecurityType] = Field(
+        default_factory=lambda: [SecurityType.STOCK], min_length=1
+    )
 
     dte_min: int = Field(ge=0)
     dte_max: int = Field(ge=0)
     target_delta: float | None = Field(default=None, ge=-1.0, le=1.0)
     strike_offset_pct: float | None = Field(default=None, ge=0.0)
+
+    #: The legs this strategy is made of. Checked against the structural
+    #: definition in :mod:`trading_system.strategies` when the registry is
+    #: built, so a configuration cannot quietly turn a straddle into a spread.
+    legs: list[StrategyLegConfig] = Field(min_length=1)
+    expiration_policy: StrategyExpirationConfig
+    #: Fields a candidate contract must actually carry. A required field that is
+    #: absent is a named rejection, never a value filled in from somewhere else.
+    required_option_fields: list[OptionDataField] = Field(default_factory=list)
+    #: Whether option-level liquidity must be established. Underlying liquidity
+    #: is never accepted as evidence that an option is liquid.
+    require_option_liquidity: bool = True
 
     min_option_price_eur: Money = Field(ge=0)
     max_option_price_eur: Money = Field(ge=0)
@@ -346,6 +424,41 @@ class StrategyConfig(_ConfigModel):
         ):
             raise ValueError(f"{self.name}: min_implied_volatility exceeds max")
         return self
+
+    @model_validator(mode="after")
+    def _every_leg_can_resolve_its_policy(self) -> StrategyConfig:
+        """A strike policy with no parameter would have to be guessed at."""
+        for index, leg in enumerate(self.legs):
+            if leg.strike_policy is StrikeSelectionPolicy.TARGET_DELTA:
+                delta = self.leg_target_delta(leg)
+                if delta is None:
+                    raise ValueError(
+                        f"{self.name}: leg {index} uses TARGET_DELTA but neither the leg nor "
+                        f"the strategy states a target_delta"
+                    )
+                if leg.right is OptionRight.CALL and delta < 0:
+                    raise ValueError(f"{self.name}: leg {index} is a CALL with a negative delta")
+                if leg.right is OptionRight.PUT and delta > 0:
+                    raise ValueError(f"{self.name}: leg {index} is a PUT with a positive delta")
+            if (
+                leg.strike_policy is StrikeSelectionPolicy.OTM_PERCENT
+                and self.leg_offset_pct(leg) is None
+            ):
+                raise ValueError(
+                    f"{self.name}: leg {index} uses OTM_PERCENT but neither the leg nor the "
+                    f"strategy states a strike_offset_pct"
+                )
+        return self
+
+    def leg_target_delta(self, leg: StrategyLegConfig) -> float | None:
+        """The delta this leg targets: its own, or the strategy's."""
+        return leg.target_delta if leg.target_delta is not None else self.target_delta
+
+    def leg_offset_pct(self, leg: StrategyLegConfig) -> float | None:
+        """The out-of-the-money offset this leg targets, as a percentage."""
+        if leg.strike_offset_pct is not None:
+            return leg.strike_offset_pct
+        return self.strike_offset_pct
 
 
 class RiskConfig(_ConfigModel):
@@ -844,27 +957,251 @@ class ResearchConfig(_ConfigModel):
     agent: ResearchAgentConfig
 
 
+# ---------------------------------------------------------------------------
+# Strategy selection policy (Milestone 6)
+# ---------------------------------------------------------------------------
+class StrategyEligibilityConfig(_ConfigModel):
+    """Deterministic gates applied before the strategy agent is consulted.
+
+    Each one produces ``NO_TRADE`` without a model call. Spending a request to
+    be told "not enough to go on" is waste, and an agent handed an inadequate
+    outlook tends to fill the gap rather than decline.
+    """
+
+    #: Research confidence below this ends the symbol as NO_TRADE. ``LOW``
+    #: admits everything and leaves the judgement to the agent, which is the
+    #: shipped default: a low-confidence outlook can still justify NO_TRADE, and
+    #: refusing it here would hide that reasoning.
+    min_confidence: ConfidenceLevel = ConfidenceLevel.LOW
+    #: The research report's own data must have been research-usable.
+    require_research_usable: bool = True
+    #: An underlying with no visible option chain cannot become an option trade.
+    require_option_chain: bool = True
+    min_evidence_items: int = Field(default=1, ge=0)
+    #: The research horizon must overlap the strategy's DTE window; an outlook
+    #: over three weeks is not expressible by a contract that expires in two.
+    require_horizon_overlap: bool = True
+
+
+class StrategyLimitsConfig(_ConfigModel):
+    """Cost ceilings for the strategy stage. One model call per underlying."""
+
+    max_symbols_per_run: int = Field(default=10, ge=0)
+    max_input_characters: int = Field(default=60_000, ge=1000)
+
+
+class StrategyAgentConfig(_ConfigModel):
+    """How the strategy agent is invoked, and what happens when it cannot be.
+
+    There is deliberately no ``allow_deterministic_fallback``, for the same
+    reason there is none for research: a strategy chosen by this layer in place
+    of an unreachable model would be recorded as the model's judgement. An
+    unavailable model ends the symbol as ``AI_UNAVAILABLE`` with no strategy.
+
+    No credential appears here. ``ANTHROPIC_API_KEY`` comes from the
+    environment, like every other secret.
+    """
+
+    enabled: bool = True
+    model_provider: str = Field(default="ANTHROPIC", alias="provider", min_length=1)
+    model_name: str = Field(default="claude-opus-5", alias="model", min_length=1)
+    prompt_version: str = Field(min_length=1)
+    timeout_seconds: float = Field(default=120.0, gt=0)
+    max_output_tokens: int = Field(default=6000, ge=1)
+    effort: str = "medium"
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _effort_is_known(self) -> StrategyAgentConfig:
+        allowed = {"low", "medium", "high", "xhigh", "max"}
+        if self.effort not in allowed:
+            raise ValueError(
+                f"strategy agent.effort {self.effort!r} is not one of {sorted(allowed)}"
+            )
+        return self
+
+
+class StrategyStageConfig(_ConfigModel):
+    """All strategy-selection policy (``config/strategy.yaml``).
+
+    Distinct from ``strategies`` — the per-strategy specifications in
+    ``config/strategies/``. This file says how the *stage* behaves; those say
+    what each strategy *is*.
+    """
+
+    config_version: str
+    eligibility: StrategyEligibilityConfig = Field(default_factory=StrategyEligibilityConfig)
+    limits: StrategyLimitsConfig = Field(default_factory=StrategyLimitsConfig)
+    agent: StrategyAgentConfig
+
+
+# ---------------------------------------------------------------------------
+# Contract selection policy (Milestone 6)
+# ---------------------------------------------------------------------------
+class ReferencePriceField(StrEnum):
+    """Which quote field a reference price may be taken from.
+
+    Recorded rather than assumed: "the price" is ambiguous when a quote carries
+    a last, a close and a midpoint that disagree, and a strike chosen against an
+    unrecorded field cannot be audited afterwards.
+    """
+
+    LAST = "LAST"
+    CLOSE = "CLOSE"
+    MID = "MID"
+    BID = "BID"
+    ASK = "ASK"
+
+
+class UnknownLiquidityPolicy(StrEnum):
+    """What to do with a contract whose option-level liquidity is unknown.
+
+    Never coerced into a number. "No open interest was reported" and "open
+    interest is zero" are different claims, and only the second is evidence.
+    """
+
+    #: Treat unknown liquidity as a rejection. The honest default: an option we
+    #: have not established to be liquid may not be traded on that assumption.
+    REJECT = "REJECT"
+    #: Admit it, flagged, and let a later stage decide.
+    ALLOW = "ALLOW"
+
+
+class ContractExpirationConfig(_ConfigModel):
+    """Global expiration policy, and the default a strategy may narrow."""
+
+    rule: ExpirationSelectionPolicy = ExpirationSelectionPolicy.TARGET_DTE
+    target_dte: int = Field(default=21, ge=0)
+    event_max_days_after: int = Field(default=14, ge=0)
+    #: An expiration on a day the calendar says the market is closed is a
+    #: rejection. A day the calendar does not cover is accepted and recorded —
+    #: an honest unknown, not a guess.
+    require_trading_day: bool = True
+
+
+class ContractStrikeConfig(_ConfigModel):
+    """Global strike policy limits."""
+
+    #: How far the chosen strike may sit from the policy's target, as a
+    #: percentage of the reference price. A chain too coarse to express the
+    #: policy is a rejection, not a rounding.
+    max_strike_distance_pct: float = Field(default=5.0, ge=0.0)
+    #: Which quote fields may supply the reference price, in order of
+    #: preference. The field actually used is recorded on the selection.
+    reference_price_fields: list[ReferencePriceField] = Field(
+        default_factory=lambda: [
+            ReferencePriceField.LAST,
+            ReferencePriceField.CLOSE,
+            ReferencePriceField.MID,
+        ],
+        min_length=1,
+    )
+    #: Whether an option quote's own ``underlying_price`` may be used when the
+    #: underlying's quote is unavailable. It is the same measurement from the
+    #: same provider, so it is preferred to failing outright — but it is
+    #: recorded as such.
+    allow_option_underlying_price: bool = True
+
+
+class ContractQuoteConfig(_ConfigModel):
+    """What a candidate's quote must satisfy before it can be selected."""
+
+    require_quote: bool = True
+    max_quote_age_seconds: int = Field(default=86_400, ge=0)
+    require_research_usable: bool = True
+    unknown_liquidity_policy: UnknownLiquidityPolicy = UnknownLiquidityPolicy.REJECT
+
+
+class ContractLimitsConfig(_ConfigModel):
+    """Bounds on the work and on the size of the stored record."""
+
+    max_candidates: int = Field(default=5000, ge=1)
+    #: Rejected candidates kept on the stored record. Bounded so a 500-strike
+    #: chain does not produce an unreadable artifact; the count of everything
+    #: considered is always recorded, so truncation is visible.
+    max_rejected_recorded: int = Field(default=50, ge=0)
+
+
+class ContractSelectionConfig(_ConfigModel):
+    """All contract-selection policy (``config/contract_selection.yaml``).
+
+    Every rule the deterministic selector applies lives here or in a strategy
+    specification. Nothing about which strike or which expiry is chosen is
+    hard-coded in the selector, and no LLM is involved at any point.
+    """
+
+    config_version: str
+    #: Stamped onto every stored selection, so a past choice traces to the exact
+    #: policy that produced it.
+    selection_policy_version: str = Field(min_length=1)
+    expiration: ContractExpirationConfig = Field(default_factory=ContractExpirationConfig)
+    strike: ContractStrikeConfig = Field(default_factory=ContractStrikeConfig)
+    quotes: ContractQuoteConfig = Field(default_factory=ContractQuoteConfig)
+    limits: ContractLimitsConfig = Field(default_factory=ContractLimitsConfig)
+
+
 class SystemConfig(_ConfigModel):
     """All YAML configuration, loaded and validated together."""
 
     application: ApplicationConfig
     campaign: CampaignConfig
+    contract_selection: ContractSelectionConfig
     data: DataConfig
     research: ResearchConfig
     risk: RiskConfig
     schedules: SchedulesConfig
     sources: SourcesConfig
+    strategy: StrategyStageConfig
     strategies: dict[str, StrategyConfig]
     universe: UniverseConfig
 
     @model_validator(mode="after")
-    def _strategies_respect_risk_dte_window(self) -> SystemConfig:
-        """A strategy may narrow the global DTE window but never widen it."""
+    def _strategies_never_widen_risk_limits(self) -> SystemConfig:
+        """A strategy may narrow a global risk limit; it may never widen one.
+
+        The DTE window is the one the specification names explicitly, but the
+        rule is not about DTE — it is about which layer owns a limit. A strategy
+        file that could raise the spread ceiling or lower the open-interest
+        floor would let a strategy specification overrule the risk policy, which
+        is exactly the inversion the whole architecture exists to prevent.
+        """
+        risk = self.risk
         for name, strategy in self.strategies.items():
-            if strategy.dte_min < self.risk.dte_min or strategy.dte_max > self.risk.dte_max:
+            violations: list[str] = []
+            if strategy.dte_min < risk.dte_min or strategy.dte_max > risk.dte_max:
+                violations.append(
+                    f"DTE window [{strategy.dte_min}, {strategy.dte_max}] falls outside "
+                    f"[{risk.dte_min}, {risk.dte_max}]"
+                )
+            if strategy.min_option_price_eur < risk.min_option_price_eur:
+                violations.append(
+                    f"min_option_price_eur {strategy.min_option_price_eur} is below the risk "
+                    f"floor {risk.min_option_price_eur}"
+                )
+            if strategy.max_option_price_eur > risk.max_option_price_eur:
+                violations.append(
+                    f"max_option_price_eur {strategy.max_option_price_eur} is above the risk "
+                    f"ceiling {risk.max_option_price_eur}"
+                )
+            if strategy.liquidity.min_open_interest < risk.min_open_interest:
+                violations.append(
+                    f"min_open_interest {strategy.liquidity.min_open_interest} is below the "
+                    f"risk floor {risk.min_open_interest}"
+                )
+            if strategy.liquidity.min_daily_volume < risk.min_daily_volume:
+                violations.append(
+                    f"min_daily_volume {strategy.liquidity.min_daily_volume} is below the "
+                    f"risk floor {risk.min_daily_volume}"
+                )
+            if strategy.liquidity.max_bid_ask_spread_pct > risk.max_bid_ask_spread_pct:
+                violations.append(
+                    f"max_bid_ask_spread_pct {strategy.liquidity.max_bid_ask_spread_pct} is "
+                    f"above the risk ceiling {risk.max_bid_ask_spread_pct}"
+                )
+            if violations:
                 raise ValueError(
-                    f"strategy '{name}' DTE window [{strategy.dte_min}, {strategy.dte_max}] "
-                    f"falls outside the risk limit [{self.risk.dte_min}, {self.risk.dte_max}]"
+                    f"strategy '{name}' widens a global risk limit: " + "; ".join(violations)
                 )
         return self
 
@@ -909,11 +1246,13 @@ def load_config(config_dir: Path | str | None = None) -> SystemConfig:
     payload = {
         "application": _read_yaml(directory / "application.yaml"),
         "campaign": _read_yaml(directory / "campaign.yaml"),
+        "contract_selection": _read_yaml(directory / "contract_selection.yaml"),
         "data": _read_yaml(directory / "data.yaml"),
         "research": _read_yaml(directory / "research.yaml"),
         "risk": _read_yaml(directory / "risk.yaml"),
         "schedules": _read_yaml(directory / "schedules.yaml"),
         "sources": _read_yaml(directory / "sources.yaml"),
+        "strategy": _read_yaml(directory / "strategy.yaml"),
         "strategies": strategies,
         "universe": _read_yaml(directory / "universe.yaml"),
     }

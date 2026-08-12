@@ -14,11 +14,41 @@ applicable_hypotheses:
   - A
   - D
 
+allowed_underlying_types:
+  - STOCK
+
 dte_min: 14
 dte_max: 30
 target_delta: 0.30
-# Each leg placed this far out of the money, as a percentage of spot.
+# Each leg placed this far out of the money, as a percentage of the reference
+# price. One number serves both legs: the direction comes from the right, so
+# the call goes above the reference and the put below it.
 strike_offset_pct: 5.0
+
+# One expiration, two different strikes, call above the reference and put
+# below. The relationship is enforced by the contract selector; a chain too
+# coarse to separate the two strikes is a rejection, not a straddle.
+legs:
+  - action: BUY
+    right: CALL
+    ratio: 1
+    strike_policy: OTM_PERCENT
+  - action: BUY
+    right: PUT
+    ratio: 1
+    strike_policy: OTM_PERCENT
+
+expiration_policy:
+  rule: EVENT_ALIGNED
+  target_dte: 21
+  event_max_days_after: 14
+
+required_option_fields:
+  - CONTRACT_ID
+  - BID
+  - ASK
+
+require_option_liquidity: true
 
 min_option_price_eur: "0.30"
 max_option_price_eur: "20.00"

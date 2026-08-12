@@ -10,10 +10,31 @@ description: >-
 applicable_hypotheses:
   - C
 
+allowed_underlying_types:
+  - STOCK
+
 dte_min: 14
 dte_max: 30
 # Negative: put deltas run from 0 to -1.
 target_delta: -0.60
+
+legs:
+  - action: BUY
+    right: PUT
+    ratio: 1
+    strike_policy: TARGET_DELTA
+
+expiration_policy:
+  rule: TARGET_DTE
+  target_dte: 21
+
+required_option_fields:
+  - CONTRACT_ID
+  - BID
+  - ASK
+  - DELTA
+
+require_option_liquidity: true
 
 min_option_price_eur: "0.50"
 max_option_price_eur: "25.00"

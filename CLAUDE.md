@@ -4,25 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Milestones 1–5 of 12 are complete.** Built and tested: the domain layer (models, enums,
-events, state machine), YAML configuration, the 18 JSON workflow schemas, the CLI surface,
+**Milestones 1–6 of 12 are complete.** Built and tested: the domain layer (models, enums,
+events, state machine), YAML configuration, the 20 JSON workflow schemas, the CLI surface,
 structured logging, an injectable clock, the `Broker` abstraction with `SimulatedBroker` and a
 read-only `IBKRBroker`, the read-only broker diagnostics, the reconciliation foundation, the
 data layer (providers, canonical models, quality engine, point-in-time snapshots,
 append-only history, repository), **universe selection** — the deterministic pre-filter,
-the first AI agent, and immutable universe runs — and **market research**: point-in-time
+the first AI agent, and immutable universe runs — **market research**: point-in-time
 evidence assembly, news deduplication, the market researcher agent, deterministic hypothesis
-and confidence validation, and immutable research reports. 1675 passing tests; ruff, ruff
-format and mypy clean.
+and confidence validation, and immutable research reports — and **strategy and contract
+selection**: the strategy registry, the strategy selector agent, deterministic decision
+validation, and the *deterministic* contract selector with immutable decision and selection
+records. 2240 passing tests; ruff, ruff format and mypy clean.
 
-**Not built, by design:** strategy selection, contract selection, allocation, order execution,
-autonomous trading, live trading. The CLI exposes those commands but they exit `3` naming the
-milestone that delivers them — they never fabricate output. Follow that pattern for anything
-still pending.
+**Not built, by design:** allocation, risk validation, order execution, autonomous trading,
+live trading. The CLI exposes those commands but they exit `3` naming the milestone that
+delivers them — they never fabricate output. Follow that pattern for anything still pending.
 
-**Milestone 6 is next: strategy** — the strategy registry, the four long strategies, and the
-*deterministic* contract selector. The strategy agent picks a strategy from a research
-hypothesis; it never picks the contract (spec §8).
+**Milestone 7 is next: allocation and risk** — the campaign budget allocator and the
+deterministic risk engine. It consumes the purchase candidates Milestone 6 produces: a
+contract selection carries legs and the cost of *one unit* of the structure, and nothing
+before Milestone 7 may decide a quantity or an amount of money.
 
 [CLOUD_CODE_IMPLEMENTATION_SPEC.md](CLOUD_CODE_IMPLEMENTATION_SPEC.md) remains the source of
 truth for module layout, CLI surface, schemas, testing layers, and milestone order. Read the
@@ -112,7 +114,14 @@ full tree; the boundaries that matter:
   report`. Same structural properties as `universe/`: repository only, no broker, no order
   path, one composition root in `research/service.py`. It *consumes* a universe and can never
   extend one.
-- `risk/`, `allocation/`, `strategies/contract_selector.py` — the deterministic layer.
+- `strategies/` — the milestone where the AI stops and arithmetic starts.
+  `research report → registry → deterministic gates → strategy input → agent →
+  deterministic validation → decision → contract selector → selection`. Two composition
+  roots in `strategies/service.py`, one per stage. The agent half imports no chain reader
+  and no selector; the selector half imports no agent and no LLM client, and a test asserts
+  both transitively. `strategies/__init__.py` defers everything that touches a repository
+  through `__getattr__`, for the same reason `research/__init__.py` does.
+- `risk/`, `allocation/` — the remaining deterministic layer (Milestone 7).
 - `monitoring/` — position monitor, thesis monitor, reconciliation loop, scheduler.
 
 **Two loops, different cadences.** The Opportunity Discovery loop (universe → research → strategy →
@@ -203,14 +212,69 @@ Six rules govern it, each with tests that fail loudly:
 `support` on a catalyst, risk or invalidation condition is **derived** from whether it cited
 anything and any supplied value is discarded — an unsupported claim is labelled, never deleted.
 
+## Strategy and contract selection (Milestone 6)
+
+> **The AI selects the strategy. Deterministic code selects the contract.**
+
+Two decisions, two stages, and the boundary between them is the milestone. The strategy agent
+answers *what should we do*; `strategies/contract_selector.py` answers *which actual contract
+satisfies that*. A strategy decision is a **proposal, never an order**, and the stage ends at a
+purchase candidate: legs, and the cost of one unit of the structure.
+
+Seven rules govern it, each with tests that fail loudly:
+
+- **The agent cannot select a contract, because it is never shown one.** Its input carries a
+  projection of the research report and the metadata of the eligible strategies — structure,
+  leg shapes (`"BUY CALL x1"`), a DTE *window*. No chain, no strike list, no contract id, no
+  account, no cash, and deliberately **no date at all**: events arrive as `days_until`, so
+  there is nothing an expiration could be echoed from. Its output has no field for a strike,
+  an expiry, a quantity or a price, and `extra="forbid"` means one that invented a field fails
+  to parse rather than having it dropped.
+- **A strategy that was not offered is inexpressible.** `strategy_output_schema` enumerates
+  `selected_strategy` from the strategies the registry actually admitted for this hypothesis —
+  the same technique that makes a rejected asset inexpressible in the universe input.
+- **The hypothesis→strategy mapping is derived, never declared twice.** It comes from each
+  strategy's own `applicable_hypotheses`. `E` maps to `NO_TRADE` because no strategy lists it,
+  not because a second table says so. `D` reuses the straddle and strangle with an
+  event-aligned expiration rather than inventing `EVENT_STRADDLE` strategies the specification
+  does not define.
+- **A strategy may narrow a global risk limit; it may never widen one.** DTE, price band,
+  liquidity floors and spread ceiling are all checked, at configuration load *and* at registry
+  build. The limit is never clamped silently — a clamped limit is a limit nobody can see.
+- **Structure is code; policy is configuration.** A straddle is one call and one put on one
+  strike because that is what the word means, so it lives in `strategies/long_straddle.py` and
+  the registry refuses a configuration that describes something else. The delta, the offsets,
+  the DTE window and the liquidity floors live in `config/strategies/*.yaml`, and nothing in
+  the selector hard-codes one.
+- **Nothing is invented and nothing is approximated.** A missing delta is `MISSING_DELTA`, not
+  an estimate. An unquoted contract has an unknown cost, not a midpoint conjured from one side.
+  A chain too coarse for the strike policy yields no contract, not the nearest one. Option
+  liquidity that was never reported is `OPTION_LIQUIDITY_UNKNOWN`, never zero and never "fine".
+  Underlying share volume is never read as evidence about a contract.
+- **Selection is reproducible.** Same decision, same stored chain, same configuration, same
+  `as_of` produces a byte-identical record — rejections and reasons included. Every tie breaks
+  on an explicit key (lower strike, then contract id), never on iteration order.
+
+`NO_TRADE` and `NO_VALID_CONTRACT` are first-class outcomes at their respective stages.
+`REQUIRED_DATA_UNAVAILABLE` is deliberately distinct from both: "we declined" and "we could not
+look" are different facts, and only the first is a judgement about a market.
+
+DTE is counted in calendar days from the **exchange-local** date of `as_of` to the expiration,
+through `config/data.yaml`'s market calendar — counting from a UTC date is wrong by one for
+most of the evening. An expiration on a day the calendar says is closed is rejected; a year the
+calendar does not cover answers `UNKNOWN` and is accepted as such.
+
 **Configuration over hardcoding.** Schedules live in `config/schedules.yaml`, risk in `risk.yaml`,
 strategies in `config/strategies/*.yaml`, data policy in `data.yaml`, the candidate pool,
-eligibility filters and ranking policy in `universe.yaml`, and the research horizon, data
-windows, cost ceilings, deduplication and confidence policy in `research.yaml`. Source trust
-lives in `sources.yaml` and **nowhere else** — `research/sources.py` reads it, it does not
-define a second ranking. DTE policy is per-strategy, not one universal number. Ports come from
-config. If a requirement is ambiguous, add a documented config option rather than a hidden
-assumption.
+eligibility filters and ranking policy in `universe.yaml`, the research horizon, data
+windows, cost ceilings, deduplication and confidence policy in `research.yaml`, the strategy
+stage's eligibility gates and agent in `strategy.yaml`, and the expiration rule, strike
+policy, quote requirements and liquidity policy in `contract_selection.yaml`. Note the split:
+`strategy.yaml` configures the *stage*, `config/strategies/*.yaml` configure the *payoffs* —
+one is an agent, the others are instruments. Source trust lives in `sources.yaml` and
+**nowhere else** — `research/sources.py` reads it, it does not define a second ranking. DTE
+policy is per-strategy, not one universal number. Ports come from config. If a requirement is
+ambiguous, add a documented config option rather than a hidden assumption.
 
 ## Data and persistence layout
 
@@ -311,11 +375,34 @@ python -m trading_system.cli research explain --symbol NVDA [--run-id <ID>]
 python -m trading_system.cli research history [--symbol NVDA]
 python -m trading_system.cli run research                # the scheduled job, once
 
+# Strategy selection. Read-only with respect to the broker; submits 0 orders.
+python -m trading_system.cli strategy validate           # registry + hypothesis mapping
+python -m trading_system.cli strategy validate --run-id <ID>   # re-check a stored run
+python -m trading_system.cli strategy run --dry-run      # full pipeline, persists nothing
+python -m trading_system.cli strategy run
+python -m trading_system.cli strategy run --run-id <research-run-id>
+python -m trading_system.cli strategy run --symbol NVDA  # a subset of the research run
+python -m trading_system.cli strategy show [--run-id <ID>] [--symbol NVDA]
+python -m trading_system.cli strategy history [--symbol NVDA]
+
+# Contract selection. Deterministic: no model is consulted. Submits 0 orders.
+python -m trading_system.cli contract validate           # the deterministic policy
+python -m trading_system.cli contract validate --run-id <ID>
+python -m trading_system.cli contract select --dry-run
+python -m trading_system.cli contract select
+python -m trading_system.cli contract select --run-id <strategy-run-id>
+python -m trading_system.cli contract show [--run-id <ID>] [--symbol NVDA]
+python -m trading_system.cli contract history [--symbol NVDA]
+
 pytest -m "not ibkr and not llm"                # default: no gateway, no API key needed
 pytest tests/universe                           # filters, point-in-time, snapshots, CLI
 pytest tests/research                           # evidence, dedup, validation, snapshots, CLI
+pytest tests/strategy                           # registry, boundaries, validation, service, CLI
+pytest tests/strategies                         # one suite per strategy specification
+pytest tests/contract_selection                 # policy, point-in-time, determinism
 pytest tests/agents/test_universe_selector.py   # agent contract; needs no API key
 pytest tests/agents/test_research_agent.py      # agent contract; needs no API key
+pytest tests/agents/test_strategy_selector.py   # agent contract; needs no API key
 ALLOW_LIVE_TESTS=true pytest -m ibkr            # requires a running IB Gateway
 ALLOW_LIVE_TESTS=true pytest -m ibkr tests/data # data layer against IBKR Paper
 ALLOW_LIVE_TESTS=true ANTHROPIC_API_KEY=... pytest -m llm   # one real model call, no trades
@@ -330,6 +417,12 @@ inventing candidates.
 researched. Each underlying gets its own isolated model context — never one merged answer for
 several assets — and each failure is recorded per symbol, so one unreachable call does not
 stop the rest.
+
+`strategy run` consumes a stored research run the same way: a `--symbol` research did not
+cover is refused rather than decided. `contract select` deliberately takes no `--as-of` — the
+instant comes from each decision, so a selection reconstructs exactly the data that was
+visible when the strategy was chosen, and a selection made against a later chain would answer
+a question nobody asked.
 
 Every other command exits `3` until its milestone lands. Command help is tagged `(read-only)` or
 `(mutates state)` — keep that up when adding commands, and note that Rich swallows
@@ -433,22 +526,34 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   is reachable from the agent. `data/__init__.py` used to import `data.service` eagerly, which
   pulled the entire broker package in behind every agent that merely wanted a canonical value
   type — invisible to an AST test that only reads direct imports. `data/__init__.py`,
-  `research/__init__.py` and `universe/__init__.py` therefore defer everything that touches a
-  repository, a provider or a broker via `__getattr__`, and
-  `tests/research/test_boundaries.py` walks the closure *through* `__init__` files (skipping
-  `if TYPE_CHECKING:` bodies, which never execute) to keep it that way.
+  `research/__init__.py`, `universe/__init__.py` and `strategies/__init__.py` therefore defer
+  everything that touches a repository, a provider or a broker via `__getattr__`, and
+  `tests/research/test_boundaries.py` and `tests/strategy/test_boundaries.py` walk the closure
+  *through* `__init__` files (skipping `if TYPE_CHECKING:` bodies, which never execute) to keep
+  it that way. For `strategies/` the stakes are higher than tidiness: an eager re-export of
+  `contract_selector` would put a chain reader in the strategy agent's import graph, which is
+  precisely the boundary Milestone 6 exists to draw.
 - **Agent prompts ship inside the package**, at `agents/prompts/*.md`, because the container
   installs the package and has no checkout to read from. Each prompt is fingerprinted on load
   and the hash is stored on every run, so a prompt edited without a `prompt_version` bump still
-  leaves a trace. `.claude/agents/universe_selector.md` and `.claude/agents/market_researcher.md`
-  mirror the same boundaries for development use, and a test asserts each pair cannot drift on
-  the safety-critical statements.
+  leaves a trace. `.claude/agents/universe_selector.md`, `.claude/agents/market_researcher.md`
+  and `.claude/agents/strategy_selector.md` mirror the same boundaries for development use, and
+  a test asserts each pair cannot drift on the safety-critical statements. (Spec §3 names the
+  third agent `options_strategist.md`; it ships as `strategy_selector.md` so the runtime prompt,
+  the module and the subagent all share one name.)
 - **`schemas/research_report.json` is the *narrow* Milestone 1 boundary the strategy stage
   consumes; `schemas/market_research_report.json` is the Milestone 5 audit record.** The two
   are deliberately different artifacts, exactly as `universe_selection.json` and
   `universe_selection_result.json` are, and `MarketResearchReport.to_research_report()`
   projects one onto the other. Do not merge them: the narrow one is a completed milestone's
   contract, and rewriting it would break the chain the contract tests walk.
+- **`schemas/strategy_decision.json` is the *narrow* Milestone 1 boundary;
+  `schemas/strategy_selection.json` is the Milestone 6 audit record**, and
+  `schemas/contract_selection.json` is the selection record the purchase card will consume.
+  `StrategyDecisionRecord.to_strategy_decision()` and
+  `ContractSelectionResult.to_contract_selection()` project onto the M1 shapes, exactly as
+  research does. The M1 `ContractSelection` model keeps its name and its meaning; the M6 record
+  is deliberately a different, wider artifact rather than an extension of it.
 - **The projected `confidence` float is a band representative, not a probability.** The M1
   boundary types it as a float, so `CONFIDENCE_BAND_VALUE` maps LOW/MEDIUM/HIGH onto fixed
   values. No calibration has been measured and none is claimed; the only property downstream
@@ -459,6 +564,22 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   December *is* the observed holiday, and no 3 July early close because it falls on a Saturday.
   Carrying a previous year's pattern forward would have invented a session on a closed day.
   2026 and 2027 are covered; outside them the calendar answers `UNKNOWN`.
+- **Storing the same content twice does not create a second snapshot.** The payload hash
+  excludes observation clocks, so re-storing identical records at a later instant is recorded
+  as a *re-observation* and `get_as_of` keeps returning the earlier snapshot — which then looks
+  stale to a consumer with a freshness limit. A test that wants "newer data" has to change a
+  real field, not only a timestamp. This bit `tests/contract_selection/test_point_in_time.py`
+  during Milestone 6 and the behaviour is correct; the test was wrong.
+- **`tests/strategy` and `tests/strategies` are different suites, deliberately.** The singular
+  one tests the *stage* — registry, agent boundary, decision validation, service, CLI — and the
+  plural one holds a suite per strategy specification, which spec §27 requires. Both names are
+  load-bearing (the Milestone 6 brief names `tests/strategy`, the specification names
+  `tests/strategies/test_long_call.py`), so neither can be renamed away.
+- **Option quotes are the binding constraint on contract selection, not the chain.** A stored
+  `OPTION_CHAIN` gives expirations and strikes; it gives no contract id, no bid, no delta. With
+  chain metadata alone every selection ends `REQUIRED_DATA_UNAVAILABLE` — correctly. Collect
+  `data collect-options --quotes` first, and note that only the simulator supplies per-contract
+  quotes today: the IBKR path is still deferred behind the one-round-trip constraint.
 
 This directory is its own git repository (`git init`-ed, one commit: the specification). The
 enclosing `/home/dmytro/git/` is a separate repo full of unrelated projects; nothing here should

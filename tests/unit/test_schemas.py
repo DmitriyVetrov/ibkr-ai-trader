@@ -33,6 +33,12 @@ REQUIRED_SCHEMAS = (
     "market_research_report",
     "research_run",
     "strategy_decision",
+    # Milestone 6 adds the two stored artifacts of the strategy and contract
+    # stages. `strategy_decision` above stays the narrow Milestone 1 boundary;
+    # `strategy_selection` is the audit record that projects onto it, exactly
+    # as `market_research_report` does for `research_report`.
+    "strategy_selection",
+    "contract_selection",
     "purchase_card",
     "allocation_decision",
     "risk_decision",

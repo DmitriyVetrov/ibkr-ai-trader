@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/strategy_selection.json",
+  "title": "StrategyDecisionRecord",
+  "description": "The immutable record of one strategy decision: which configured strategy expresses a research hypothesis, or NO_TRADE. A decision is not an order. There is deliberately no field here for a strike, an expiration, a contract id, a quantity, a price or an amount of money - the AI selects the strategy, deterministic code selects the contract, and later deterministic stages decide how much. Distinct from strategy_decision.json, which is the narrow Milestone 1 boundary this record projects onto.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "decision_id",
+    "run_id",
+    "symbol",
+    "as_of",
+    "generated_at",
+    "status",
+    "action",
+    "schema_version",
+    "versions"
+  ],
+  "properties": {
+    "decision_id": {
+      "description": "Derived from the decision's content, not generated. Identical inputs reaching an identical decision produce an identical id.",
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": { "type": "string", "minLength": 1 },
+    "symbol": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+    "as_of": {
+      "description": "The instant the decision reconstructs. Contract selection uses option data visible at exactly this instant.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "status": {
+      "description": "SUCCESS covers both BUY and a considered NO_TRADE. Every other value means the stage reached no decision at all, and such a record names no strategy.",
+      "enum": [
+        "SUCCESS",
+        "NO_RESEARCH",
+        "REQUIRED_DATA_UNAVAILABLE",
+        "AI_UNAVAILABLE",
+        "AI_INVALID_OUTPUT",
+        "SEMANTIC_VALIDATION_FAILED",
+        "CONFIGURATION_ERROR",
+        "SKIPPED_COST_LIMIT"
+      ]
+    },
+    "status_detail": { "type": ["string", "null"] },
+    "schema_version": { "type": "string", "minLength": 1 },
+
+    "action": { "enum": ["BUY", "NO_TRADE"] },
+    "selected_strategy": {
+      "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE", null]
+    },
+    "strategy_version": { "type": ["string", "null"] },
+    "decision_method": { "enum": ["AI_SELECTED", "DETERMINISTIC_ONLY"] },
+    "confidence": { "enum": ["HIGH", "MEDIUM", "LOW", null] },
+    "reasons": {
+      "description": "Codes from a closed vocabulary, each checkable against the research report that produced the decision.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/selection_reason" }
+    },
+    "rationale": { "type": ["string", "null"] },
+
+    "hypothesis": { "enum": ["A", "B", "C", "D", "E", null] },
+    "research_confidence": { "enum": ["HIGH", "MEDIUM", "LOW", null] },
+    "research_horizon_days": { "type": ["integer", "null"], "minimum": 1, "maximum": 365 },
+    "research_report_id": { "type": ["string", "null"] },
+    "research_run_id": { "type": ["string", "null"] },
+    "universe_run_id": { "type": ["string", "null"] },
+
+    "eligible_strategies": {
+      "description": "Every strategy eligible for the hypothesis, chosen or not. What else it could have picked is part of explaining what it picked.",
+      "type": "array",
+      "items": { "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"] }
+    },
+    "data_readiness": { "$ref": "#/$defs/data_readiness" },
+    "input_snapshot_ids": { "type": "array", "items": { "type": "string" } },
+    "agent_metadata": {
+      "oneOf": [{ "$ref": "#/$defs/agent_metadata" }, { "type": "null" }]
+    },
+    "versions": { "$ref": "#/$defs/system_versions" }
+  },
+  "allOf": [
+    {
+      "description": "A BUY names a strategy, its specification version and a rationale.",
+      "if": { "properties": { "action": { "const": "BUY" } }, "required": ["action"] },
+      "then": {
+        "properties": {
+          "status": { "const": "SUCCESS" },
+          "selected_strategy": {
+            "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"]
+          },
+          "strategy_version": { "type": "string", "minLength": 1 },
+          "rationale": { "type": "string", "minLength": 1 }
+        },
+        "required": ["selected_strategy", "strategy_version", "rationale"]
+      }
+    },
+    {
+      "description": "NO_TRADE never carries a strategy: declining and proposing are different answers.",
+      "if": { "properties": { "action": { "const": "NO_TRADE" } }, "required": ["action"] },
+      "then": { "properties": { "selected_strategy": { "type": "null" } } }
+    }
+  ],
+  "$defs": {
+    "selection_reason": {
+      "enum": [
+        "HYPOTHESIS_MATCH",
+        "DIRECTIONAL_VIEW_SUPPORTED",
+        "DIRECTION_UNCERTAIN",
+        "LARGE_MOVE_EXPECTED",
+        "MODERATE_MOVE_EXPECTED",
+        "EVENT_IN_HORIZON",
+        "NO_EVENT_IN_HORIZON",
+        "HORIZON_COMPATIBLE",
+        "HORIZON_INCOMPATIBLE",
+        "CONFIDENCE_SUFFICIENT",
+        "CONFIDENCE_INSUFFICIENT",
+        "EVIDENCE_SUFFICIENT",
+        "EVIDENCE_INSUFFICIENT",
+        "CONTRADICTING_EVIDENCE",
+        "DATA_QUALITY_INSUFFICIENT",
+        "NO_ELIGIBLE_STRATEGY",
+        "RESEARCH_INCOMPATIBLE"
+      ]
+    },
+    "data_readiness": {
+      "description": "What option data was actually visible at as_of. Established deterministically from the repository, never put to a model, and never shown to one.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "option_chain_available": { "type": "boolean" },
+        "option_quotes_available": { "type": "boolean" },
+        "underlying_quote_available": { "type": "boolean" },
+        "expirations_visible": { "type": "integer", "minimum": 0 },
+        "strikes_visible": { "type": "integer", "minimum": 0 },
+        "chain_snapshot_id": { "type": ["string", "null"] },
+        "quote_snapshot_id": { "type": ["string", "null"] },
+        "underlying_snapshot_id": { "type": ["string", "null"] },
+        "security_type": {
+          "enum": ["STOCK", "OPTION", "FUTURE", "FUTURE_OPTION", "CASH", "INDEX", "OTHER", null]
+        },
+        "detail": { "type": ["string", "null"] }
+      }
+    },
+    "agent_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_provider", "model_name", "prompt_version", "generated_at"],
+      "properties": {
+        "model_provider": { "type": "string", "minLength": 1 },
+        "model_name": { "type": "string", "minLength": 1 },
+        "prompt_version": { "type": "string", "minLength": 1 },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "model_version": { "type": ["string", "null"] },
+        "prompt_fingerprint": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "latency_ms": { "type": ["number", "null"], "minimum": 0 },
+        "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "raw_response": { "type": ["string", "null"] }
+      }
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_version", "config_version"],
+      "properties": {
+        "application_version": { "type": "string", "minLength": 1 },
+        "config_version": { "type": "string", "minLength": 1 },
+        "strategy_spec_version": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

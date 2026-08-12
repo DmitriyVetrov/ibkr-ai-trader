@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/contract_selection.json",
+  "title": "ContractSelectionResult",
+  "description": "The immutable record of one deterministic contract selection: which concrete contracts satisfy a strategy decision, why each was chosen, and what was rejected on the way. No LLM is involved in producing this record. 'No valid contract' is a valid outcome and carries no legs. There is no quantity and no allocation here: this stage ends at a purchase candidate, and sizing belongs to the risk and allocation engines.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "selection_id",
+    "run_id",
+    "symbol",
+    "as_of",
+    "generated_at",
+    "selection_status",
+    "schema_version",
+    "selection_policy_version",
+    "versions"
+  ],
+  "properties": {
+    "selection_id": {
+      "description": "Derived from the contracts chosen, not generated. Identical inputs produce an identical id.",
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": { "type": "string", "minLength": 1 },
+    "symbol": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+    "as_of": {
+      "description": "The strategy decision's instant. Option data retrieved after it is invisible to this selection; an expiration after it is the point of an option.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "selection_status": {
+      "enum": [
+        "SUCCESS",
+        "NO_VALID_EXPIRATION",
+        "NO_VALID_STRIKE",
+        "NO_VALID_CONTRACT",
+        "REQUIRED_DATA_UNAVAILABLE",
+        "OPTION_CHAIN_UNAVAILABLE",
+        "INVALID_CHAIN",
+        "POINT_IN_TIME_ERROR",
+        "STRATEGY_NOT_ELIGIBLE",
+        "NO_TRADE",
+        "CONFIGURATION_ERROR"
+      ]
+    },
+    "status_detail": { "type": ["string", "null"] },
+    "schema_version": { "type": "string", "minLength": 1 },
+
+    "strategy": {
+      "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE", null]
+    },
+    "strategy_version": { "type": ["string", "null"] },
+    "strategy_run_id": { "type": ["string", "null"] },
+    "strategy_decision_id": { "type": ["string", "null"] },
+    "research_report_id": { "type": ["string", "null"] },
+
+    "legs": {
+      "description": "The selected contracts. Empty for every status other than SUCCESS.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/selected_leg" }
+    },
+    "expiration": { "type": ["string", "null"], "format": "date" },
+    "dte": { "type": ["integer", "null"], "minimum": 0 },
+    "expiration_policy": {
+      "enum": ["NEAREST_VALID", "TARGET_DTE", "EVENT_ALIGNED", null]
+    },
+    "expiration_reason": { "type": ["string", "null"] },
+    "reference_price": { "$ref": "#/$defs/nullable_money" },
+    "reference_price_field": { "type": ["string", "null"] },
+    "cost": {
+      "oneOf": [{ "$ref": "#/$defs/cost_estimate" }, { "type": "null" }]
+    },
+
+    "selection_policy_version": { "type": "string", "minLength": 1 },
+    "input_snapshot_ids": { "type": "array", "items": { "type": "string" } },
+    "reasons": { "type": "array", "items": { "type": "string" } },
+    "rejected_candidates": {
+      "description": "Why each considered contract was not selected. This is what makes a deterministic selection auditable rather than merely reproducible.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/rejected_candidate" }
+    },
+    "candidates_considered": { "type": "integer", "minimum": 0 },
+    "rejections_recorded_truncated": { "type": "boolean" },
+    "versions": { "$ref": "#/$defs/system_versions" }
+  },
+  "allOf": [
+    {
+      "description": "A successful selection names its strategy, expiration, DTE and at least one leg.",
+      "if": {
+        "properties": { "selection_status": { "const": "SUCCESS" } },
+        "required": ["selection_status"]
+      },
+      "then": {
+        "properties": {
+          "legs": { "type": "array", "minItems": 1 },
+          "strategy": {
+            "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"]
+          },
+          "expiration": { "type": "string", "format": "date" },
+          "dte": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["legs", "strategy", "expiration", "dte"]
+      },
+      "else": {
+        "description": "A selection that failed selected nothing. The nearest miss is recorded as a rejection, never returned as a consolation.",
+        "properties": { "legs": { "type": "array", "maxItems": 0 } }
+      }
+    }
+  ],
+  "$defs": {
+    "money": {
+      "description": "Exact decimal serialised as a string. Never a JSON number: binary floats are not decimal-safe.",
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "nullable_money": {
+      "description": "An exact decimal, or null for a value the data did not carry. Never zero for absent.",
+      "type": ["string", "null"],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "selected_leg": {
+      "description": "One concrete contract. Every broker identifier is carried verbatim; trading_class in particular is copied from the chain and never derived from the ticker.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leg_index",
+        "action",
+        "right",
+        "underlying",
+        "expiration",
+        "dte",
+        "strike",
+        "multiplier",
+        "trading_class",
+        "contract_id",
+        "strike_policy",
+        "selection_reason",
+        "chain_snapshot_id"
+      ],
+      "properties": {
+        "leg_index": { "type": "integer", "minimum": 0 },
+        "action": { "enum": ["BUY", "SELL"] },
+        "right": { "enum": ["CALL", "PUT"] },
+        "ratio": { "type": "integer", "minimum": 1 },
+        "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+        "expiration": { "type": "string", "format": "date" },
+        "dte": { "type": "integer", "minimum": 0 },
+        "strike": { "$ref": "#/$defs/money" },
+        "multiplier": { "type": "integer", "minimum": 1 },
+        "trading_class": { "type": "string", "minLength": 1 },
+        "contract_id": { "type": "integer" },
+        "exchange": { "type": ["string", "null"] },
+        "local_symbol": { "type": ["string", "null"] },
+        "currency": { "type": ["string", "null"] },
+        "strike_policy": { "enum": ["ATM", "TARGET_DELTA", "OTM_PERCENT"] },
+        "target_strike": { "$ref": "#/$defs/nullable_money" },
+        "strike_distance_pct": { "type": ["number", "null"] },
+        "reference_price": { "$ref": "#/$defs/nullable_money" },
+        "selection_reason": { "type": "string", "minLength": 1 },
+        "bid": { "$ref": "#/$defs/nullable_money" },
+        "ask": { "$ref": "#/$defs/nullable_money" },
+        "last": { "$ref": "#/$defs/nullable_money" },
+        "implied_volatility": { "$ref": "#/$defs/nullable_money" },
+        "delta": { "$ref": "#/$defs/nullable_money" },
+        "gamma": { "$ref": "#/$defs/nullable_money" },
+        "theta": { "$ref": "#/$defs/nullable_money" },
+        "vega": { "$ref": "#/$defs/nullable_money" },
+        "volume": { "$ref": "#/$defs/nullable_money" },
+        "open_interest": { "$ref": "#/$defs/nullable_money" },
+        "chain_snapshot_id": { "type": "string", "minLength": 1 },
+        "quote_snapshot_id": { "type": ["string", "null"] },
+        "quote_as_of": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "rejected_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": {
+          "enum": [
+            "DTE_OUT_OF_RANGE",
+            "WRONG_RIGHT",
+            "WRONG_UNDERLYING",
+            "WRONG_EXPIRATION",
+            "MISSING_CONTRACT_ID",
+            "MISSING_STRIKE",
+            "MISSING_EXPIRATION",
+            "MISSING_QUOTE",
+            "MISSING_DELTA",
+            "MISSING_IMPLIED_VOLATILITY",
+            "MISSING_REQUIRED_FIELD",
+            "INVALID_TRADING_CLASS",
+            "INVALID_MULTIPLIER",
+            "LOW_OPTION_LIQUIDITY",
+            "OPTION_LIQUIDITY_UNKNOWN",
+            "OPTION_PRICE_OUT_OF_RANGE",
+            "SPREAD_TOO_WIDE",
+            "IMPLIED_VOLATILITY_OUT_OF_RANGE",
+            "STRIKE_POLICY_NOT_SATISFIED",
+            "NOT_IN_CHAIN_SNAPSHOT",
+            "POINT_IN_TIME_VIOLATION",
+            "QUOTE_NOT_RESEARCH_USABLE",
+            "QUOTE_STALE",
+            "EXPIRATION_NOT_A_TRADING_DAY",
+            "INCOMPATIBLE_LEG",
+            "NOT_SELECTED_BY_POLICY"
+          ]
+        },
+        "leg_index": { "type": ["integer", "null"], "minimum": 0 },
+        "contract_id": { "type": ["integer", "null"] },
+        "expiration": { "type": ["string", "null"], "format": "date" },
+        "strike": { "$ref": "#/$defs/nullable_money" },
+        "right": { "enum": ["CALL", "PUT", null] },
+        "detail": { "type": ["string", "null"] }
+      }
+    },
+    "cost_estimate": {
+      "description": "What one unit of the structure would cost, when the data supports saying. Not a position size: there is no quantity here.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available"],
+      "properties": {
+        "available": { "type": "boolean" },
+        "currency": { "type": ["string", "null"] },
+        "estimated_debit": { "$ref": "#/$defs/nullable_money" },
+        "estimated_mid_debit": { "$ref": "#/$defs/nullable_money" },
+        "max_leg_spread_pct": { "type": ["number", "null"], "minimum": 0 },
+        "unavailable_reason": { "type": ["string", "null"] }
+      },
+      "allOf": [
+        {
+          "description": "An unavailable estimate states no figures and says why.",
+          "if": { "properties": { "available": { "const": false } }, "required": ["available"] },
+          "then": {
+            "properties": {
+              "estimated_debit": { "type": "null" },
+              "estimated_mid_debit": { "type": "null" },
+              "unavailable_reason": { "type": "string", "minLength": 1 }
+            },
+            "required": ["unavailable_reason"]
+          }
+        },
+        {
+          "if": { "properties": { "available": { "const": true } }, "required": ["available"] },
+          "then": {
+            "properties": { "estimated_debit": { "$ref": "#/$defs/money" } },
+            "required": ["estimated_debit"]
+          }
+        }
+      ]
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_version", "config_version"],
+      "properties": {
+        "application_version": { "type": "string", "minLength": 1 },
+        "config_version": { "type": "string", "minLength": 1 },
+        "strategy_spec_version": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

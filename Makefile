@@ -4,9 +4,11 @@ PYTEST := .venv/bin/pytest
 CLI := $(PYTHON) -m trading_system.cli
 
 .PHONY: help install test test-unit test-contract test-agents test-universe \
-        test-research test-strategies test-allocation test-risk test-broker \
-        test-data test-integration test-e2e universe-validate universe-run \
-        universe-show research-validate research-run research-show \
+        test-research test-strategy test-strategies test-contract-selection \
+        test-allocation test-risk test-broker test-data test-integration \
+        test-e2e universe-validate universe-run universe-show research-validate \
+        research-run research-show strategy-validate strategy-run strategy-show \
+        contract-validate contract-select contract-show \
         lint format typecheck check health config ibkr-connection ibkr-portfolio clean
 
 help:  ## Show this help
@@ -36,8 +38,14 @@ test-universe:  ## Universe selection: config, filters, point-in-time, snapshots
 test-research:  ## Market research: evidence, dedup, point-in-time, validation, CLI
 	$(PYTEST) tests/research
 
-test-strategies:  ## Strategy test suites (Milestone 6)
+test-strategy:  ## Strategy stage: registry, agent boundary, validation, service
+	$(PYTEST) tests/strategy
+
+test-strategies:  ## One suite per strategy specification (Milestone 6)
 	$(PYTEST) tests/strategies
+
+test-contract-selection:  ## Deterministic contract selection: policy, point-in-time, determinism
+	$(PYTEST) tests/contract_selection
 
 test-allocation:  ## Campaign allocation tests (Milestone 7)
 	$(PYTEST) tests/allocation
@@ -93,6 +101,24 @@ research-run:  ## Research the universe. Submits no orders (Milestone 5)
 
 research-show:  ## Show the latest research run (Milestone 5)
 	$(CLI) research show
+
+strategy-validate:  ## Validate the strategy registry and configuration (Milestone 6)
+	$(CLI) strategy validate
+
+strategy-run:  ## Choose a strategy per researched underlying. Submits no orders
+	$(CLI) strategy run
+
+strategy-show:  ## Show the latest strategy run (Milestone 6)
+	$(CLI) strategy show
+
+contract-validate:  ## Validate the deterministic contract-selection policy
+	$(CLI) contract validate
+
+contract-select:  ## Select contracts for the latest strategy run. Submits no orders
+	$(CLI) contract select
+
+contract-show:  ## Show the latest contract selection (Milestone 6)
+	$(CLI) contract show
 
 ibkr-connection:  ## Read-only IBKR connection test (Milestone 2)
 	$(CLI) test ibkr-connection

@@ -10,7 +10,7 @@ not reachable by configuration alone — see [Trading modes](#trading-modes).
 
 ## Status
 
-**Milestone 5 of 12 — market research.** What exists today:
+**Milestone 6 of 12 — strategy and contract selection.** What exists today:
 
 - domain models, enums, events and the position state machine;
 - YAML configuration for campaign, risk, schedules, sources, strategies, data,
@@ -30,12 +30,18 @@ not reachable by configuration alone — see [Trading modes](#trading-modes).
 - **market research**: point-in-time evidence assembly with news deduplication,
   the Market Researcher agent, deterministic hypothesis and confidence
   validation, and immutable append-only research reports;
+- **strategy selection**: a strategy registry resolved against the global risk
+  policy, the Strategy Selector agent, deterministic validation of what it
+  returns, and immutable append-only strategy decisions;
+- **contract selection**: a fully deterministic selector — no model, at all —
+  that resolves a strategy into concrete legs from a stored option chain, or
+  reports explicitly that no valid contract exists;
 - the CLI surface, with every command tagged read-only or state-mutating.
 
-What deliberately does **not** exist yet: strategy selection, contract
-selection, allocation, order execution, autonomous trading and any form of live
-trading. Commands covering those exist in the CLI but exit `3` naming the
-milestone that delivers them. They never fabricate output.
+What deliberately does **not** exist yet: allocation, risk validation, order
+execution, autonomous trading and any form of live trading. Commands covering
+those exist in the CLI but exit `3` naming the milestone that delivers them.
+They never fabricate output.
 
 **No code path in this repository can submit an order.** See
 [Safety properties](#safety-properties).
@@ -156,6 +162,36 @@ is structural rather than a check performed at the end.
 collects, never connects, and never selects its own subjects: a `--symbol` the
 universe did not choose is refused rather than researched.
 
+### Strategy and contract selection
+
+```bash
+python -m trading_system.cli strategy validate            # registry + hypothesis mapping
+python -m trading_system.cli strategy run --dry-run       # full pipeline, persists nothing
+python -m trading_system.cli strategy run
+python -m trading_system.cli strategy run --run-id <research-run-id>
+python -m trading_system.cli strategy run --symbol NVDA
+python -m trading_system.cli strategy show [--run-id <ID>] [--symbol NVDA]
+python -m trading_system.cli strategy history [--symbol NVDA]
+python -m trading_system.cli strategy validate --run-id <ID>   # re-check a stored run
+
+python -m trading_system.cli contract validate            # the deterministic policy
+python -m trading_system.cli contract select --dry-run
+python -m trading_system.cli contract select
+python -m trading_system.cli contract select --run-id <strategy-run-id>
+python -m trading_system.cli contract show [--run-id <ID>] [--symbol NVDA]
+python -m trading_system.cli contract history [--symbol NVDA]
+python -m trading_system.cli contract validate --run-id <ID>
+```
+
+Every one is read-only with respect to the broker and reports
+`Orders submitted: 0`. Neither layer constructs a broker at all, so that is
+structural rather than a check performed at the end.
+
+`strategy run` consumes a stored research run: it never re-researches, and a
+`--symbol` research did not cover is refused. `contract select` takes no
+`--as-of` on purpose — the instant comes from each decision, so a selection
+reconstructs exactly the data that was visible when the strategy was chosen.
+
 ## Data architecture
 
 ```
@@ -275,6 +311,67 @@ policy recognises a source, the configured tier wins over the provider's own
 claim; an unlisted source keeps the tier it declared rather than being demoted
 by a judgement nobody made.
 
+## Strategy and contract selection
+
+```
+RESEARCH REPORT           consumed, never re-researched
+    |
+STRATEGY REGISTRY         the allow-list, resolved against config/risk.yaml
+    |
+DETERMINISTIC GATES       no eligible strategy, thin evidence, no chain -> NO_TRADE
+    |
+STRATEGY SELECTOR         chooses WHAT: one configured strategy, or none
+    |
+DETERMINISTIC VALIDATION  rejects a violating decision in full, never repairs
+    |
+STRATEGY DECISION         a proposal, never an order
+    |
+CONTRACT SELECTOR         chooses WHICH: arithmetic over a stored chain, no model
+    |
+CONTRACT SELECTION        concrete legs, or an explicit "no valid contract"
+```
+
+> **The AI selects the strategy. Deterministic code selects the contract.**
+
+The agent is shown a research conclusion and the metadata of the strategies
+eligible for its hypothesis — structure, leg shapes, DTE window. It is never
+shown an option chain, a strike list, a contract id, an account balance or a
+budget, and its response has no field for a strike, an expiration, a quantity
+or a price. It cannot select a contract because it has neither the information
+nor the vocabulary.
+
+The hypothesis-to-strategy mapping is derived from each strategy's own
+`applicable_hypotheses`, so there is exactly one place it is written down:
+
+| | Eligible strategies |
+| --- | --- |
+| `A` | `LONG_STRADDLE`, `LONG_STRANGLE` |
+| `B` | `LONG_CALL` |
+| `C` | `LONG_PUT` |
+| `D` | `LONG_STRADDLE`, `LONG_STRANGLE` (expiration aligned to the event) |
+| `E` | none — `NO_TRADE` |
+
+Six rules do the work, each with tests that fail loudly:
+
+- **a strategy may narrow a global risk limit, never widen one** — the registry
+  refuses to build otherwise, and does not clamp silently;
+- **structure is code, policy is configuration** — a straddle is one call and
+  one put on one strike because that is what the word means; the delta, the
+  offsets and the DTE window are in `config/strategies/*.yaml`;
+- **nothing is invented** — a missing delta is a rejection, not an estimate; an
+  unquoted contract has an unknown cost, not a guessed midpoint; a trading class
+  is copied from the chain, never derived from the ticker;
+- **no contract is approximated** — "no valid contract" is a first-class
+  outcome, and the nearest miss is recorded as a rejection rather than returned;
+- **selection is reproducible** — same decision, same chain, same configuration,
+  same `as_of` produces a byte-identical record, rejections included;
+- **`NO_TRADE` is a first-class outcome** at both stages, and neither has to
+  produce something because the stage above it did.
+
+Milestone 6 ends at a **purchase candidate**: legs, and what one unit of the
+structure would cost. There is no quantity and no allocation — those belong to
+the risk and allocation engines, and no artifact here has a field for them.
+
 ## IBKR architecture
 
 ```
@@ -373,6 +470,9 @@ make test-broker       # broker abstraction, simulator, IBKR adapter
 make test-data         # providers, quality, point-in-time, storage
 make test-universe     # filters, point-in-time, snapshots, reproducibility, CLI
 make test-research     # evidence, deduplication, point-in-time, validation, CLI
+make test-strategy     # registry, agent boundary, decision validation, service, CLI
+make test-strategies   # one suite per strategy specification
+make test-contract-selection  # policy, point-in-time, determinism, boundaries
 make test-agents       # AI agent contract tests; needs no API key
 make test-contract     # workflow-boundary schema compatibility
 make test-integration  # multi-component, simulated broker
@@ -390,18 +490,21 @@ ALLOW_LIVE_TESTS=true pytest -m ibkr            # requires a running gateway
 ALLOW_LIVE_TESTS=true pytest -m ibkr tests/data # data layer against IBKR Paper
 ALLOW_LIVE_TESTS=true ANTHROPIC_API_KEY=... \
   pytest -m llm tests/agents/test_research_agent.py
+ALLOW_LIVE_TESTS=true ANTHROPIC_API_KEY=... \
+  pytest -m llm tests/agents/test_strategy_selector.py
 ```
 
 Those tests are read-only and assert `orders_submitted == 0`. They fail loudly
 if the gateway is unreachable — they never fake a pass.
 
-The opt-in `llm` test in `tests/agents/test_research_agent.py` makes **one**
-real model call against the shipped prompt and the shipped schema. It is doubly
-gated (`ALLOW_LIVE_TESTS=true` *and* a key must be present), touches no broker,
-places no order, and asserts only structure — never that the model reached a
-particular conclusion, because that is not a property of the system. A
-validation failure there is the deterministic layer catching a real model's
-real mistake, which is its job.
+The opt-in `llm` tests in `tests/agents/test_research_agent.py` and
+`tests/agents/test_strategy_selector.py` each make **one** real model call
+against the shipped prompt and the shipped schema. They are doubly gated
+(`ALLOW_LIVE_TESTS=true` *and* a key must be present), touch no broker, place
+no order, and assert only structure — never that the model reached a particular
+conclusion, because that is not a property of the system. A validation failure
+there is the deterministic layer catching a real model's real mistake, which is
+its job.
 
 ## Safety properties
 
@@ -436,6 +539,18 @@ Enforced in code and covered by tests, not left to convention:
   a strike, a direction or an allocation, and no reason code for one either.
   The research agent has no field for a strike, an expiry, a right, a delta, a
   strategy, a quantity or a currency amount, and is never shown a contract.
+  The strategy agent is offered only the strategies the registry admitted for
+  the hypothesis — a strategy outside that list is not expressible in its
+  response schema — and is shown no option chain, no account and no budget.
+- **The AI never selects a contract.** The strike, the expiration and the legs
+  are resolved by `strategies/contract_selector.py`, which imports no agent, no
+  LLM client and no news provider; a test asserts that transitively. Identical
+  inputs produce an identical selection, rejections included. No model is
+  consulted per selection, and certainly not per strike.
+- **A strategy specification cannot overrule the risk policy.** A strategy may
+  narrow the DTE window, the price band, the liquidity floors or the spread
+  ceiling in `config/risk.yaml`; widening one is refused at configuration load
+  *and* at registry build, and is never clamped silently.
 - **The AI cannot invent a source.** Research cites evidence by an id the input
   actually carried, and has no field for a source name, a URL or a publication
   date — those are copied from the input into the report. An unknown id rejects
@@ -443,8 +558,13 @@ Enforced in code and covered by tests, not left to convention:
 - **An AI failure is never a silent success.** An unreachable model, a refusal,
   a truncated generation, malformed JSON, a fabricated justification or an
   unsupported hypothesis each end with a named status and **no view** — no
-  hypothesis, no confidence, no catalysts. There is no deterministic fallback
-  for a market outlook, by design.
+  hypothesis, no confidence, no catalysts, and at the strategy stage no
+  strategy. There is no deterministic fallback for a market outlook or for a
+  strategy choice, by design.
+- **Nothing is approximated into existence.** A missing delta fails the
+  selection rather than being estimated; an unquoted contract has an unknown
+  cost rather than an invented midpoint; a chain too coarse for the configured
+  strike policy yields no contract rather than the nearest one.
 - **Confidence is not the model's to declare.** `HIGH` is refused, never
   quietly downgraded, when the evidence count, the source tiers, the data
   quality or an unresolved contradiction do not license it.
@@ -474,9 +594,15 @@ Two separate concerns, deliberately split:
 - **`config/*.yaml`** — trading policy: campaign budget, risk limits, schedules,
   source trust tiers, strategy definitions, the data layer's freshness windows,
   plausibility bounds, research-usability policy and market calendar, the
-  universe's candidate pool, eligibility filters and ranking policy, and the
-  research horizon, data windows, cost ceilings and confidence policy.
-  Committed and reviewable, so a change to a risk limit shows up in a diff.
+  universe's candidate pool, eligibility filters and ranking policy, the
+  research horizon, data windows, cost ceilings and confidence policy, and the
+  strategy stage's eligibility gates plus the deterministic contract-selection
+  policy. Committed and reviewable, so a change to a risk limit shows up in a
+  diff.
+
+Note the deliberate split between `config/strategy.yaml` — how the strategy
+*stage* behaves — and `config/strategies/*.yaml` — what each strategy *is*. The
+first configures an agent; the second configures a payoff.
 
 Monetary values in YAML are quoted strings or integers (`"0.50"`, `5000`) so
 they parse as exact decimals. An unquoted `0.50` is a binary float and is
@@ -493,8 +619,10 @@ src/
   domain/          models, enums, events, state machine (pure, no I/O)
   universe/        candidate pool, pre-filter, ranking, immutable runs
   research/        point-in-time evidence, hypothesis validation, immutable reports
+  strategies/      registry, strategy structures, deterministic contract selector
   agents/          LLM agents and their shipped prompts
   infrastructure/  settings, config loading, logging, clock
+skills/            per-strategy specifications (documentation, never executable)
 data/              market data, snapshots and caches (contents git-ignored)
 trades/            immutable per-trade artifact directories (contents git-ignored)
 reports/           generated reports (contents git-ignored)

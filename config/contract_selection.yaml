@@ -1,0 +1,94 @@
+# Deterministic contract-selection policy (Milestone 6).
+#
+# No LLM is involved in anything this file governs. Given the same strategy
+# decision, the same stored chain and quotes, the same configuration and the
+# same `as_of`, the selector must choose the same contracts — so every rule it
+# applies is written here or in a strategy specification, and none is hidden in
+# the selector's code.
+#
+# A strategy may NARROW anything below. It may never widen it.
+config_version: "2026.08.12-1"
+
+# Stamped onto every stored selection so a past choice traces to the exact
+# policy that produced it. Bump whenever a rule here changes.
+selection_policy_version: "1.0.0"
+
+# ---------------------------------------------------------------------------
+# Expiration.
+#
+# The effective DTE window is the intersection of config/risk.yaml's
+# [dte_min, dte_max] with the strategy's own window. DTE is counted in calendar
+# days from the exchange-local date of `as_of` to the expiration date, using
+# the market calendar in config/data.yaml — never from local machine time.
+# ---------------------------------------------------------------------------
+expiration:
+  # NEAREST_VALID | TARGET_DTE | EVENT_ALIGNED. The default for a strategy that
+  # does not state its own rule.
+  rule: TARGET_DTE
+  target_dte: 21
+
+  # EVENT_ALIGNED only: how far after the event an expiration may fall and
+  # still count as aligned to it. The event date comes from the structured
+  # research report; it is never inferred from prose.
+  event_max_days_after: 14
+
+  # An expiration on a day the calendar says the market is closed is rejected.
+  # A day outside the calendar's covered years is accepted and recorded as
+  # unknown — an honest unknown, not a guess.
+  require_trading_day: true
+
+# ---------------------------------------------------------------------------
+# Strike.
+# ---------------------------------------------------------------------------
+strike:
+  # How far the chosen strike may sit from the policy's target, as a percentage
+  # of the reference price. A chain too coarse to express the policy is a
+  # rejection (STRIKE_POLICY_NOT_SATISFIED), not a rounding.
+  max_strike_distance_pct: 5.0
+
+  # Which quote fields may supply the reference price, in order of preference.
+  # Whichever was actually used is recorded on the selection.
+  reference_price_fields:
+    - LAST
+    - CLOSE
+    - MID
+
+  # Whether an option quote's own underlying_price may stand in when the
+  # underlying's quote is unavailable. Same measurement, same provider, so it
+  # beats failing outright — and it is recorded as the source that was used.
+  allow_option_underlying_price: true
+
+# ---------------------------------------------------------------------------
+# Quotes and option-level liquidity.
+#
+# Underlying liquidity is not option liquidity. That NVDA trades 200m shares
+# says nothing about whether the NVDA 180 call has a market, and no rule here
+# accepts the first as evidence of the second.
+# ---------------------------------------------------------------------------
+quotes:
+  # A contract with no quote cannot be priced, and an unpriced contract is not
+  # a selection. Set false only for a workflow that deliberately selects on
+  # chain metadata alone.
+  require_quote: true
+
+  # Quotes older than this are stale. Stale data means no selection, not a
+  # selection made on a stale price.
+  max_quote_age_seconds: 86400
+
+  require_research_usable: true
+
+  # REJECT | ALLOW. What to do when option-level liquidity was never reported.
+  # REJECT is the honest default: an option we have not established to be
+  # liquid must not be traded on the assumption that it is. Missing volume is
+  # never read as zero, and never as "fine".
+  unknown_liquidity_policy: REJECT
+
+# ---------------------------------------------------------------------------
+# Bounds on the work and on the size of the stored record.
+# ---------------------------------------------------------------------------
+limits:
+  max_candidates: 5000
+  # Rejected candidates kept on the stored record. Bounded so a 500-strike
+  # chain does not produce an unreadable artifact; the number considered is
+  # always recorded, so truncation is visible rather than silent.
+  max_rejected_recorded: 50

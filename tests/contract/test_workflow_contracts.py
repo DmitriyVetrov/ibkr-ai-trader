@@ -535,6 +535,145 @@ def test_trade_snapshot_closes_the_loop(
 
 
 @pytest.mark.contract
+def test_a_strategy_decision_validates_against_its_own_schema(
+    strategy_decision_record, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    _validator(load_schema("strategy_selection")).validate(_dump(strategy_decision_record))
+
+
+@pytest.mark.contract
+def test_a_contract_selection_validates_against_its_own_schema(
+    contract_selection_result, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    _validator(load_schema("contract_selection")).validate(_dump(contract_selection_result))
+
+
+@pytest.mark.contract
+def test_the_strategy_schema_rejects_a_failed_decision_naming_a_strategy(
+    strategy_decision_record, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """A failure is never a trade proposal."""
+    payload = _dump(strategy_decision_record)
+    payload["status"] = "AI_UNAVAILABLE"
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("strategy_selection")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_strategy_schema_rejects_no_trade_carrying_a_strategy(
+    strategy_decision_record, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    payload = _dump(strategy_decision_record)
+    payload["action"] = "NO_TRADE"
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("strategy_selection")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_contract_schema_rejects_a_failed_selection_carrying_legs(
+    contract_selection_result, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    payload = _dump(contract_selection_result)
+    payload["selection_status"] = "NO_VALID_STRIKE"
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("contract_selection")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_contract_schema_requires_a_broker_contract_id_on_every_leg(
+    contract_selection_result, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    payload = _dump(contract_selection_result)
+    del payload["legs"][0]["contract_id"]
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("contract_selection")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_contract_schema_rejects_a_cost_with_no_figure_and_no_reason(
+    contract_selection_result, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """An unavailable cost says why; an available one states a number."""
+    payload = _dump(contract_selection_result)
+    payload["cost"] = {"available": False, "estimated_debit": None, "unavailable_reason": None}
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("contract_selection")).validate(payload)
+
+
+@pytest.mark.contract
+def test_a_research_report_feeds_the_strategy_decision(
+    market_research_report, strategy_decision_record
+) -> None:
+    """Milestone 5 -> Milestone 6: the decision names the outlook it rests on."""
+    assert strategy_decision_record.research_report_id == market_research_report.report_id
+    assert strategy_decision_record.hypothesis == market_research_report.hypothesis
+    assert strategy_decision_record.symbol == market_research_report.symbol
+
+
+@pytest.mark.contract
+def test_a_strategy_decision_feeds_the_contract_selection(
+    strategy_decision_record, contract_selection_result
+) -> None:
+    """The two halves of Milestone 6, connected by identifier."""
+    assert contract_selection_result.strategy_decision_id == (strategy_decision_record.decision_id)
+    assert contract_selection_result.strategy == strategy_decision_record.selected_strategy
+    assert contract_selection_result.symbol == strategy_decision_record.symbol
+    assert contract_selection_result.research_report_id == (
+        strategy_decision_record.research_report_id
+    )
+
+
+@pytest.mark.contract
+def test_a_strategy_decision_projects_onto_the_milestone_1_boundary(
+    strategy_decision_record, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    projected = strategy_decision_record.to_strategy_decision()
+
+    _validator(load_schema("strategy_decision")).validate(_dump(projected))
+    assert projected.strategy_type == strategy_decision_record.selected_strategy
+
+
+@pytest.mark.contract
+def test_a_contract_selection_projects_onto_the_purchase_card_boundary(
+    contract_selection_result, purchase_card, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """Milestone 6 -> Milestone 7: the legs a purchase card would carry."""
+    projected = contract_selection_result.to_contract_selection()
+    payload = _dump(purchase_card)
+    payload["contract"] = _dump(projected)
+
+    _validator(load_schema("purchase_card")).validate(payload)
+    assert projected.underlying == contract_selection_result.symbol
+    assert len(projected.legs) == len(contract_selection_result.legs)
+
+
+@pytest.mark.contract
+def test_the_milestone_6_artifacts_carry_no_position_size(
+    strategy_decision_record, contract_selection_result
+) -> None:
+    """How much is the risk and allocation engines' answer, not this stage's."""
+    for payload in (_dump(strategy_decision_record), _dump(contract_selection_result)):
+        serialised = str(payload)
+        for forbidden in ("quantity", "allocated_eur", "requested_allocation", "buying_power"):
+            assert forbidden not in serialised
+
+
+@pytest.mark.contract
+def test_selected_legs_serialise_money_as_exact_strings(contract_selection_result) -> None:
+    payload = _dump(contract_selection_result)
+
+    leg = payload["legs"][0]
+    assert isinstance(leg["strike"], str)
+    assert isinstance(leg["bid"], str)
+    assert isinstance(payload["cost"]["estimated_debit"], str)
+
+
+@pytest.mark.contract
 def test_every_artifact_is_version_stamped(
     request: pytest.FixtureRequest,
 ) -> None:

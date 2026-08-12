@@ -134,6 +134,38 @@ python -m trading_system.cli universe show
 python -m trading_system.cli universe explain --run-id <ID> --symbol SPY
 ```
 
+### `research/`, `strategy/`, `contracts/`
+
+The later decision records, each with the same discipline and for the same
+reasons — immutable run files, an append-only `history.jsonl`, and a per-symbol
+index so one underlying's history can be read without loading every run:
+
+```
+research/runs/<generated>-<run_id>.json     research/history.jsonl     research/symbols/<SYMBOL>.jsonl
+strategy/runs/<generated>-<run_id>.json     strategy/history.jsonl     strategy/symbols/<SYMBOL>.jsonl
+contracts/runs/<generated>-<run_id>.json    contracts/history.jsonl    contracts/symbols/<SYMBOL>.jsonl
+```
+
+Together with `universe/` they form the provenance chain a trade is
+reconstructed from:
+
+```
+universe run -> research report -> strategy decision -> contract selection
+```
+
+Each record names the one before it by id and lists the data snapshots it rests
+on, so "why is this contract here" is answered by following identifiers rather
+than by inference. A strategy decision additionally records which model chose
+it, under which prompt version and fingerprint; a contract selection records
+the deterministic policy version, the reference price and the field it came
+from, and every candidate it rejected with the reason.
+
+```bash
+python -m trading_system.cli research show
+python -m trading_system.cli strategy show --symbol NVDA
+python -m trading_system.cli contract show --symbol NVDA
+```
+
 ## Required metadata
 
 Every snapshot carries:

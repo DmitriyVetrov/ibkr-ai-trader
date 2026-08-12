@@ -14,10 +14,43 @@ applicable_hypotheses:
   - A
   - D
 
+allowed_underlying_types:
+  - STOCK
+
 dte_min: 14
 dte_max: 30
-# At-the-money: both legs near 0.50 absolute delta.
+# At-the-money: both legs near 0.50 absolute delta. Recorded for reporting;
+# the strikes are chosen by the ATM policy below, not by delta.
 target_delta: 0.50
+
+# Both legs share one expiration and one strike. That is what makes it a
+# straddle rather than two unrelated positions, and the contract selector
+# enforces it structurally rather than trusting the configuration.
+legs:
+  - action: BUY
+    right: CALL
+    ratio: 1
+    strike_policy: ATM
+  - action: BUY
+    right: PUT
+    ratio: 1
+    strike_policy: ATM
+
+# D (a sharp move around a specific identified event) is one of this
+# strategy's hypotheses, so the expiration is aligned to the event the research
+# report actually named. Where a report names no event — hypothesis A — the
+# selector falls back to the target DTE below and records that it did.
+expiration_policy:
+  rule: EVENT_ALIGNED
+  target_dte: 21
+  event_max_days_after: 14
+
+required_option_fields:
+  - CONTRACT_ID
+  - BID
+  - ASK
+
+require_option_liquidity: true
 
 min_option_price_eur: "0.50"
 max_option_price_eur: "25.00"

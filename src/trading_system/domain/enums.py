@@ -17,11 +17,14 @@ __all__ = [
     "ClaimSupport",
     "CollectionOutcome",
     "ConfidenceLevel",
+    "ContractRejectionReason",
+    "ContractSelectionStatus",
     "CorporateEventType",
     "DataGapStatus",
     "DataQuality",
     "DataQualityIssue",
     "DataType",
+    "DecisionMethod",
     "Direction",
     "DiscrepancyType",
     "EvidenceDirection",
@@ -30,10 +33,12 @@ __all__ = [
     "ExitAction",
     "ExitReason",
     "ExpectedMagnitude",
+    "ExpirationSelectionPolicy",
     "LegAction",
     "MarketDataOrigin",
     "MarketEventType",
     "MarketHypothesis",
+    "OptionDataField",
     "OptionRight",
     "Optionability",
     "OrderSide",
@@ -52,7 +57,10 @@ __all__ = [
     "SelectionMethod",
     "SourceTier",
     "StrategyAction",
+    "StrategySelectionReason",
+    "StrategySelectionStatus",
     "StrategyType",
+    "StrikeSelectionPolicy",
     "ThesisStatus",
     "TimeInForce",
     "TradingMode",
@@ -910,6 +918,237 @@ class ResearchDataGap(StrEnum):
     OPEN_INTEREST_UNAVAILABLE = "OPEN_INTEREST_UNAVAILABLE"
     MARKET_CONTEXT_UNAVAILABLE = "MARKET_CONTEXT_UNAVAILABLE"
     SUSPICIOUS_VALUES_PRESENT = "SUSPICIOUS_VALUES_PRESENT"
+
+
+# ---------------------------------------------------------------------------
+# Strategy selection and contract selection (Milestone 6)
+#
+# Two stages, deliberately separated, with a hard boundary between them:
+# the AI selects a *strategy*, deterministic code selects the *contract*.
+# ---------------------------------------------------------------------------
+@unique
+class StrategySelectionStatus(StrEnum):
+    """Outcome of choosing a strategy for one underlying, and of a whole run.
+
+    ``SUCCESS`` covers both a ``BUY`` and a ``NO_TRADE`` decision: declining to
+    trade is a correct answer, not a failure, and conflating the two would make
+    "the system chose not to trade" indistinguishable from "the system broke".
+
+    The failure states are separate because they demand different responses,
+    and because none of them may be read as a strategy. A run that could report
+    ``AI_UNAVAILABLE`` while still naming a strategy would have turned an outage
+    into a trade proposal.
+    """
+
+    SUCCESS = "SUCCESS"
+    #: No research outlook was available to select from.
+    NO_RESEARCH = "NO_RESEARCH"
+    #: The data a configured strategy requires was not visible at ``as_of``.
+    REQUIRED_DATA_UNAVAILABLE = "REQUIRED_DATA_UNAVAILABLE"
+    AI_UNAVAILABLE = "AI_UNAVAILABLE"
+    #: Malformed, unparseable, or contract-violating model output.
+    AI_INVALID_OUTPUT = "AI_INVALID_OUTPUT"
+    #: Well-formed output the deterministic rules reject — an unknown strategy,
+    #: one ineligible for the hypothesis, or a reason its own research refutes.
+    SEMANTIC_VALIDATION_FAILED = "SEMANTIC_VALIDATION_FAILED"
+    CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
+    #: Researched but not put to a strategy, because the run's configured cost
+    #: ceiling was already reached. "We did not look" is not "we found nothing".
+    SKIPPED_COST_LIMIT = "SKIPPED_COST_LIMIT"
+
+    @property
+    def produced_a_decision(self) -> bool:
+        """Whether a downstream stage may consume this decision."""
+        return self is StrategySelectionStatus.SUCCESS
+
+
+@unique
+class DecisionMethod(StrEnum):
+    """How a strategy decision was reached.
+
+    Recorded on every decision so a stored record can never be mistaken about
+    whether a model was involved. ``DETERMINISTIC_ONLY`` is not a fallback for a
+    failed model call — it names decisions the deterministic layer reached on
+    its own, such as ``NO_TRADE`` when no configured strategy answers the
+    hypothesis at all.
+    """
+
+    AI_SELECTED = "AI_SELECTED"
+    DETERMINISTIC_ONLY = "DETERMINISTIC_ONLY"
+
+
+@unique
+class StrategySelectionReason(StrEnum):
+    """Evidence codes a strategy decision may cite.
+
+    A closed vocabulary, not free text: an agent that could invent a reason
+    could justify anything. Each code is checkable against the research report
+    that was supplied, and :mod:`trading_system.strategies.validation` rejects a
+    decision whose own research contradicts the code it claims.
+
+    Deliberately absent: anything naming a strike, an expiry, a contract, a
+    quantity or an amount of money. Those belong to later stages.
+    """
+
+    #: The chosen strategy declares this hypothesis in its configuration.
+    HYPOTHESIS_MATCH = "HYPOTHESIS_MATCH"
+    DIRECTIONAL_VIEW_SUPPORTED = "DIRECTIONAL_VIEW_SUPPORTED"
+    DIRECTION_UNCERTAIN = "DIRECTION_UNCERTAIN"
+    LARGE_MOVE_EXPECTED = "LARGE_MOVE_EXPECTED"
+    MODERATE_MOVE_EXPECTED = "MODERATE_MOVE_EXPECTED"
+    EVENT_IN_HORIZON = "EVENT_IN_HORIZON"
+    NO_EVENT_IN_HORIZON = "NO_EVENT_IN_HORIZON"
+    HORIZON_COMPATIBLE = "HORIZON_COMPATIBLE"
+    HORIZON_INCOMPATIBLE = "HORIZON_INCOMPATIBLE"
+    CONFIDENCE_SUFFICIENT = "CONFIDENCE_SUFFICIENT"
+    CONFIDENCE_INSUFFICIENT = "CONFIDENCE_INSUFFICIENT"
+    EVIDENCE_SUFFICIENT = "EVIDENCE_SUFFICIENT"
+    EVIDENCE_INSUFFICIENT = "EVIDENCE_INSUFFICIENT"
+    CONTRADICTING_EVIDENCE = "CONTRADICTING_EVIDENCE"
+    DATA_QUALITY_INSUFFICIENT = "DATA_QUALITY_INSUFFICIENT"
+    #: No configured strategy answers this hypothesis. Only ever a NO_TRADE.
+    NO_ELIGIBLE_STRATEGY = "NO_ELIGIBLE_STRATEGY"
+    #: The outlook does not fit any eligible strategy. A judgement, not a fact,
+    #: and therefore never contradicted by the report.
+    RESEARCH_INCOMPATIBLE = "RESEARCH_INCOMPATIBLE"
+
+
+@unique
+class StrikeSelectionPolicy(StrEnum):
+    """How one leg's strike is chosen. Deterministic, never the model's choice.
+
+    Which policy a leg uses comes from ``config/strategies/*.yaml``; the code
+    implements the policies and nothing else. A policy the configuration does
+    not name is not applied, and no policy is inferred from the strategy's name.
+    """
+
+    #: Nearest listed strike to the reference price.
+    ATM = "ATM"
+    #: Nearest listed strike to a configured absolute delta. Requires delta:
+    #: without it the selection is unavailable, never approximated.
+    TARGET_DELTA = "TARGET_DELTA"
+    #: Nearest listed strike to reference x (1 +/- offset), on the side the
+    #: leg's right implies: calls above the reference, puts below it.
+    OTM_PERCENT = "OTM_PERCENT"
+
+
+@unique
+class ExpirationSelectionPolicy(StrEnum):
+    """How the expiration is chosen from the chain. Deterministic.
+
+    ``EVENT_ALIGNED`` may only be requested by a strategy whose configuration
+    says so, and only using an event the research report actually named. An
+    expiration is never inferred from prose.
+    """
+
+    #: The valid expiration with the smallest days-to-expiration.
+    NEAREST_VALID = "NEAREST_VALID"
+    #: The valid expiration closest to a configured target DTE.
+    TARGET_DTE = "TARGET_DTE"
+    #: The first valid expiration on or after the research report's event.
+    EVENT_ALIGNED = "EVENT_ALIGNED"
+
+
+@unique
+class OptionDataField(StrEnum):
+    """A field a strategy may require before a contract can be selected.
+
+    Listed per strategy in configuration. A required field that is absent is a
+    rejection with a named reason — never a value filled in from a model, a
+    memory or an approximation.
+    """
+
+    CONTRACT_ID = "CONTRACT_ID"
+    TRADING_CLASS = "TRADING_CLASS"
+    MULTIPLIER = "MULTIPLIER"
+    BID = "BID"
+    ASK = "ASK"
+    LAST = "LAST"
+    IMPLIED_VOLATILITY = "IMPLIED_VOLATILITY"
+    DELTA = "DELTA"
+    GAMMA = "GAMMA"
+    THETA = "THETA"
+    VEGA = "VEGA"
+    VOLUME = "VOLUME"
+    OPEN_INTEREST = "OPEN_INTEREST"
+
+
+@unique
+class ContractSelectionStatus(StrEnum):
+    """Outcome of selecting contracts for one strategy decision.
+
+    "No contract" is a valid, expected result. The states are distinct because
+    an absent chain, a chain with no expiration in range, and a chain whose
+    quotes never arrived are three different problems with three different
+    fixes, and collapsing them would hide which one occurred.
+    """
+
+    SUCCESS = "SUCCESS"
+    #: The chain was visible but no expiration satisfied the DTE policy.
+    NO_VALID_EXPIRATION = "NO_VALID_EXPIRATION"
+    #: An expiration was chosen but no strike satisfied the strike policy.
+    NO_VALID_STRIKE = "NO_VALID_STRIKE"
+    #: Legs were found but could not be combined into the strategy.
+    NO_VALID_CONTRACT = "NO_VALID_CONTRACT"
+    #: A field the strategy requires — a quote, a delta, an id — was absent.
+    REQUIRED_DATA_UNAVAILABLE = "REQUIRED_DATA_UNAVAILABLE"
+    OPTION_CHAIN_UNAVAILABLE = "OPTION_CHAIN_UNAVAILABLE"
+    #: The stored chain contradicts itself or the underlying it claims.
+    INVALID_CHAIN = "INVALID_CHAIN"
+    #: A record that was not knowable at ``as_of`` reached the selector. A
+    #: correctness bug in storage, never a market outcome.
+    POINT_IN_TIME_ERROR = "POINT_IN_TIME_ERROR"
+    #: The decision named a strategy that is not eligible, or not configured.
+    STRATEGY_NOT_ELIGIBLE = "STRATEGY_NOT_ELIGIBLE"
+    #: The upstream decision was NO_TRADE. Nothing to select, and correctly so.
+    NO_TRADE = "NO_TRADE"
+    CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
+
+    @property
+    def produced_contracts(self) -> bool:
+        """Whether a downstream stage may consume this selection."""
+        return self is ContractSelectionStatus.SUCCESS
+
+
+@unique
+class ContractRejectionReason(StrEnum):
+    """Machine-readable reason a candidate contract was not selected.
+
+    Every rejection carries one, so "why was the 180 call not chosen on 12
+    August" is answerable from the stored record without re-deriving anything.
+    """
+
+    DTE_OUT_OF_RANGE = "DTE_OUT_OF_RANGE"
+    WRONG_RIGHT = "WRONG_RIGHT"
+    WRONG_UNDERLYING = "WRONG_UNDERLYING"
+    WRONG_EXPIRATION = "WRONG_EXPIRATION"
+    MISSING_CONTRACT_ID = "MISSING_CONTRACT_ID"
+    MISSING_STRIKE = "MISSING_STRIKE"
+    MISSING_EXPIRATION = "MISSING_EXPIRATION"
+    MISSING_QUOTE = "MISSING_QUOTE"
+    MISSING_DELTA = "MISSING_DELTA"
+    MISSING_IMPLIED_VOLATILITY = "MISSING_IMPLIED_VOLATILITY"
+    MISSING_REQUIRED_FIELD = "MISSING_REQUIRED_FIELD"
+    INVALID_TRADING_CLASS = "INVALID_TRADING_CLASS"
+    INVALID_MULTIPLIER = "INVALID_MULTIPLIER"
+    #: Option-level liquidity below the strategy's floor, or not established at
+    #: all. Underlying liquidity is never accepted as a substitute.
+    LOW_OPTION_LIQUIDITY = "LOW_OPTION_LIQUIDITY"
+    OPTION_LIQUIDITY_UNKNOWN = "OPTION_LIQUIDITY_UNKNOWN"
+    OPTION_PRICE_OUT_OF_RANGE = "OPTION_PRICE_OUT_OF_RANGE"
+    SPREAD_TOO_WIDE = "SPREAD_TOO_WIDE"
+    IMPLIED_VOLATILITY_OUT_OF_RANGE = "IMPLIED_VOLATILITY_OUT_OF_RANGE"
+    STRIKE_POLICY_NOT_SATISFIED = "STRIKE_POLICY_NOT_SATISFIED"
+    #: The candidate is not part of the chain snapshot the selection used.
+    NOT_IN_CHAIN_SNAPSHOT = "NOT_IN_CHAIN_SNAPSHOT"
+    POINT_IN_TIME_VIOLATION = "POINT_IN_TIME_VIOLATION"
+    QUOTE_NOT_RESEARCH_USABLE = "QUOTE_NOT_RESEARCH_USABLE"
+    QUOTE_STALE = "QUOTE_STALE"
+    EXPIRATION_NOT_A_TRADING_DAY = "EXPIRATION_NOT_A_TRADING_DAY"
+    #: Valid in itself, but another candidate matched the policy better, or the
+    #: legs could not be combined. Not a data fault.
+    INCOMPATIBLE_LEG = "INCOMPATIBLE_LEG"
+    NOT_SELECTED_BY_POLICY = "NOT_SELECTED_BY_POLICY"
 
 
 #: States from which no further transition is possible.

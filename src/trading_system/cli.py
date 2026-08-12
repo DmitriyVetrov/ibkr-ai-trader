@@ -45,6 +45,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from trading_system.data.service import DataService
     from trading_system.domain.enums import DataType
     from trading_system.research.service import ResearchService
+    from trading_system.strategies.service import ContractSelectionService, StrategyService
     from trading_system.universe.service import UniverseSelectionService
 
 __all__ = ["app", "main"]
@@ -95,6 +96,23 @@ research_app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+strategy_app = typer.Typer(
+    help=(
+        "Choose an option strategy for each researched underlying, and inspect "
+        "the decisions. Every command here is read-only with respect to the "
+        "broker and submits zero orders. The agent selects a strategy, never a "
+        "contract."
+    ),
+    no_args_is_help=True,
+)
+contract_app = typer.Typer(
+    help=(
+        "Select concrete option contracts for strategy decisions, and inspect "
+        "the selections. Deterministic: no model is involved. Every command "
+        "here is read-only with respect to the broker and submits zero orders."
+    ),
+    no_args_is_help=True,
+)
 reports_app = typer.Typer(
     help="Generate and inspect reports. (read-only)",
     no_args_is_help=True,
@@ -105,6 +123,8 @@ app.add_typer(test_app, name="test")
 app.add_typer(data_app, name="data")
 app.add_typer(universe_app, name="universe")
 app.add_typer(research_app, name="research")
+app.add_typer(strategy_app, name="strategy")
+app.add_typer(contract_app, name="contract")
 app.add_typer(reports_app, name="reports")
 
 
@@ -614,16 +634,54 @@ def test_workflow(
 def test_strategy_selection(
     ticker: Annotated[str, typer.Option(help="Underlying to evaluate.")],
 ) -> None:
-    """Exercise strategy selection for one underlying. (read-only)"""
-    _not_implemented(f"strategy selection for {ticker}", "Milestone 6 (strategy)")
+    """Show the latest stored strategy decision for one underlying. (read-only)
+
+    Inspection, not execution: it reads what was decided and why. To produce a
+    new decision — which calls a model — use ``strategy run``.
+    """
+    from trading_system.strategies.report import render_decision
+
+    service = _strategy_service()
+    result = service.latest()
+    decision = result.decision(ticker) if result is not None else None
+    if decision is None:
+        console.print(
+            f"[yellow]UNAVAILABLE[/yellow]  no stored strategy decision for "
+            f"{ticker.strip().upper()}. Run 'strategy run' first; this command inspects "
+            f"decisions rather than making one."
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    console.print(render_decision(decision))
+    console.print("\nOrders submitted: 0  (strategy selection has no order path)")
 
 
 @test_app.command("contract-selection")
 def test_contract_selection(
     ticker: Annotated[str, typer.Option(help="Underlying to evaluate.")],
 ) -> None:
-    """Exercise deterministic contract selection. (read-only)"""
-    _not_implemented(f"contract selection for {ticker}", "Milestone 6 (strategy)")
+    """Show the latest stored contract selection for one underlying. (read-only)
+
+    Inspection, not execution. To produce a new selection use
+    ``contract select`` — which is deterministic and consults no model.
+    """
+    from trading_system.strategies.report import render_selection
+
+    service = _contract_service()
+    result = service.latest()
+    selection = result.selection(ticker) if result is not None else None
+    if selection is None:
+        console.print(
+            f"[yellow]UNAVAILABLE[/yellow]  no stored contract selection for "
+            f"{ticker.strip().upper()}. Run 'contract select' first; this command inspects "
+            f"selections rather than making one."
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    console.print(render_selection(selection))
+    console.print("\nOrders submitted: 0  (contract selection has no order path)")
 
 
 @test_app.command("allocation")
@@ -1744,6 +1802,621 @@ def _research_validate_run(run_id: str) -> None:
         _fail(f"{len(problems)} problem(s) found in stored run {result.run_id}")
     console.print(
         f"[green]PASS[/green]  {len(result.reports)} report(s) satisfy the stored-run "
+        f"invariants. No orders were submitted."
+    )
+
+
+# ---------------------------------------------------------------------------
+# strategy
+#
+# Every command here is read-only with respect to the broker. The strategy
+# service constructs no broker, opens no connection and has no order path: it
+# consumes a stored research run and stored data, and writes a decision record.
+# A strategy decision is a proposal, never an order.
+# ---------------------------------------------------------------------------
+def _strategy_service() -> StrategyService:
+    """Build the strategy layer from configuration, or fail with a diagnostic."""
+    from trading_system.strategies.service import StrategyService
+
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        err_console.print(f"[red]CONFIGURATION ERROR[/red]\n{exc}")
+        raise typer.Exit(code=EXIT_ERROR) from exc
+    return StrategyService(settings=settings, config=config)
+
+
+def _contract_service() -> ContractSelectionService:
+    """Build the contract-selection layer, or fail with a diagnostic."""
+    from trading_system.strategies.service import ContractSelectionService
+
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        err_console.print(f"[red]CONFIGURATION ERROR[/red]\n{exc}")
+        raise typer.Exit(code=EXIT_ERROR) from exc
+    return ContractSelectionService(settings=settings, config=config)
+
+
+@strategy_app.command("run")
+def strategy_run_command(
+    run_id: Annotated[
+        str | None,
+        typer.Option(
+            "--run-id",
+            "--research-run-id",
+            help="The research run to act on. Defaults to the most recent.",
+        ),
+    ] = None,
+    as_of: Annotated[
+        str | None,
+        typer.Option("--as-of", help="ISO-8601 instant recorded on the run."),
+    ] = None,
+    symbol: Annotated[
+        list[str] | None,
+        typer.Option("--symbol", help="Restrict to these underlyings. Repeatable."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Run everything but do not persist. Never reaches a broker either way.",
+        ),
+    ] = False,
+) -> None:
+    """Choose a strategy per underlying. (writes decisions; submits no orders)
+
+    Reads a stored research run only. It never re-researches, never connects to
+    a broker and has no reachable order path. ``NO_TRADE`` is a first-class
+    outcome, and a decision is a proposal — no contract is selected here.
+    """
+    from trading_system.domain.enums import StrategySelectionStatus
+    from trading_system.strategies.report import render_strategy_run
+
+    service = _strategy_service()
+    instant = _parse_instant(as_of) if as_of else None
+
+    run = service.run(
+        as_of=instant,
+        dry_run=dry_run,
+        symbols=list(symbol) if symbol else None,
+        research_run_id=run_id,
+    )
+    console.print()
+    console.print(render_strategy_run(run.result, verbose=True))
+
+    if dry_run:
+        console.print(
+            "\n[yellow]DRY RUN[/yellow]  Nothing was persisted. Authoritative history is unchanged."
+        )
+    else:
+        console.print(f"\n[green]Stored[/green] run {run.result.run_id}")
+
+    if run.result.status is not StrategySelectionStatus.SUCCESS:
+        _fail(
+            f"strategy selection ended as {run.result.status.value}; no decision was "
+            f"reached and no downstream stage may consume this run"
+        )
+
+
+@strategy_app.command("show")
+def strategy_show(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="A specific run. Defaults to the most recent."),
+    ] = None,
+    symbol: Annotated[
+        str | None,
+        typer.Option("--symbol", help="Restrict to one underlying."),
+    ] = None,
+) -> None:
+    """Show the latest (or a named) strategy run. (read-only)"""
+    from trading_system.strategies.report import render_decision, render_strategy_run
+
+    service = _strategy_service()
+    result = service.get(run_id) if run_id else service.latest()
+    if result is None:
+        console.print(
+            "[yellow]UNAVAILABLE[/yellow]  "
+            + (
+                f"no strategy run with id {run_id!r}."
+                if run_id
+                else "no strategy run exists yet. Run 'strategy run' first."
+            )
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    if symbol is None:
+        console.print(render_strategy_run(result, verbose=True))
+        return
+
+    decision = result.decision(symbol)
+    if decision is None:
+        console.print(
+            f"[yellow]{symbol.strip().upper()} was not decided in run {result.run_id}.[/yellow]"
+        )
+        raise typer.Exit(code=EXIT_OK)
+    console.print(render_decision(decision))
+
+
+@strategy_app.command("history")
+def strategy_history(
+    symbol: Annotated[
+        str | None,
+        typer.Option("--symbol", help="One underlying's decision history."),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Maximum entries to show.")] = 20,
+) -> None:
+    """Show past strategy runs, or one underlying's decisions. (read-only)
+
+    History is append-only: a decision is never overwritten by a later one, so
+    "what did we decide then, and did it change" stays answerable.
+    """
+    service = _strategy_service()
+
+    if symbol is not None:
+        entries = service.symbol_history(symbol, limit=limit)
+        if not entries:
+            console.print(
+                f"[yellow]UNAVAILABLE[/yellow]  no strategy history for {symbol.strip().upper()}."
+            )
+            raise typer.Exit(code=EXIT_OK)
+        table = Table(
+            title=f"Strategy history — {symbol.strip().upper()}",
+            show_header=True,
+            header_style="bold",
+        )
+        for column in ("Generated", "Run id", "Status", "Action", "Strategy", "Hypothesis"):
+            table.add_column(column)
+        for entry in entries:
+            style = "green" if entry.status == "SUCCESS" else "yellow"
+            table.add_row(
+                entry.generated_at.isoformat(timespec="seconds"),
+                entry.run_id,
+                f"[{style}]{entry.status}[/{style}]",
+                entry.action,
+                entry.strategy or "-",
+                entry.hypothesis or "-",
+            )
+        console.print(table)
+        console.print(f"{len(entries)} decision(s). Nothing here is ever rewritten.")
+        return
+
+    runs = service.history(limit=limit)
+    if not runs:
+        console.print("[yellow]UNAVAILABLE[/yellow]  no strategy runs have been recorded yet.")
+        raise typer.Exit(code=EXIT_OK)
+
+    table = Table(title="Strategy runs", show_header=True, header_style="bold")
+    for column in ("Generated", "Run id", "As of", "Status", "Proposed", "No trade", "Model"):
+        table.add_column(column)
+    for run in runs:
+        style = "green" if run.status == "SUCCESS" else "yellow"
+        table.add_row(
+            run.generated_at.isoformat(timespec="seconds"),
+            run.run_id,
+            run.as_of.isoformat(timespec="seconds"),
+            f"[{style}]{run.status}[/{style}]",
+            str(run.proposed),
+            str(run.no_trade),
+            run.model_name or "-",
+        )
+    console.print(table)
+    console.print(f"{len(runs)} run(s). Nothing here is ever rewritten.")
+
+
+@strategy_app.command("validate")
+def strategy_validate(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="Re-check a stored run instead of the configuration."),
+    ] = None,
+) -> None:
+    """Validate the strategy configuration, or re-check a stored run. (read-only)
+
+    Without ``--run-id`` this prints the registry as it actually resolved —
+    including the hypothesis mapping, which is derived from each strategy's own
+    ``applicable_hypotheses`` rather than declared in a second place. With one,
+    it re-checks the stored run's invariants: that no failed decision carries a
+    strategy, that every proposal names an eligible one, and that no decision
+    smuggled a contract into its rationale.
+    """
+    if run_id is not None:
+        _strategy_validate_run(run_id)
+        return
+
+    service = _strategy_service()
+    settings = _load_settings()
+    config = load_config(settings.config_dir)
+    stage = config.strategy
+
+    console.print("\n[bold]STRATEGY CONFIGURATION[/bold]")
+    console.print(f"Config version : {stage.config_version}")
+    console.print(
+        f"Agent          : {'enabled' if stage.agent.enabled else 'disabled'} "
+        f"({stage.agent.model_provider}/{stage.agent.model_name}, "
+        f"prompt {stage.agent.prompt_version})"
+    )
+    console.print(
+        "Fallback       : [green]fail closed[/green] — no strategy is ever chosen in place "
+        "of an unreachable model"
+    )
+    console.print(
+        f"Risk window    : DTE {config.risk.dte_min}-{config.risk.dte_max}, "
+        f"option price {config.risk.min_option_price_eur}-{config.risk.max_option_price_eur}, "
+        f"spread <= {config.risk.max_bid_ask_spread_pct}%"
+    )
+
+    registry = service.registry
+    table = Table(title="Strategy registry", show_header=True, header_style="bold")
+    for column in ("Strategy", "Version", "Hypotheses", "Legs", "DTE", "Expiration", "Strikes"):
+        table.add_column(column)
+    for specification in registry.all():
+        table.add_row(
+            specification.strategy_id.value + ("" if specification.enabled else " (disabled)"),
+            specification.version,
+            ", ".join(h.value for h in specification.applicable_hypotheses),
+            " + ".join(specification.structure.describe_legs()),
+            f"{specification.dte_min}-{specification.dte_max}",
+            specification.expiration_rule.value,
+            ", ".join(leg.strike_policy.value for leg in specification.legs),
+        )
+    console.print(table)
+
+    mapping = registry.hypothesis_map()
+    console.print("\nHypothesis mapping (derived from each strategy, not declared twice):")
+    for hypothesis, strategies in mapping.items():
+        names = ", ".join(s.value for s in strategies) or "[yellow]NO_TRADE[/yellow]"
+        console.print(f"  {hypothesis.value} -> {names}")
+
+    if stage.agent.enabled and settings.anthropic_api_key is None:
+        console.print(
+            "\n[yellow]ANTHROPIC_API_KEY is not set[/yellow]; every symbol would end as "
+            "AI_UNAVAILABLE."
+        )
+
+    research = service.research()
+    if research is None:
+        console.print(
+            "\n[yellow]No research run exists yet.[/yellow] The strategy stage consumes an "
+            "outlook; run 'research run' first."
+        )
+        raise typer.Exit(code=EXIT_OK)
+    outlooks = [report.symbol for report in research.reports if report.succeeded]
+    console.print(
+        f"\nResearch       : {research.run_id} ({research.status.value}), "
+        f"{len(outlooks)} outlook(s): {', '.join(outlooks) or 'none'}"
+    )
+    console.print("[green]PASS[/green]  Configuration is valid. No orders were submitted.")
+
+
+def _strategy_validate_run(run_id: str) -> None:
+    """Re-check a stored strategy run's own invariants."""
+    from trading_system.domain.enums import StrategyAction, StrategySelectionStatus
+
+    service = _strategy_service()
+    result = service.get(run_id)
+    if result is None:
+        console.print(f"[yellow]UNAVAILABLE[/yellow]  no strategy run with id {run_id!r}.")
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print(f"\n[bold]VALIDATING[/bold] strategy run {result.run_id}")
+    problems: list[str] = []
+    for decision in result.decisions:
+        prefix = decision.symbol
+        if decision.status is not StrategySelectionStatus.SUCCESS:
+            if decision.selected_strategy is not None:
+                problems.append(f"{prefix}: a {decision.status.value} decision names a strategy")
+            continue
+        if decision.action is StrategyAction.BUY:
+            if decision.selected_strategy is None:
+                problems.append(f"{prefix}: a BUY decision names no strategy")
+            elif decision.selected_strategy not in decision.eligible_strategies:
+                problems.append(
+                    f"{prefix}: {decision.selected_strategy.value} was not among the "
+                    f"eligible strategies recorded for the decision"
+                )
+            if not decision.rationale:
+                problems.append(f"{prefix}: a BUY decision carries no rationale")
+        elif decision.selected_strategy is not None:
+            problems.append(f"{prefix}: a NO_TRADE decision names a strategy")
+
+    table = Table(show_header=True, header_style="bold")
+    for column in ("Symbol", "Status", "Action", "Strategy", "Eligible", "Reasons"):
+        table.add_column(column)
+    for decision in sorted(result.decisions, key=lambda d: d.symbol):
+        style = "green" if decision.succeeded else "yellow"
+        table.add_row(
+            decision.symbol,
+            f"[{style}]{decision.status.value}[/{style}]",
+            decision.action.value,
+            decision.selected_strategy.value if decision.selected_strategy else "-",
+            str(len(decision.eligible_strategies)),
+            str(len(decision.reasons)),
+        )
+    console.print(table)
+
+    if problems:
+        for problem in problems:
+            console.print(f"  [red]{problem}[/red]")
+        _fail(f"{len(problems)} problem(s) found in stored run {result.run_id}")
+    console.print(
+        f"[green]PASS[/green]  {len(result.decisions)} decision(s) satisfy the stored-run "
+        f"invariants. No orders were submitted."
+    )
+
+
+# ---------------------------------------------------------------------------
+# contract
+#
+# Deterministic end to end. The contract-selection service constructs no LLM
+# client and no broker: it reads a stored chain through the repository and
+# applies configured policy, so both "no model" and "zero orders" are
+# structural rather than checks performed at the end.
+# ---------------------------------------------------------------------------
+@contract_app.command("select")
+def contract_select_command(
+    run_id: Annotated[
+        str | None,
+        typer.Option(
+            "--run-id",
+            "--strategy-run-id",
+            help="The strategy run to select contracts for. Defaults to the most recent.",
+        ),
+    ] = None,
+    symbol: Annotated[
+        list[str] | None,
+        typer.Option("--symbol", help="Restrict to these underlyings. Repeatable."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Run everything but do not persist."),
+    ] = False,
+) -> None:
+    """Select contracts for a strategy run. (writes selections; submits no orders)
+
+    Deterministic: no model is consulted, not once per selection and not once
+    per strike. There is no ``--as-of`` — the instant comes from each decision,
+    so a selection reconstructs exactly the data that was visible when the
+    strategy was chosen.
+    """
+    from trading_system.domain.enums import ContractSelectionStatus
+    from trading_system.strategies.report import render_contract_run
+
+    service = _contract_service()
+    run = service.select(
+        dry_run=dry_run,
+        strategy_run_id=run_id,
+        symbols=list(symbol) if symbol else None,
+    )
+    console.print()
+    console.print(render_contract_run(run.result, verbose=True))
+
+    if dry_run:
+        console.print(
+            "\n[yellow]DRY RUN[/yellow]  Nothing was persisted. Authoritative history is unchanged."
+        )
+    else:
+        console.print(f"\n[green]Stored[/green] run {run.result.run_id}")
+
+    if run.result.status is not ContractSelectionStatus.SUCCESS:
+        _fail(
+            f"contract selection ended as {run.result.status.value}; no contract was "
+            f"selected. No contract is a valid outcome — nothing approximate is returned."
+        )
+
+
+@contract_app.command("show")
+def contract_show(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="A specific run. Defaults to the most recent."),
+    ] = None,
+    symbol: Annotated[
+        str | None,
+        typer.Option("--symbol", help="Restrict to one underlying."),
+    ] = None,
+) -> None:
+    """Show the latest (or a named) contract selection run. (read-only)"""
+    from trading_system.strategies.report import render_contract_run, render_selection
+
+    service = _contract_service()
+    result = service.get(run_id) if run_id else service.latest()
+    if result is None:
+        console.print(
+            "[yellow]UNAVAILABLE[/yellow]  "
+            + (
+                f"no contract run with id {run_id!r}."
+                if run_id
+                else "no contract selection exists yet. Run 'contract select' first."
+            )
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    if symbol is None:
+        console.print(render_contract_run(result, verbose=True))
+        return
+
+    selection = result.selection(symbol)
+    if selection is None:
+        console.print(
+            f"[yellow]{symbol.strip().upper()} had no selection in run {result.run_id}.[/yellow]"
+        )
+        raise typer.Exit(code=EXIT_OK)
+    console.print(render_selection(selection))
+
+
+@contract_app.command("history")
+def contract_history(
+    symbol: Annotated[
+        str | None,
+        typer.Option("--symbol", help="One underlying's selection history."),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Maximum entries to show.")] = 20,
+) -> None:
+    """Show past contract selections. (read-only)"""
+    service = _contract_service()
+
+    if symbol is not None:
+        entries = service.symbol_history(symbol, limit=limit)
+        if not entries:
+            console.print(
+                f"[yellow]UNAVAILABLE[/yellow]  no contract history for {symbol.strip().upper()}."
+            )
+            raise typer.Exit(code=EXIT_OK)
+        table = Table(
+            title=f"Contract history — {symbol.strip().upper()}",
+            show_header=True,
+            header_style="bold",
+        )
+        for column in ("Generated", "Run id", "Status", "Strategy", "Expiration", "DTE", "Legs"):
+            table.add_column(column)
+        for entry in entries:
+            style = "green" if entry.status == "SUCCESS" else "yellow"
+            table.add_row(
+                entry.generated_at.isoformat(timespec="seconds"),
+                entry.run_id,
+                f"[{style}]{entry.status}[/{style}]",
+                entry.strategy or "-",
+                entry.expiration or "-",
+                str(entry.dte if entry.dte is not None else "-"),
+                str(entry.legs),
+            )
+        console.print(table)
+        console.print(f"{len(entries)} selection(s). Nothing here is ever rewritten.")
+        return
+
+    runs = service.history(limit=limit)
+    if not runs:
+        console.print("[yellow]UNAVAILABLE[/yellow]  no contract runs have been recorded yet.")
+        raise typer.Exit(code=EXIT_OK)
+
+    table = Table(title="Contract runs", show_header=True, header_style="bold")
+    for column in ("Generated", "Run id", "As of", "Status", "Selected", "No contract", "Policy"):
+        table.add_column(column)
+    for run in runs:
+        style = "green" if run.status == "SUCCESS" else "yellow"
+        table.add_row(
+            run.generated_at.isoformat(timespec="seconds"),
+            run.run_id,
+            run.as_of.isoformat(timespec="seconds"),
+            f"[{style}]{run.status}[/{style}]",
+            str(run.selected),
+            str(run.no_contract),
+            run.selection_policy_version or "-",
+        )
+    console.print(table)
+    console.print(f"{len(runs)} run(s). Nothing here is ever rewritten.")
+
+
+@contract_app.command("validate")
+def contract_validate(
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="Re-check a stored run instead of the configuration."),
+    ] = None,
+) -> None:
+    """Validate the contract-selection policy, or re-check a stored run. (read-only)
+
+    Without ``--run-id`` this prints the deterministic policy in force. With
+    one, it re-checks the stored run: that every selected leg carries a broker
+    contract id and a trading class, that multi-leg selections share an
+    expiration, and that no failed selection carries a leg.
+    """
+    if run_id is not None:
+        _contract_validate_run(run_id)
+        return
+
+    settings = _load_settings()
+    config = load_config(settings.config_dir)
+    policy = config.contract_selection
+
+    console.print("\n[bold]CONTRACT SELECTION POLICY[/bold]")
+    console.print(f"Config version : {policy.config_version}")
+    console.print(f"Policy version : {policy.selection_policy_version}")
+    console.print("Model involved : [green]none[/green] — selection is deterministic")
+
+    table = Table(title="Policy", show_header=True, header_style="bold")
+    table.add_column("Setting")
+    table.add_column("Value")
+    for name, value in (
+        ("expiration rule (default)", policy.expiration.rule.value),
+        ("target DTE (default)", str(policy.expiration.target_dte)),
+        ("event alignment window (days)", str(policy.expiration.event_max_days_after)),
+        ("require trading day", str(policy.expiration.require_trading_day)),
+        ("max strike distance (%)", str(policy.strike.max_strike_distance_pct)),
+        (
+            "reference price fields",
+            ", ".join(field.value for field in policy.strike.reference_price_fields),
+        ),
+        ("option underlying price allowed", str(policy.strike.allow_option_underlying_price)),
+        ("require quote", str(policy.quotes.require_quote)),
+        ("max quote age (s)", str(policy.quotes.max_quote_age_seconds)),
+        ("unknown option liquidity", policy.quotes.unknown_liquidity_policy.value),
+        ("max candidates", str(policy.limits.max_candidates)),
+        ("rejections recorded", str(policy.limits.max_rejected_recorded)),
+    ):
+        table.add_row(name, value)
+    console.print(table)
+    console.print(
+        "\nUnderlying liquidity is never accepted as evidence of option liquidity, and a "
+        "missing measurement is never read as zero."
+    )
+    console.print("[green]PASS[/green]  Policy is valid. No orders were submitted.")
+
+
+def _contract_validate_run(run_id: str) -> None:
+    """Re-check a stored contract run's own invariants."""
+    service = _contract_service()
+    result = service.get(run_id)
+    if result is None:
+        console.print(f"[yellow]UNAVAILABLE[/yellow]  no contract run with id {run_id!r}.")
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print(f"\n[bold]VALIDATING[/bold] contract run {result.run_id}")
+    problems: list[str] = []
+    for selection in result.selections:
+        prefix = selection.symbol
+        if not selection.succeeded:
+            if selection.legs:
+                problems.append(
+                    f"{prefix}: a {selection.selection_status.value} selection carries legs"
+                )
+            continue
+        for leg in selection.legs:
+            if not leg.trading_class.strip():
+                problems.append(f"{prefix}: leg {leg.leg_index} has no trading class")
+            if leg.underlying != selection.symbol:
+                problems.append(f"{prefix}: leg {leg.leg_index} names another underlying")
+        if len({leg.expiration for leg in selection.legs}) > 1:
+            problems.append(f"{prefix}: legs resolved to different expirations")
+
+    table = Table(show_header=True, header_style="bold")
+    for column in ("Symbol", "Status", "Strategy", "Expiration", "DTE", "Legs", "Rejected"):
+        table.add_column(column)
+    for selection in sorted(result.selections, key=lambda s: s.symbol):
+        style = "green" if selection.succeeded else "yellow"
+        table.add_row(
+            selection.symbol,
+            f"[{style}]{selection.selection_status.value}[/{style}]",
+            selection.strategy.value if selection.strategy else "-",
+            selection.expiration.isoformat() if selection.expiration else "-",
+            str(selection.dte if selection.dte is not None else "-"),
+            str(len(selection.legs)),
+            str(len(selection.rejected_candidates)),
+        )
+    console.print(table)
+
+    if problems:
+        for problem in problems:
+            console.print(f"  [red]{problem}[/red]")
+        _fail(f"{len(problems)} problem(s) found in stored run {result.run_id}")
+    console.print(
+        f"[green]PASS[/green]  {len(result.selections)} selection(s) satisfy the stored-run "
         f"invariants. No orders were submitted."
     )
 

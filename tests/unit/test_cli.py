@@ -162,8 +162,6 @@ def test_config_validates_and_prints() -> None:
         ["test", "e2e-dry-run"],
         ["test", "e2e-paper"],
         ["test", "workflow", "research"],
-        ["test", "strategy-selection", "--ticker", "NVDA"],
-        ["test", "contract-selection", "--ticker", "NVDA"],
         # The `data` command group and `run data-collection` landed in
         # Milestone 3; they are covered by tests/data/test_data_cli.py.
         # The `universe` group and `run universe` landed in Milestone 4; they
@@ -173,6 +171,8 @@ def test_config_validates_and_prints() -> None:
         # are covered by tests/research/test_cli.py, which does the same. They
         # must NOT be invoked here: they now reach the real service, and a
         # non-dry run would write into the repository's own data/research/.
+        # The `strategy` and `contract` groups landed in Milestone 6 and are
+        # covered by tests/strategy/test_cli.py, for the same reason.
         ["reports", "daily"],
         ["reports", "performance"],
     ],
@@ -225,9 +225,32 @@ def test_milestone_4_universe_commands_are_implemented() -> None:
 
 
 @pytest.mark.unit
+def test_milestone_6_strategy_commands_are_implemented() -> None:
+    """These exited 3 before Milestone 6 and must not regress to a stub.
+
+    Only read-only commands are invoked here. `strategy run` and
+    `contract select` write run records, so they are exercised in
+    tests/strategy/test_cli.py against temporary stores — a unit test that
+    wrote into the repository's own data/ would be a bug in the test.
+    """
+    for args in (
+        ["strategy", "--help"],
+        ["contract", "--help"],
+        ["contract", "validate"],
+        ["test", "strategy-selection", "--ticker", "NVDA"],
+        ["test", "contract-selection", "--ticker", "NVDA"],
+    ):
+        result = runner.invoke(app, args)
+        assert result.exit_code == EXIT_OK, f"{args} -> {result.output}"
+        assert "NOT IMPLEMENTED" not in _text(result)
+
+
+@pytest.mark.unit
 def test_no_cli_test_leaves_a_universe_run_in_the_repository(repo_root) -> None:
     """A stray artifact means some test invoked a state-writing command for real."""
     assert not (repo_root / "data" / "universe" / "history.jsonl").exists()
+    assert not (repo_root / "data" / "strategy" / "history.jsonl").exists()
+    assert not (repo_root / "data" / "contracts" / "history.jsonl").exists()
 
 
 @pytest.mark.unit

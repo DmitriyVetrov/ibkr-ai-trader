@@ -666,6 +666,161 @@ def strategy_decision(versions: SystemVersions) -> StrategyDecision:
 
 
 @pytest.fixture
+def strategy_decision_record(versions: SystemVersions):
+    """A complete Milestone 6 decision record, feeding the contract stage.
+
+    Built by hand rather than by running the service: a contract test asserts
+    that the *artifact shape* crosses the boundary correctly, and should fail
+    for a schema change rather than for an unrelated pipeline change.
+    """
+    from trading_system.domain.enums import (
+        ConfidenceLevel,
+        DecisionMethod,
+        StrategySelectionReason,
+        StrategySelectionStatus,
+    )
+    from trading_system.strategies.models import (
+        DataReadiness,
+        StrategyAgentMetadata,
+        StrategyDecisionRecord,
+    )
+
+    return StrategyDecisionRecord(
+        decision_id="strategy-NVDA-001",
+        run_id="strategy-run-001",
+        symbol="NVDA",
+        as_of=FIXED_NOW,
+        generated_at=FIXED_NOW,
+        status=StrategySelectionStatus.SUCCESS,
+        action=StrategyAction.BUY,
+        selected_strategy=StrategyType.LONG_CALL,
+        strategy_version="1.0.0",
+        decision_method=DecisionMethod.AI_SELECTED,
+        confidence=ConfidenceLevel.MEDIUM,
+        reasons=[
+            StrategySelectionReason.HYPOTHESIS_MATCH,
+            StrategySelectionReason.DIRECTIONAL_VIEW_SUPPORTED,
+        ],
+        rationale="Hypothesis B over a 21-day horizon is what a long call expresses.",
+        hypothesis=MarketHypothesis.B,
+        research_confidence=ConfidenceLevel.MEDIUM,
+        research_horizon_days=21,
+        research_report_id="research-001",
+        research_run_id="research-run-001",
+        universe_run_id="universe-run-001",
+        eligible_strategies=[StrategyType.LONG_CALL],
+        data_readiness=DataReadiness(
+            option_chain_available=True,
+            option_quotes_available=True,
+            underlying_quote_available=True,
+            expirations_visible=4,
+            strikes_visible=7,
+            chain_snapshot_id="snap-chain-nvda",
+            quote_snapshot_id="snap-option-quotes-nvda",
+            underlying_snapshot_id="snap-quote-nvda",
+        ),
+        input_snapshot_ids=["snap-chain-nvda", "snap-option-quotes-nvda", "snap-quote-nvda"],
+        agent_metadata=StrategyAgentMetadata(
+            model_provider="ANTHROPIC",
+            model_name="claude-opus-5",
+            prompt_version="1.0.0",
+            prompt_fingerprint="b" * 32,
+            agent_version="1.0.0+bbbbbbbbbbbb",
+            generated_at=FIXED_NOW,
+        ),
+        versions=versions,
+    )
+
+
+@pytest.fixture
+def contract_selection_result(versions: SystemVersions, strategy_decision_record):
+    """A complete Milestone 6 contract selection, feeding the purchase card."""
+    from trading_system.domain.enums import (
+        ContractSelectionStatus,
+        ExpirationSelectionPolicy,
+        StrikeSelectionPolicy,
+    )
+    from trading_system.strategies.models import (
+        ContractCostEstimate,
+        ContractSelectionResult,
+        RejectedContract,
+        SelectedLeg,
+    )
+
+    return ContractSelectionResult(
+        selection_id="contract-NVDA-001",
+        run_id="contract-run-001",
+        symbol="NVDA",
+        as_of=FIXED_NOW,
+        generated_at=FIXED_NOW,
+        selection_status=ContractSelectionStatus.SUCCESS,
+        strategy=StrategyType.LONG_CALL,
+        strategy_version="1.0.0",
+        strategy_run_id="strategy-run-001",
+        strategy_decision_id=strategy_decision_record.decision_id,
+        research_report_id="research-001",
+        legs=[
+            SelectedLeg(
+                leg_index=0,
+                action=LegAction.BUY,
+                right=OptionRight.CALL,
+                underlying="NVDA",
+                expiration=date(2026, 8, 31),
+                dte=21,
+                strike=Decimal("180.00"),
+                multiplier=100,
+                trading_class="NVDA",
+                contract_id=771234567,
+                exchange="SMART",
+                currency="USD",
+                strike_policy=StrikeSelectionPolicy.TARGET_DELTA,
+                reference_price=Decimal("180.25"),
+                selection_reason="TARGET_DELTA: delta 0.60 is closest to the configured target",
+                bid=Decimal("5.95"),
+                ask=Decimal("6.05"),
+                last=Decimal("6.00"),
+                implied_volatility=Decimal("0.35"),
+                delta=Decimal("0.60"),
+                volume=Decimal("1200"),
+                open_interest=Decimal("8400"),
+                chain_snapshot_id="snap-chain-nvda",
+                quote_snapshot_id="snap-option-quotes-nvda",
+                quote_as_of=FIXED_NOW,
+            )
+        ],
+        expiration=date(2026, 8, 31),
+        dte=21,
+        expiration_policy=ExpirationSelectionPolicy.TARGET_DTE,
+        expiration_reason="expiration 2026-08-31 (DTE 21) chosen by TARGET_DTE",
+        reference_price=Decimal("180.25"),
+        reference_price_field="LAST",
+        cost=ContractCostEstimate(
+            available=True,
+            currency="USD",
+            estimated_debit=Decimal("605.00"),
+            estimated_mid_debit=Decimal("600.00"),
+            max_leg_spread_pct=1.67,
+        ),
+        selection_policy_version="1.0.0",
+        input_snapshot_ids=["snap-chain-nvda", "snap-option-quotes-nvda", "snap-quote-nvda"],
+        reasons=["expiration 2026-08-31 (DTE 21) chosen by TARGET_DTE"],
+        rejected_candidates=[
+            RejectedContract(
+                reason="NOT_SELECTED_BY_POLICY",
+                leg_index=0,
+                contract_id=771234568,
+                expiration=date(2026, 8, 31),
+                strike=Decimal("185.00"),
+                right=OptionRight.CALL,
+                detail="valid, but another strike matched the policy more closely",
+            )
+        ],
+        candidates_considered=14,
+        versions=versions,
+    )
+
+
+@pytest.fixture
 def contract_selection() -> ContractSelection:
     return ContractSelection(
         underlying="NVDA",

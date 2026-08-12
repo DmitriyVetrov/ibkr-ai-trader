@@ -199,7 +199,24 @@ def test_strategy_widening_the_risk_dte_window_is_rejected(tmp_config_dir: Path)
     call = tmp_config_dir / "strategies" / "long_call.yaml"
     call.write_text(call.read_text(encoding="utf-8").replace("dte_max: 30", "dte_max: 45"))
 
-    with pytest.raises(ConfigError, match="outside the risk limit"):
+    with pytest.raises(ConfigError, match="widens a global risk limit"):
+        load_config(tmp_config_dir)
+
+
+@pytest.mark.unit
+def test_strategy_widening_any_other_risk_limit_is_rejected(tmp_config_dir: Path) -> None:
+    """The rule is about which layer owns a limit, not about DTE specifically.
+
+    A strategy file that could lower the open-interest floor would let a
+    strategy specification overrule the risk policy — the inversion the whole
+    architecture exists to prevent.
+    """
+    call = tmp_config_dir / "strategies" / "long_call.yaml"
+    call.write_text(
+        call.read_text(encoding="utf-8").replace("min_open_interest: 500", "min_open_interest: 1")
+    )
+
+    with pytest.raises(ConfigError, match="min_open_interest"):
         load_config(tmp_config_dir)
 
 

@@ -16,9 +16,41 @@ description: >-
 applicable_hypotheses:
   - B
 
+# Instrument classes this strategy may be written on. ETFs are reported as
+# STOCK by IBKR, so SPY and AAPL are the same security type here.
+allowed_underlying_types:
+  - STOCK
+
 dte_min: 14
 dte_max: 30
 target_delta: 0.60
+
+# The legs, as templates. No strike and no expiry appear here: those are what
+# the deterministic contract selector resolves against a real chain. The
+# structure (one long call) is also asserted in code, so a configuration cannot
+# quietly turn this into a spread.
+legs:
+  - action: BUY
+    right: CALL
+    ratio: 1
+    # Inherits target_delta above. The selector needs a real delta on the
+    # candidate; without one the selection is unavailable, never approximated.
+    strike_policy: TARGET_DELTA
+
+expiration_policy:
+  rule: TARGET_DTE
+  target_dte: 21
+
+# Fields a candidate must actually carry. A missing one is a named rejection.
+required_option_fields:
+  - CONTRACT_ID
+  - BID
+  - ASK
+  - DELTA
+
+# Option-level liquidity must be established. Underlying share volume is not
+# evidence that this contract has a market.
+require_option_liquidity: true
 
 min_option_price_eur: "0.50"
 max_option_price_eur: "25.00"

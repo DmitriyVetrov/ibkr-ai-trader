@@ -1,0 +1,80 @@
+# Strategy selection policy (Milestone 6).
+#
+# How the strategy *stage* behaves. What each strategy *is* lives in
+# config/strategies/*.yaml — this file never names a strategy, and the mapping
+# from a research hypothesis to the strategies that may answer it is derived
+# from each strategy's own `applicable_hypotheses`. There is exactly one place
+# that mapping is written down.
+#
+# Nothing here decides a contract, a quantity or an amount of money. The agent
+# this file configures answers one question: which configured strategy best
+# matches this research hypothesis, or none.
+config_version: "2026.08.12-1"
+
+# ---------------------------------------------------------------------------
+# Deterministic gates, applied before the agent is consulted.
+#
+# Each one produces NO_TRADE without a model call. Spending a request to be
+# told "there is not enough to go on" is waste, and an agent handed an
+# inadequate outlook tends to fill the gap rather than decline.
+#
+# Note what is NOT configured here: a hypothesis-to-strategy table. Hypothesis
+# E maps to NO_TRADE because no strategy file lists E in applicable_hypotheses,
+# not because a second list says so.
+# ---------------------------------------------------------------------------
+eligibility:
+  # LOW admits every outlook and leaves the judgement to the agent, which can
+  # still answer NO_TRADE and say why. Raise it to refuse low-confidence
+  # research deterministically.
+  min_confidence: LOW
+
+  # The research report's own market data must have been research-usable.
+  require_research_usable: true
+
+  # An underlying with no option chain visible at the research instant cannot
+  # become an option trade, whatever the outlook says.
+  require_option_chain: true
+
+  min_evidence_items: 1
+
+  # The research horizon must overlap the strategy's DTE window. An outlook
+  # over four weeks is not expressible by a contract that expires in two.
+  require_horizon_overlap: true
+
+# ---------------------------------------------------------------------------
+# Cost control. One model call per underlying, never one per strategy and
+# never one per contract.
+# ---------------------------------------------------------------------------
+limits:
+  # Underlyings put to the agent in one run. Researched assets beyond this are
+  # recorded as SKIPPED_COST_LIMIT — "we did not look" is not "we found
+  # nothing".
+  max_symbols_per_run: 10
+  # Hard ceiling on the serialised input handed to the model. Exceeding it
+  # fails the symbol rather than silently sending a truncated payload.
+  max_input_characters: 60000
+
+# ---------------------------------------------------------------------------
+# The agent.
+#
+# There is deliberately no deterministic fallback, exactly as for research: a
+# strategy this layer chose in place of an unreachable model would be recorded
+# as the model's judgement. An unavailable model ends the symbol as
+# AI_UNAVAILABLE with no strategy and no trade.
+#
+# No secret belongs here. ANTHROPIC_API_KEY comes from the environment.
+# ---------------------------------------------------------------------------
+agent:
+  enabled: true
+  provider: ANTHROPIC
+  model: claude-opus-5
+  # Bumped whenever the prompt changes in a way that could alter a decision.
+  # Stamped into every stored decision, so a past choice traces to the exact
+  # instructions that produced it.
+  prompt_version: "1.0.0"
+  timeout_seconds: 120.0
+  max_output_tokens: 6000
+  # low | medium | high | xhigh | max. Matching an already-classified
+  # hypothesis to a short list of pre-validated strategies is a narrower task
+  # than forming the hypothesis was.
+  effort: medium
