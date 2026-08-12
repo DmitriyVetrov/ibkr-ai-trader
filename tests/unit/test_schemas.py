@@ -56,6 +56,15 @@ REQUIRED_SCHEMAS = (
     "allocation_run",
     "order_intent",
     "execution_result",
+    # Milestone 8 adds the three execution boundaries. `execution_result` above
+    # stays the narrow Milestone 1 contract; `execution_record` is the audit
+    # artifact that projects onto it, exactly as `market_research_report` does
+    # for `research_report`. `execution_event` is the append-only history a
+    # record is folded from, and `execution_run` the record of one run.
+    "execution_request",
+    "execution_record",
+    "execution_event",
+    "execution_run",
     "position_snapshot",
     "exit_decision",
     "trade_snapshot",

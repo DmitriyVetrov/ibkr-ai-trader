@@ -149,11 +149,15 @@ class Broker(ABC):
 
     @property
     def orders_submitted(self) -> int:
-        """How many orders this broker has actually submitted.
+        """How many orders this broker has *attempted* to submit.
 
         Read-only diagnostics assert this is zero (specification section 30).
         The counter lives on the base class and is incremented in exactly one
         place, so a subclass cannot submit an order without it being counted.
+
+        "Attempted" rather than "succeeded" is the load-bearing word, and the
+        increment happens *before* the submission for that reason — see
+        :meth:`place_order`.
         """
         return self._orders_submitted
 
@@ -229,14 +233,29 @@ class Broker(ABC):
         deterministic contract selector in Milestone 6.
         """
 
-    # --- mutation (blocked in Milestone 2) ---------------------------------
+    # --- mutation ----------------------------------------------------------
+    #
+    # The only way an order leaves this system. Reaching it requires a broker
+    # that was deliberately constructed writable, which only
+    # ``broker.factory.build_execution_broker`` does — ``build_broker`` always
+    # returns a read-only connection, so the diagnostics, the data layer and
+    # every upstream stage hold a broker that refuses here regardless of what
+    # they ask for.
     @final
     def place_order(self, intent: OrderIntent) -> ExecutionResult:
-        """Submit an order. Blocked in Milestone 2.
+        """Submit an order.
 
         Final by design: the read-only check and the submitted-order counter
         must not be bypassable by a subclass. Implementations override
-        :meth:`_submit_order` instead.
+        :meth:`_submit_order` instead. Milestone 8 supplies those
+        implementations; do not un-final this to make execution "easier".
+
+        The counter is incremented **before** the submission, and that ordering
+        is a safety property rather than a detail. If ``_submit_order`` raises —
+        a client timeout, a dropped socket — the order may already have reached
+        the broker. Counting only successes would let exactly that case report
+        zero submitted orders, which is the one circumstance in which a caller
+        must *not* believe nothing was sent. An attempt counts.
         """
         if self._read_only:
             # Deliberately does not touch ``intent``: the refusal must hold even
@@ -246,13 +265,17 @@ class Broker(ABC):
                 f"{self.name} is open in read-only mode; refusing to submit an "
                 f"order. No order was sent."
             )
-        result = self._submit_order(intent)
         self._orders_submitted += 1
-        return result
+        return self._submit_order(intent)
 
     @final
     def cancel_order(self, broker_order_id: str) -> BrokerOrder:
-        """Cancel a live order. Blocked in Milestone 2."""
+        """Cancel a live order.
+
+        Narrow by design (brief section 37): cancellation exists so a submitted
+        order's lifecycle can be closed safely, not so a strategy can manage
+        exits. Exit policy is Milestone 9.
+        """
         if self._read_only:
             raise ReadOnlyBrokerError(
                 f"{self.name} is open in read-only mode; refusing to cancel {broker_order_id}."
@@ -260,11 +283,16 @@ class Broker(ABC):
         return self._cancel_order(broker_order_id)
 
     def _submit_order(self, intent: OrderIntent) -> ExecutionResult:
-        """Hook for Milestone 8. Reports NOT_IMPLEMENTED until then."""
+        """Submission hook. Brokers that can trade override this.
+
+        The default reports ``NOT_IMPLEMENTED`` rather than fabricating a fill,
+        so a broker that has no execution path says so instead of appearing to
+        work.
+        """
         raise OrderSubmissionNotImplementedError(self.name)
 
     def _cancel_order(self, broker_order_id: str) -> BrokerOrder:
-        """Hook for Milestone 8. Reports NOT_IMPLEMENTED until then."""
+        """Cancellation hook. Brokers that can trade override this."""
         raise OrderSubmissionNotImplementedError(self.name)
 
     # --- context manager ---------------------------------------------------

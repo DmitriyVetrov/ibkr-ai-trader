@@ -35,6 +35,10 @@ __all__ = [
     "EvidenceDirection",
     "EvidenceKind",
     "EvidenceStance",
+    "ExecutionEventType",
+    "ExecutionReasonCode",
+    "ExecutionRunStatus",
+    "ExecutionState",
     "ExitAction",
     "ExitReason",
     "ExpectedMagnitude",
@@ -1391,6 +1395,224 @@ class AllocationReason(StrEnum):
     LIMITED_BY_BUYING_POWER = "LIMITED_BY_BUYING_POWER"
 
 
+# ---------------------------------------------------------------------------
+# Milestone 8 — execution
+#
+# The vocabulary of the first stage allowed to submit an order. Two
+# distinctions are load-bearing here and both have tests:
+#
+# * a broker *acknowledgement* is not a *fill*. ``SUBMITTED`` says IBKR
+#   accepted the order; only an execution report may produce ``FILLED`` or
+#   ``PARTIALLY_FILLED``;
+# * "we did not send it" and "we do not know whether we sent it" are different
+#   facts. ``FAILED`` is the first, ``UNKNOWN`` the second, and only the first
+#   is safe to act on.
+# ---------------------------------------------------------------------------
+@unique
+class ExecutionState(StrEnum):
+    """Lifecycle of one execution request.
+
+    Distinct from :class:`OrderStatus`, which mirrors what the broker says
+    about an order. This is what *we* know about a submission attempt, and it
+    has states a broker has no opinion about: an order we never sent, and an
+    order we may or may not have sent.
+
+    The legal transitions live in
+    :mod:`trading_system.execution.state_machine`, not here.
+    """
+
+    #: The request exists. Nothing has been validated and nothing sent.
+    CREATED = "CREATED"
+    #: Every deterministic precondition passed. Still nothing sent.
+    VALIDATED = "VALIDATED"
+    #: Recorded immediately *before* the broker call, so a process that dies
+    #: mid-submission leaves evidence that a submission may be in flight.
+    SUBMISSION_PENDING = "SUBMISSION_PENDING"
+    #: The broker acknowledged the order. This is **not** a fill.
+    SUBMITTED = "SUBMITTED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    #: A cancellation was requested and the broker has not confirmed it. A
+    #: cancel can lose the race with a fill, so this is not a terminal state.
+    CANCEL_PENDING = "CANCEL_PENDING"
+    CANCELLED = "CANCELLED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+    #: The submission's outcome is genuinely unknown — typically a client
+    #: timeout after the order may already have reached the broker. Never
+    #: treated as "safe to retry"; it is resolved by looking at the broker,
+    #: never by sending a second order.
+    UNKNOWN = "UNKNOWN"
+    #: The attempt provably did not reach the broker, or was refused before
+    #: any submission was made.
+    FAILED = "FAILED"
+
+
+@unique
+class ExecutionEventType(StrEnum):
+    """One observation appended to an execution's history.
+
+    History is append-only: a later fill never edits an earlier record, it adds
+    an event. The current state is derived from the events, so "what did we
+    know, and when" survives however the record is later summarised.
+    """
+
+    EXECUTION_CREATED = "EXECUTION_CREATED"
+    EXECUTION_VALIDATED = "EXECUTION_VALIDATED"
+    EXECUTION_SUBMISSION_PENDING = "EXECUTION_SUBMISSION_PENDING"
+    EXECUTION_SUBMITTED = "EXECUTION_SUBMITTED"
+    EXECUTION_PARTIAL_FILL = "EXECUTION_PARTIAL_FILL"
+    EXECUTION_FILLED = "EXECUTION_FILLED"
+    EXECUTION_CANCEL_REQUESTED = "EXECUTION_CANCEL_REQUESTED"
+    EXECUTION_CANCELLED = "EXECUTION_CANCELLED"
+    EXECUTION_REJECTED = "EXECUTION_REJECTED"
+    EXECUTION_EXPIRED = "EXECUTION_EXPIRED"
+    EXECUTION_FAILED = "EXECUTION_FAILED"
+    #: The broker's answer is unknown. Recorded rather than assumed either way.
+    EXECUTION_STATE_UNKNOWN = "EXECUTION_STATE_UNKNOWN"
+    #: A broker state was observed without changing our state — a poll that
+    #: confirmed what we already recorded. Kept so an audit shows we looked.
+    EXECUTION_OBSERVED = "EXECUTION_OBSERVED"
+
+
+@unique
+class ExecutionReasonCode(StrEnum):
+    """Machine-readable reason for an execution outcome.
+
+    Deliberately separate from :class:`RiskReasonCode`: that vocabulary answers
+    *may we trade this?* and is owned by Milestone 7. This one answers *what
+    happened when we tried to send it?* — a question the risk engine has no
+    opinion about. Codes that look similar across the two mean different
+    things: ``CURRENCY_MISMATCH`` there refused to size a position, here it
+    refuses to place an order for one that was somehow sized anyway.
+    """
+
+    #: The submission was accepted by the broker.
+    OK = "OK"
+
+    # --- authorisation -----------------------------------------------------
+    #: The allocation's outcome is not APPROVED. REJECTED, NO_TRADE and
+    #: ALREADY_ALLOCATED are all inexecutable, and none of them is a near miss.
+    ALLOCATION_NOT_APPROVED = "ALLOCATION_NOT_APPROVED"
+    #: No deliberate execution authorisation accompanied the request. An
+    #: allocation id alone never means "send it".
+    EXECUTION_NOT_AUTHORIZED = "EXECUTION_NOT_AUTHORIZED"
+    #: Execution submission is switched off in configuration.
+    EXECUTION_DISABLED = "EXECUTION_DISABLED"
+    #: The allocation was produced by a dry run and is diagnostic, not an
+    #: authorisation.
+    ALLOCATION_IS_DRY_RUN = "ALLOCATION_IS_DRY_RUN"
+
+    # --- identity and idempotency ------------------------------------------
+    #: This exact execution identity already reached, or may have reached, the
+    #: broker. Never a reason to send a second order.
+    ALREADY_SUBMITTED = "ALREADY_SUBMITTED"
+    #: We sent something and never learned whether it arrived. Fail closed:
+    #: resolve by looking at the broker, never by retrying.
+    SUBMISSION_UNCERTAIN = "SUBMISSION_UNCERTAIN"
+
+    # --- broker ------------------------------------------------------------
+    BROKER_TIMEOUT = "BROKER_TIMEOUT"
+    BROKER_DISCONNECTED = "BROKER_DISCONNECTED"
+    BROKER_REJECTED = "BROKER_REJECTED"
+    #: The broker answered, but with a state this system does not recognise.
+    UNKNOWN_BROKER_STATE = "UNKNOWN_BROKER_STATE"
+    #: The broker acknowledged an order without an identifier, so it cannot be
+    #: tracked or cancelled. Ambiguous, and treated as such.
+    BROKER_ORDER_ID_MISSING = "BROKER_ORDER_ID_MISSING"
+    #: The connected session is not demonstrably the expected paper account.
+    PAPER_ACCOUNT_MISMATCH = "PAPER_ACCOUNT_MISMATCH"
+    #: A read-only broker cannot submit. Structural, not incidental.
+    BROKER_READ_ONLY = "BROKER_READ_ONLY"
+
+    # --- the contract ------------------------------------------------------
+    #: A leg lacks the broker contract id chosen upstream. Never re-derived
+    #: from symbol, strike and expiration: an invented contract id is an order
+    #: for something nobody selected.
+    CONTRACT_ID_MISSING = "CONTRACT_ID_MISSING"
+    #: The contract identity is structurally incomplete or self-contradictory.
+    CONTRACT_INVALID = "CONTRACT_INVALID"
+    #: No multiplier on the selected contract. Never assumed to be 100.
+    MULTIPLIER_MISSING = "MULTIPLIER_MISSING"
+
+    # --- the order ---------------------------------------------------------
+    INVALID_QUANTITY = "INVALID_QUANTITY"
+    INVALID_PRICE = "INVALID_PRICE"
+    #: No usable reference price on the authorisation, so no limit price can be
+    #: derived from one. Never conjured from a market we did not read.
+    PRICE_UNAVAILABLE = "PRICE_UNAVAILABLE"
+    ORDER_BUILD_FAILED = "ORDER_BUILD_FAILED"
+    ORDER_TYPE_NOT_PERMITTED = "ORDER_TYPE_NOT_PERMITTED"
+    #: A multi-leg structure the execution layer cannot represent as one order.
+    #: Refused rather than approximated with independent single-leg orders.
+    MULTI_LEG_UNSUPPORTED = "MULTI_LEG_UNSUPPORTED"
+    #: The structure implies a short or uncovered leg, which the shipped
+    #: strategy vocabulary does not authorise.
+    SHORT_LEG_NOT_SUPPORTED = "SHORT_LEG_NOT_SUPPORTED"
+
+    # --- time and price validity -------------------------------------------
+    #: The authorisation is older than the configured execution window. Not
+    #: silently extended; a changed trade needs a new authorisation.
+    EXECUTION_WINDOW_EXPIRED = "EXECUTION_WINDOW_EXPIRED"
+    #: The price the authorisation rests on is older than policy permits.
+    PRICE_REFERENCE_STALE = "PRICE_REFERENCE_STALE"
+    #: An observed price differs from the authorisation's reference by more
+    #: than policy permits. Execution does not chase the market.
+    PRICE_DRIFT = "PRICE_DRIFT"
+    #: A timestamp that could not have been known at the execution instant
+    #: reached the engine. A correctness bug, never a market outcome.
+    POINT_IN_TIME_ERROR = "POINT_IN_TIME_ERROR"
+    MARKET_CLOSED = "MARKET_CLOSED"
+
+    # --- money -------------------------------------------------------------
+    #: The contract is not quoted in the campaign currency and no deterministic
+    #: FX mechanism exists. Milestone 7's refusal, preserved rather than undone.
+    CURRENCY_MISMATCH = "CURRENCY_MISMATCH"
+
+    # --- mode --------------------------------------------------------------
+    PAPER_MODE_REQUIRED = "PAPER_MODE_REQUIRED"
+    LIVE_GUARD_FAILED = "LIVE_GUARD_FAILED"
+    TRADING_MODE_NOT_PERMITTED = "TRADING_MODE_NOT_PERMITTED"
+
+    # --- provenance and configuration --------------------------------------
+    #: An upstream artifact the purchase card is built from could not be read.
+    #: "We could not look" is deliberately distinct from "we declined".
+    PROVENANCE_UNAVAILABLE = "PROVENANCE_UNAVAILABLE"
+    EXECUTION_CONFIGURATION_ERROR = "EXECUTION_CONFIGURATION_ERROR"
+
+    # --- cancellation ------------------------------------------------------
+    CANCEL_FAILED = "CANCEL_FAILED"
+    #: There is nothing live to cancel.
+    NOT_CANCELLABLE = "NOT_CANCELLABLE"
+
+    #: The request was built and validated but deliberately not sent.
+    DRY_RUN = "DRY_RUN"
+
+
+@unique
+class ExecutionRunStatus(StrEnum):
+    """Outcome of one ``execution run`` invocation."""
+
+    #: Every requested authorisation was submitted and acknowledged.
+    SUCCESS = "SUCCESS"
+    #: Some submitted, some refused. Each record says which and why.
+    PARTIAL = "PARTIAL"
+    #: Built and validated, nothing sent. The only status a ``--dry-run``
+    #: can produce.
+    DRY_RUN = "DRY_RUN"
+    #: No approved authorisation was found to execute. The ordinary answer
+    #: when a campaign has nothing outstanding, not a failure.
+    NOTHING_TO_EXECUTE = "NOTHING_TO_EXECUTE"
+    #: No allocation run exists to execute against.
+    NO_ALLOCATION_RUN = "NO_ALLOCATION_RUN"
+    #: Nothing was submitted because every candidate was refused.
+    NOTHING_SUBMITTED = "NOTHING_SUBMITTED"
+    BROKER_UNAVAILABLE = "BROKER_UNAVAILABLE"
+    EXECUTION_DISABLED = "EXECUTION_DISABLED"
+    NOT_AUTHORIZED = "NOT_AUTHORIZED"
+    CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
+
+
 #: States from which no further transition is possible.
 TERMINAL_STATES: frozenset[PositionState] = frozenset(
     {
@@ -1400,5 +1622,38 @@ TERMINAL_STATES: frozenset[PositionState] = frozenset(
         PositionState.CANCELLED,
         PositionState.FAILED,
         PositionState.EXPIRED,
+    }
+)
+
+#: Execution states from which no further transition is possible.
+#:
+#: ``UNKNOWN`` is deliberately **not** here: an unresolved submission is a
+#: question, and a question that could never be answered would leave capital
+#: committed to an order nobody can account for. It is resolved by observing
+#: the broker.
+TERMINAL_EXECUTION_STATES: frozenset[ExecutionState] = frozenset(
+    {
+        ExecutionState.FILLED,
+        ExecutionState.CANCELLED,
+        ExecutionState.REJECTED,
+        ExecutionState.EXPIRED,
+        ExecutionState.FAILED,
+    }
+)
+
+#: Execution states in which an order may exist at the broker.
+#:
+#: This is the set idempotency is judged against, and it deliberately includes
+#: ``SUBMISSION_PENDING`` and ``UNKNOWN``: both mean *an order may be in
+#: flight*, and re-submitting over either is how a system places the same trade
+#: twice. Absence of an acknowledgement is not evidence of absence of an order.
+LIVE_EXECUTION_STATES: frozenset[ExecutionState] = frozenset(
+    {
+        ExecutionState.SUBMISSION_PENDING,
+        ExecutionState.SUBMITTED,
+        ExecutionState.PARTIALLY_FILLED,
+        ExecutionState.FILLED,
+        ExecutionState.CANCEL_PENDING,
+        ExecutionState.UNKNOWN,
     }
 )

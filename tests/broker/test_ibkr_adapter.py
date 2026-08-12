@@ -128,9 +128,35 @@ def test_live_mode_is_refused(broker_clock: FixedClock) -> None:
 
 
 @pytest.mark.unit
-def test_writable_connection_is_refused(broker_clock: FixedClock) -> None:
-    with pytest.raises(BrokerConfigurationError, match=r"read-only|Milestone 8"):
-        make_broker(broker_clock, read_only=False)
+def test_a_writable_connection_requires_paper(broker_clock: FixedClock) -> None:
+    """Milestone 8 permits a writable connection, in PAPER and nowhere else.
+
+    DRY_RUN in particular must never reach a real gateway — that is what the
+    simulator is for — so asking for a writable one is a configuration error
+    rather than a quiet downgrade.
+    """
+    with pytest.raises(BrokerConfigurationError, match="TRADING_MODE=PAPER"):
+        make_broker(broker_clock, trading_mode=TradingMode.DRY_RUN, read_only=False)
+
+
+@pytest.mark.unit
+def test_a_writable_paper_connection_is_permitted(broker_clock: FixedClock) -> None:
+    """Constructed, not connected: this opens no socket.
+
+    Obtaining one of these still requires ``build_execution_broker`` plus an
+    explicit ``IBKR_READ_ONLY=false``; the constructor is simply no longer the
+    thing that refuses.
+    """
+    broker = make_broker(broker_clock, trading_mode=TradingMode.PAPER, read_only=False)
+
+    assert broker.read_only is False
+    assert broker.orders_submitted == 0
+
+
+@pytest.mark.unit
+def test_a_writable_live_connection_is_still_refused(broker_clock: FixedClock) -> None:
+    with pytest.raises(BrokerConfigurationError, match="LIVE"):
+        make_broker(broker_clock, trading_mode=TradingMode.LIVE, read_only=False)
 
 
 @pytest.mark.unit

@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/execution_event.json",
+  "title": "ExecutionEvent",
+  "description": "One appended observation about an execution. History is append-only: a later fill never edits an earlier record, it adds an event, and the current record is a fold of them. Three timestamps are kept apart because they genuinely differ — when it happened, when the broker says it happened, and when we learned of it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "execution_id",
+    "sequence",
+    "event_type",
+    "state",
+    "occurred_at",
+    "observed_at",
+    "source"
+  ],
+  "properties": {
+    "event_id": { "type": "string", "minLength": 1 },
+    "execution_id": { "type": "string", "minLength": 1 },
+    "sequence": {
+      "description": "Monotonic within one execution, so ordering survives equal timestamps.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "event_type": {
+      "enum": [
+        "EXECUTION_CREATED",
+        "EXECUTION_VALIDATED",
+        "EXECUTION_SUBMISSION_PENDING",
+        "EXECUTION_SUBMITTED",
+        "EXECUTION_PARTIAL_FILL",
+        "EXECUTION_FILLED",
+        "EXECUTION_CANCEL_REQUESTED",
+        "EXECUTION_CANCELLED",
+        "EXECUTION_REJECTED",
+        "EXECUTION_EXPIRED",
+        "EXECUTION_FAILED",
+        "EXECUTION_STATE_UNKNOWN",
+        "EXECUTION_OBSERVED"
+      ]
+    },
+    "state": {
+      "description": "The state the execution is in AFTER this event.",
+      "enum": [
+        "CREATED",
+        "VALIDATED",
+        "SUBMISSION_PENDING",
+        "SUBMITTED",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "CANCEL_PENDING",
+        "CANCELLED",
+        "REJECTED",
+        "EXPIRED",
+        "UNKNOWN",
+        "FAILED"
+      ]
+    },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "source": { "type": "string", "minLength": 1 },
+    "schema_version": { "type": "string", "minLength": 1 },
+
+    "reason_code": {
+      "type": ["string", "null"],
+      "enum": [
+        "OK",
+        "ALLOCATION_NOT_APPROVED",
+        "EXECUTION_NOT_AUTHORIZED",
+        "EXECUTION_DISABLED",
+        "ALLOCATION_IS_DRY_RUN",
+        "ALREADY_SUBMITTED",
+        "SUBMISSION_UNCERTAIN",
+        "BROKER_TIMEOUT",
+        "BROKER_DISCONNECTED",
+        "BROKER_REJECTED",
+        "UNKNOWN_BROKER_STATE",
+        "BROKER_ORDER_ID_MISSING",
+        "PAPER_ACCOUNT_MISMATCH",
+        "BROKER_READ_ONLY",
+        "CONTRACT_ID_MISSING",
+        "CONTRACT_INVALID",
+        "MULTIPLIER_MISSING",
+        "INVALID_QUANTITY",
+        "INVALID_PRICE",
+        "PRICE_UNAVAILABLE",
+        "ORDER_BUILD_FAILED",
+        "ORDER_TYPE_NOT_PERMITTED",
+        "MULTI_LEG_UNSUPPORTED",
+        "SHORT_LEG_NOT_SUPPORTED",
+        "EXECUTION_WINDOW_EXPIRED",
+        "PRICE_REFERENCE_STALE",
+        "PRICE_DRIFT",
+        "POINT_IN_TIME_ERROR",
+        "MARKET_CLOSED",
+        "CURRENCY_MISMATCH",
+        "PAPER_MODE_REQUIRED",
+        "LIVE_GUARD_FAILED",
+        "TRADING_MODE_NOT_PERMITTED",
+        "PROVENANCE_UNAVAILABLE",
+        "EXECUTION_CONFIGURATION_ERROR",
+        "CANCEL_FAILED",
+        "NOT_CANCELLABLE",
+        "DRY_RUN",
+        null
+      ]
+    },
+    "detail": { "type": ["string", "null"] },
+
+    "broker_order_id": { "type": ["string", "null"] },
+    "broker_status": {
+      "type": ["string", "null"],
+      "enum": [
+        "PENDING_SUBMIT",
+        "SUBMITTED",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "CANCELLED",
+        "REJECTED",
+        null
+      ]
+    },
+    "filled_quantity": { "type": ["integer", "null"], "minimum": 0 },
+    "remaining_quantity": { "type": ["integer", "null"], "minimum": 0 },
+    "average_fill_price": { "$ref": "#/$defs/nullable_money" },
+    "last_fill_price": { "$ref": "#/$defs/nullable_money" },
+    "fills": { "type": "array", "items": { "$ref": "#/$defs/fill" } },
+    "broker_message": { "type": ["string", "null"] },
+    "broker_timestamp": { "type": ["string", "null"], "format": "date-time" }
+  },
+  "$defs": {
+    "money": { "type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "nullable_money": { "type": ["string", "null"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "fill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fill_id", "leg_index", "quantity", "price", "filled_at"],
+      "properties": {
+        "fill_id": { "type": "string", "minLength": 1 },
+        "leg_index": { "type": "integer", "minimum": 0 },
+        "quantity": { "type": "integer", "minimum": 1 },
+        "price": { "$ref": "#/$defs/money" },
+        "commission": { "$ref": "#/$defs/money" },
+        "filled_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

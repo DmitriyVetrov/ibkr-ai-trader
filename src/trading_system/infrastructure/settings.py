@@ -37,11 +37,13 @@ from trading_system.domain.enums import (
     MarketHypothesis,
     OptionDataField,
     OptionRight,
+    OrderType,
     PriceSource,
     SecurityType,
     SourceTier,
     StrategyType,
     StrikeSelectionPolicy,
+    TimeInForce,
     TradingMode,
     UniverseSourceKind,
 )
@@ -67,6 +69,7 @@ __all__ = [
     "ContractStrikeConfig",
     "DataConfig",
     "DeduplicationConfig",
+    "ExecutionConfig",
     "ExitPolicyConfig",
     "FreshnessConfig",
     "LiquidityConfig",
@@ -1278,6 +1281,138 @@ class ContractSelectionConfig(_ConfigModel):
     limits: ContractLimitsConfig = Field(default_factory=ContractLimitsConfig)
 
 
+class ExecutionConfig(_ConfigModel):
+    """Execution policy (``config/execution.yaml``, Milestone 8).
+
+    The only configuration in the system that can permit an order to be sent,
+    so every default ships closed and several combinations fail to load rather
+    than being silently narrowed. A clamped permission is a permission nobody
+    can see, and here that would mean nobody could see what the system is
+    allowed to trade.
+    """
+
+    #: Master switch. Ships OFF; with this false the stage validates and builds
+    #: an order but never reaches a broker.
+    enabled: bool = False
+    allow_live: bool = False
+    paper_only: bool = True
+    require_explicit_authorization: bool = True
+
+    default_order_type: OrderType = OrderType.LIMIT
+    permitted_order_types: list[OrderType] = Field(default_factory=lambda: [OrderType.LIMIT])
+    time_in_force: TimeInForce = TimeInForce.DAY
+
+    limit_price_offset_pct: float = Field(default=0.0, ge=-50.0, le=50.0)
+    price_increment: Money = Field(default=Decimal("0.01"), gt=0)
+
+    allocation_validity_minutes: int = Field(default=60, ge=0)
+    price_validity_seconds: int = Field(default=900, ge=0)
+
+    max_price_drift_pct: float = Field(default=2.0, ge=0.0, le=100.0)
+    allow_repricing: bool = False
+
+    require_market_open: bool = True
+    block_on_unknown_session: bool = True
+
+    one_connection_per_submission: bool = True
+    submission_timeout_seconds: float = Field(default=30.0, gt=0)
+    auto_retry_on_timeout: bool = False
+    verify_paper_account: bool = True
+    paper_account_prefixes: list[str] = Field(default_factory=lambda: ["DU", "DF"])
+
+    multi_leg_as_combo: bool = True
+    allow_independent_leg_orders: bool = False
+    allow_short_legs: bool = False
+
+    @model_validator(mode="after")
+    def _live_is_not_available(self) -> ExecutionConfig:
+        if self.allow_live:
+            raise ValueError(
+                "execution.allow_live is set, but live trading is delivered in Milestone 12 "
+                "behind a signed-off readiness checklist. This flag cannot enable it and "
+                "must not look as though it could."
+            )
+        if not self.paper_only:
+            raise ValueError(
+                "execution.paper_only=false is refused: PAPER is the only mode this "
+                "milestone submits orders in."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _authorisation_cannot_be_switched_off(self) -> ExecutionConfig:
+        if not self.require_explicit_authorization:
+            raise ValueError(
+                "execution.require_explicit_authorization=false would let loading an "
+                "allocation submit it. The explicit execution authorisation is the boundary "
+                "this milestone exists to draw and there is no configuration that removes it."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _the_order_vocabulary_is_narrow(self) -> ExecutionConfig:
+        if not self.permitted_order_types:
+            raise ValueError("execution.permitted_order_types must list at least one order type")
+        if self.default_order_type not in self.permitted_order_types:
+            raise ValueError(
+                f"execution.default_order_type {self.default_order_type.value} is not in "
+                f"permitted_order_types "
+                f"{[t.value for t in self.permitted_order_types]}"
+            )
+        if OrderType.MARKET in self.permitted_order_types:
+            raise ValueError(
+                "execution.permitted_order_types includes MARKET. A market order on an option "
+                "is an unbounded price, and Milestone 7 authorised a specific amount of "
+                "capital against a specific quoted cost. LIMIT only."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _multi_leg_stays_one_order(self) -> ExecutionConfig:
+        if self.allow_independent_leg_orders:
+            raise ValueError(
+                "execution.allow_independent_leg_orders is set. A straddle submitted as two "
+                "independent orders can half-fill into a naked long call — a position nobody "
+                "authorised and no limit was checked against. A multi-leg structure is one "
+                "order or it is MULTI_LEG_UNSUPPORTED."
+            )
+        if not self.multi_leg_as_combo:
+            raise ValueError(
+                "execution.multi_leg_as_combo=false leaves no way to submit a multi-leg "
+                "structure as one order."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _no_automatic_retry(self) -> ExecutionConfig:
+        if self.auto_retry_on_timeout:
+            raise ValueError(
+                "execution.auto_retry_on_timeout is set. A timeout does not mean the broker "
+                "did not receive the order; retrying is how one intention becomes two "
+                "positions. An uncertain submission is resolved by observation."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _short_legs_are_not_in_the_vocabulary(self) -> ExecutionConfig:
+        if self.allow_short_legs:
+            raise ValueError(
+                "execution.allow_short_legs is set, but every strategy this system can select "
+                "is a long-premium structure. Enabling it here would let an upstream bug "
+                "become an uncovered short option."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _prefixes_are_needed_to_verify_an_account(self) -> ExecutionConfig:
+        if self.verify_paper_account and not self.paper_account_prefixes:
+            raise ValueError(
+                "execution.verify_paper_account is set but paper_account_prefixes is empty, "
+                "so no account could ever be proved to be a paper account."
+            )
+        return self
+
+
 class SystemConfig(_ConfigModel):
     """All YAML configuration, loaded and validated together."""
 
@@ -1285,6 +1420,7 @@ class SystemConfig(_ConfigModel):
     campaign: CampaignConfig
     contract_selection: ContractSelectionConfig
     data: DataConfig
+    execution: ExecutionConfig
     research: ResearchConfig
     risk: RiskConfig
     schedules: SchedulesConfig
@@ -1430,6 +1566,7 @@ def load_config(config_dir: Path | str | None = None) -> SystemConfig:
         "campaign": _read_yaml(directory / "campaign.yaml"),
         "contract_selection": _read_yaml(directory / "contract_selection.yaml"),
         "data": _read_yaml(directory / "data.yaml"),
+        "execution": _read_yaml(directory / "execution.yaml"),
         "research": _read_yaml(directory / "research.yaml"),
         "risk": _read_yaml(directory / "risk.yaml"),
         "schedules": _read_yaml(directory / "schedules.yaml"),

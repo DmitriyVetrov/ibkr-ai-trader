@@ -46,6 +46,9 @@ data/research/*
 data/strategy/*
 data/contracts/*
 data/allocation/*
+# The record of what was actually sent to a broker: broker order ids, fills and
+# the account they belong to. Never committed.
+data/execution/*
 # Account snapshots additionally carry an account number and real balances.
 # Nothing under data/ may ever be committed, and this one least of all.
 data/accounts/*

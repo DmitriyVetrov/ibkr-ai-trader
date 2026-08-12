@@ -20,10 +20,15 @@ from trading_system.broker.ibkr.conversion import (
     to_security_type,
     to_utc,
 )
-from trading_system.domain.enums import OrderStatus
-from trading_system.domain.models import BrokerOrder
+from trading_system.domain.enums import OrderStatus, TradingMode
+from trading_system.domain.models import BrokerOrder, ExecutionResult, Fill
 
-__all__ = ["IBKR_SOURCE", "to_broker_order", "to_broker_orders"]
+__all__ = [
+    "IBKR_SOURCE",
+    "to_broker_order",
+    "to_broker_orders",
+    "to_execution_result",
+]
 
 IBKR_SOURCE = "IBKR"
 
@@ -101,6 +106,110 @@ def to_broker_orders(
 def open_orders(orders: list[BrokerOrder]) -> list[BrokerOrder]:
     """Only orders that can still fill."""
     return [o for o in orders if o.status in _LIVE_STATUSES]
+
+
+def to_execution_result(
+    trade: Any,
+    *,
+    intent_id: str,
+    as_of: datetime,
+    trading_mode: TradingMode,
+    orders_submitted: int = 1,
+    source: str = IBKR_SOURCE,
+) -> ExecutionResult:
+    """Convert what IBKR returned from a submission into an execution result.
+
+    Milestone 8's most safety-critical translation, and every line of it is
+    about not claiming more than IBKR said:
+
+    * the fill count comes from ``orderStatus.filled`` — never from the
+      quantity we sent, which is what we *asked* for and says nothing about
+      what happened;
+    * an average fill price of zero is ``None``. IBKR reports zero for "no
+      fills yet", and a zero price on a record means somebody bought something
+      for nothing;
+    * ``orders_submitted`` is passed in rather than assumed, because the count
+      belongs to the broker object that did the submitting.
+
+    A trade with no identifier is returned with ``broker_order_id=None``, which
+    the execution layer treats as an uncertain submission rather than a tracked
+    one — an order we cannot name is one we cannot cancel.
+    """
+    order = getattr(trade, "order", None)
+    status_object = getattr(trade, "orderStatus", None)
+    if order is None:
+        raise ValueError("IBKR trade is missing its order")
+
+    filled = to_decimal(getattr(status_object, "filled", None)) or Decimal("0")
+    status = to_order_status(getattr(status_object, "status", None), filled)
+    average = _positive(to_decimal(getattr(status_object, "avgFillPrice", None)))
+
+    return ExecutionResult(
+        intent_id=intent_id,
+        broker=source,
+        broker_order_id=_optional_order_id(order, status_object),
+        status=status,
+        orders_submitted=orders_submitted,
+        filled_quantity=int(filled),
+        average_fill_price=average,
+        fills=_fills_of(trade),
+        submitted_at=_log_time(trade, first=True) or as_of,
+        last_update_at=_log_time(trade, first=False) or as_of,
+        message=_message_of(trade, status_object),
+        trading_mode=trading_mode,
+    )
+
+
+def _fills_of(trade: Any) -> list[Fill]:
+    """Every execution report attached to the trade, translated.
+
+    A fill without a price or a quantity is skipped rather than defaulted:
+    a fill of zero contracts at zero euros is not a conservative record of a
+    fill, it is a false one.
+    """
+    fills: list[Fill] = []
+    for index, entry in enumerate(getattr(trade, "fills", None) or []):
+        execution = getattr(entry, "execution", None)
+        if execution is None:
+            continue
+        quantity = to_decimal(getattr(execution, "shares", None))
+        price = to_decimal(getattr(execution, "price", None))
+        executed_at = to_utc(getattr(execution, "time", None))
+        if quantity is None or quantity <= 0 or price is None or price <= 0 or executed_at is None:
+            continue
+        commission = Decimal("0")
+        report = getattr(entry, "commissionReport", None)
+        if report is not None:
+            commission = to_decimal(getattr(report, "commission", None)) or Decimal("0")
+        fills.append(
+            Fill(
+                fill_id=str(getattr(execution, "execId", None) or f"fill-{index}"),
+                leg_index=0,
+                quantity=int(quantity),
+                price=price,
+                commission=max(commission, Decimal("0")),
+                filled_at=executed_at,
+            )
+        )
+    return fills
+
+
+def _optional_order_id(order: Any, status: Any) -> str | None:
+    """The order's identifier, or ``None``. Never invented."""
+    try:
+        return _order_id(order, status)
+    except ValueError:
+        return None
+
+
+def _message_of(trade: Any, status: Any) -> str | None:
+    """The broker's own words about this order, if it said any."""
+    for entry in reversed(getattr(trade, "log", None) or []):
+        message = getattr(entry, "message", None)
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+    text = getattr(status, "whyHeld", None)
+    return text.strip() if isinstance(text, str) and text.strip() else None
 
 
 def _order_id(order: Any, status: Any) -> str:

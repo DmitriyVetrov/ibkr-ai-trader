@@ -1,0 +1,968 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/execution_run.json",
+  "title": "ExecutionRunResult",
+  "description": "The immutable record of one execution run: what it was asked to do, what it submitted, and what it refused. orders_submitted is read off the broker rather than counted by the run, so the figure is evidence rather than a claim about our own behaviour — and a dry run is schema-bound to zero.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "campaign_id",
+    "as_of",
+    "generated_at",
+    "status",
+    "trading_mode",
+    "broker",
+    "policy_version",
+    "versions"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "campaign_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "SUCCESS",
+        "PARTIAL",
+        "DRY_RUN",
+        "NOTHING_TO_EXECUTE",
+        "NO_ALLOCATION_RUN",
+        "NOTHING_SUBMITTED",
+        "BROKER_UNAVAILABLE",
+        "EXECUTION_DISABLED",
+        "NOT_AUTHORIZED",
+        "CONFIGURATION_ERROR"
+      ]
+    },
+    "trading_mode": {
+      "enum": [
+        "DRY_RUN",
+        "PAPER",
+        "LIVE"
+      ]
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "broker": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "allocation_run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "executions": {
+      "description": "The full record of each attempt. Structurally the same artifact as execution_record.json, restated here so this file validates on its own — every schema in this directory is self-contained, and a cross-file $ref would make a stored run unvalidatable without its neighbour.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/execution_record"
+      }
+    },
+    "counts": {
+      "$ref": "#/$defs/counts"
+    },
+    "orders_submitted": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "versions": {
+      "$ref": "#/$defs/system_versions"
+    },
+    "status_detail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "description": "A dry run submits nothing and may not claim it did. SUCCESS and PARTIAL are the two statuses that assert an order reached a broker; every other status is an honest outcome a dry run is allowed to report.",
+      "if": {
+        "properties": {
+          "dry_run": {
+            "const": true
+          }
+        },
+        "required": [
+          "dry_run"
+        ]
+      },
+      "then": {
+        "properties": {
+          "orders_submitted": {
+            "const": 0
+          },
+          "status": {
+            "not": {
+              "enum": [
+                "SUCCESS",
+                "PARTIAL"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "considered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "submitted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "refused": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "already_submitted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "uncertain": {
+          "description": "Submissions whose outcome is unknown. A run with any of these is PARTIAL, never SUCCESS.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "application_version",
+        "config_version"
+      ],
+      "properties": {
+        "application_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "config_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "strategy_spec_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "execution_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_id",
+        "execution_request_id",
+        "allocation_id",
+        "purchase_card_id",
+        "risk_decision_id",
+        "order_intent_id",
+        "campaign_id",
+        "opportunity_id",
+        "created_at",
+        "updated_at",
+        "underlying",
+        "strategy",
+        "quantity",
+        "order_type",
+        "time_in_force",
+        "trading_mode",
+        "broker",
+        "state",
+        "policy_version",
+        "versions"
+      ],
+      "properties": {
+        "execution_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "execution_request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allocation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purchase_card_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "risk_decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "order_intent_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "campaign_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "opportunity_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "underlying": {
+          "type": "string",
+          "pattern": "^[A-Z0-9.\\-]+$"
+        },
+        "strategy": {
+          "enum": [
+            "LONG_CALL",
+            "LONG_PUT",
+            "LONG_STRADDLE",
+            "LONG_STRANGLE"
+          ]
+        },
+        "legs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/execution_leg"
+          }
+        },
+        "quantity": {
+          "description": "Units of the structure, exactly as Milestone 7 authorised. Never recomputed here.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "multiplier": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "order_type": {
+          "enum": [
+            "MARKET",
+            "LIMIT"
+          ]
+        },
+        "time_in_force": {
+          "enum": [
+            "DAY",
+            "GTC"
+          ]
+        },
+        "reference_price": {
+          "description": "Money for one whole unit of the structure, multiplier included, as Milestone 7 authorised it. Never overwritten by anything the broker says.",
+          "$ref": "#/$defs/nullable_money"
+        },
+        "reference_quote": {
+          "description": "reference_price restated in the broker's quoted terms, so it is comparable with a limit price and a fill price.",
+          "$ref": "#/$defs/nullable_money"
+        },
+        "submitted_price": {
+          "description": "The limit price actually sent, in quoted terms.",
+          "$ref": "#/$defs/nullable_money"
+        },
+        "capital_commitment": {
+          "$ref": "#/$defs/money"
+        },
+        "maximum_loss": {
+          "$ref": "#/$defs/money"
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "trading_mode": {
+          "enum": [
+            "DRY_RUN",
+            "PAPER",
+            "LIVE"
+          ]
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "broker": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "enum": [
+            "CREATED",
+            "VALIDATED",
+            "SUBMISSION_PENDING",
+            "SUBMITTED",
+            "PARTIALLY_FILLED",
+            "FILLED",
+            "CANCEL_PENDING",
+            "CANCELLED",
+            "REJECTED",
+            "EXPIRED",
+            "UNKNOWN",
+            "FAILED"
+          ]
+        },
+        "broker_order_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "broker_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "PENDING_SUBMIT",
+            "SUBMITTED",
+            "PARTIALLY_FILLED",
+            "FILLED",
+            "CANCELLED",
+            "REJECTED",
+            null
+          ]
+        },
+        "filled_quantity": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "remaining_quantity": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "average_fill_price": {
+          "$ref": "#/$defs/nullable_money"
+        },
+        "last_fill_price": {
+          "$ref": "#/$defs/nullable_money"
+        },
+        "fills": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fill"
+          }
+        },
+        "broker_message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "submitted_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "acknowledged_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "filled_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "broker_timestamp": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "orders_submitted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/execution_reason_code"
+          }
+        },
+        "failure_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "allocation_run_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "contract_selection_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "strategy_decision_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "research_report_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "account_snapshot_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "versions": {
+          "$ref": "#/$defs/system_versions"
+        }
+      },
+      "allOf": [
+        {
+          "description": "SUBMITTED requires a broker order id. An order we cannot name is one we cannot cancel or reconcile; the honest state for that is UNKNOWN.",
+          "if": {
+            "properties": {
+              "state": {
+                "const": "SUBMITTED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "broker_order_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "broker_order_id"
+            ]
+          }
+        },
+        {
+          "description": "A dry run submits nothing and may claim nothing.",
+          "if": {
+            "properties": {
+              "dry_run": {
+                "const": true
+              }
+            },
+            "required": [
+              "dry_run"
+            ]
+          },
+          "then": {
+            "properties": {
+              "orders_submitted": {
+                "const": 0
+              },
+              "filled_quantity": {
+                "const": 0
+              },
+              "broker_order_id": {
+                "type": "null"
+              },
+              "state": {
+                "enum": [
+                  "CREATED",
+                  "VALIDATED",
+                  "REJECTED",
+                  "FAILED"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "description": "A refusal names a machine-readable reason.",
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "REJECTED",
+                  "FAILED"
+                ]
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason_codes": {
+                "minItems": 1
+              }
+            },
+            "required": [
+              "reason_codes"
+            ]
+          }
+        }
+      ],
+      "$defs": {
+        "money": {
+          "description": "Exact decimal serialised as a string. Never a JSON number: binary floats are not decimal-safe.",
+          "type": "string",
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "nullable_money": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "execution_leg": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "leg_index",
+            "contract_id",
+            "action",
+            "right",
+            "underlying",
+            "expiration",
+            "strike",
+            "multiplier",
+            "trading_class"
+          ],
+          "properties": {
+            "leg_index": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "contract_id": {
+              "description": "The broker contract id Milestone 6 resolved. Required: never re-derived from symbol, strike and expiration, which would be selecting a contract at execution time.",
+              "type": "integer",
+              "minimum": 1
+            },
+            "action": {
+              "enum": [
+                "BUY",
+                "SELL"
+              ]
+            },
+            "right": {
+              "enum": [
+                "CALL",
+                "PUT"
+              ]
+            },
+            "underlying": {
+              "type": "string",
+              "pattern": "^[A-Z0-9.\\-]+$"
+            },
+            "expiration": {
+              "type": "string",
+              "format": "date"
+            },
+            "strike": {
+              "$ref": "#/$defs/money"
+            },
+            "multiplier": {
+              "description": "Never assumed to be 100. A missing multiplier is a rejection.",
+              "type": "integer",
+              "minimum": 1
+            },
+            "ratio": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "trading_class": {
+              "type": "string",
+              "minLength": 1
+            },
+            "exchange": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "local_symbol": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "currency": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "fill": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "fill_id",
+            "leg_index",
+            "quantity",
+            "price",
+            "filled_at"
+          ],
+          "properties": {
+            "fill_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "leg_index": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "quantity": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "price": {
+              "$ref": "#/$defs/money"
+            },
+            "commission": {
+              "$ref": "#/$defs/money"
+            },
+            "filled_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "execution_reason_code": {
+          "enum": [
+            "OK",
+            "ALLOCATION_NOT_APPROVED",
+            "EXECUTION_NOT_AUTHORIZED",
+            "EXECUTION_DISABLED",
+            "ALLOCATION_IS_DRY_RUN",
+            "ALREADY_SUBMITTED",
+            "SUBMISSION_UNCERTAIN",
+            "BROKER_TIMEOUT",
+            "BROKER_DISCONNECTED",
+            "BROKER_REJECTED",
+            "UNKNOWN_BROKER_STATE",
+            "BROKER_ORDER_ID_MISSING",
+            "PAPER_ACCOUNT_MISMATCH",
+            "BROKER_READ_ONLY",
+            "CONTRACT_ID_MISSING",
+            "CONTRACT_INVALID",
+            "MULTIPLIER_MISSING",
+            "INVALID_QUANTITY",
+            "INVALID_PRICE",
+            "PRICE_UNAVAILABLE",
+            "ORDER_BUILD_FAILED",
+            "ORDER_TYPE_NOT_PERMITTED",
+            "MULTI_LEG_UNSUPPORTED",
+            "SHORT_LEG_NOT_SUPPORTED",
+            "EXECUTION_WINDOW_EXPIRED",
+            "PRICE_REFERENCE_STALE",
+            "PRICE_DRIFT",
+            "POINT_IN_TIME_ERROR",
+            "MARKET_CLOSED",
+            "CURRENCY_MISMATCH",
+            "PAPER_MODE_REQUIRED",
+            "LIVE_GUARD_FAILED",
+            "TRADING_MODE_NOT_PERMITTED",
+            "PROVENANCE_UNAVAILABLE",
+            "EXECUTION_CONFIGURATION_ERROR",
+            "CANCEL_FAILED",
+            "NOT_CANCELLABLE",
+            "DRY_RUN"
+          ]
+        },
+        "system_versions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "application_version",
+            "config_version"
+          ],
+          "properties": {
+            "application_version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "config_version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "strategy_spec_version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agent_version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "data_source_versions": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "description": "The Milestone 8 audit record of one submission attempt: exactly which contracts were sent, at what price, in what mode, and everything the broker reported back. execution_result.json stays the narrow Milestone 1 boundary; this is the wider artifact that projects onto it, exactly as market_research_report does for research_report. Every broker-sourced field is nullable and stays nullable: a broker that reported nothing reported nothing, and a zero would be a claim we are not entitled to make."
+    },
+    "money": {
+      "description": "Exact decimal serialised as a string. Never a JSON number: binary floats are not decimal-safe.",
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "nullable_money": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "execution_leg": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leg_index",
+        "contract_id",
+        "action",
+        "right",
+        "underlying",
+        "expiration",
+        "strike",
+        "multiplier",
+        "trading_class"
+      ],
+      "properties": {
+        "leg_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "contract_id": {
+          "description": "The broker contract id Milestone 6 resolved. Required: never re-derived from symbol, strike and expiration, which would be selecting a contract at execution time.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "action": {
+          "enum": [
+            "BUY",
+            "SELL"
+          ]
+        },
+        "right": {
+          "enum": [
+            "CALL",
+            "PUT"
+          ]
+        },
+        "underlying": {
+          "type": "string",
+          "pattern": "^[A-Z0-9.\\-]+$"
+        },
+        "expiration": {
+          "type": "string",
+          "format": "date"
+        },
+        "strike": {
+          "$ref": "#/$defs/money"
+        },
+        "multiplier": {
+          "description": "Never assumed to be 100. A missing multiplier is a rejection.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "ratio": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "trading_class": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exchange": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local_symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "fill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fill_id",
+        "leg_index",
+        "quantity",
+        "price",
+        "filled_at"
+      ],
+      "properties": {
+        "fill_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "leg_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "quantity": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "price": {
+          "$ref": "#/$defs/money"
+        },
+        "commission": {
+          "$ref": "#/$defs/money"
+        },
+        "filled_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "execution_reason_code": {
+      "enum": [
+        "OK",
+        "ALLOCATION_NOT_APPROVED",
+        "EXECUTION_NOT_AUTHORIZED",
+        "EXECUTION_DISABLED",
+        "ALLOCATION_IS_DRY_RUN",
+        "ALREADY_SUBMITTED",
+        "SUBMISSION_UNCERTAIN",
+        "BROKER_TIMEOUT",
+        "BROKER_DISCONNECTED",
+        "BROKER_REJECTED",
+        "UNKNOWN_BROKER_STATE",
+        "BROKER_ORDER_ID_MISSING",
+        "PAPER_ACCOUNT_MISMATCH",
+        "BROKER_READ_ONLY",
+        "CONTRACT_ID_MISSING",
+        "CONTRACT_INVALID",
+        "MULTIPLIER_MISSING",
+        "INVALID_QUANTITY",
+        "INVALID_PRICE",
+        "PRICE_UNAVAILABLE",
+        "ORDER_BUILD_FAILED",
+        "ORDER_TYPE_NOT_PERMITTED",
+        "MULTI_LEG_UNSUPPORTED",
+        "SHORT_LEG_NOT_SUPPORTED",
+        "EXECUTION_WINDOW_EXPIRED",
+        "PRICE_REFERENCE_STALE",
+        "PRICE_DRIFT",
+        "POINT_IN_TIME_ERROR",
+        "MARKET_CLOSED",
+        "CURRENCY_MISMATCH",
+        "PAPER_MODE_REQUIRED",
+        "LIVE_GUARD_FAILED",
+        "TRADING_MODE_NOT_PERMITTED",
+        "PROVENANCE_UNAVAILABLE",
+        "EXECUTION_CONFIGURATION_ERROR",
+        "CANCEL_FAILED",
+        "NOT_CANCELLABLE",
+        "DRY_RUN"
+      ]
+    }
+  }
+}

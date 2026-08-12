@@ -10,15 +10,16 @@ not reachable by configuration alone — see [Trading modes](#trading-modes).
 
 ## Status
 
-**Milestone 7 of 12 — allocation and risk.** What exists today:
+**Milestone 8 of 12 — execution.** What exists today:
 
 - domain models, enums, events and the position state machine;
 - YAML configuration for campaign, risk, schedules, sources, strategies, data,
-  universe and research;
-- the 26 JSON schemas for the workflow boundaries;
+  universe, research and execution;
+- the 30 JSON schemas for the workflow boundaries;
 - structured logging and an injectable clock;
-- a `Broker` abstraction with a deterministic `SimulatedBroker` and a
-  **read-only** `IBKRBroker` over IB Gateway;
+- a `Broker` abstraction with a deterministic `SimulatedBroker` and an
+  `IBKRBroker` over IB Gateway, read-only unless deliberately opened for paper
+  trading;
 - read-only diagnostics for connection, portfolio, market data and option chain;
 - the reconciliation foundation — detects discrepancies, never resolves them;
 - **the data layer**: provider interfaces and free providers, canonical models,
@@ -41,14 +42,23 @@ not reachable by configuration alone — see [Trading modes](#trading-modes).
   override, a deterministic allocation engine that sizes positions by exact
   decimal arithmetic, immutable account snapshots, and an append-only
   allocation ledger;
+- **execution**: the purchase card the specification requires before a trade, a
+  deterministic order builder, an explicit execution state machine, idempotent
+  submission that cannot place the same trade twice, combo orders so a
+  multi-leg structure fills as one thing or not at all, fill tracking that
+  never infers a fill, and an immutable execution ledger with append-only
+  history;
 - the CLI surface, with every command tagged read-only or state-mutating.
 
-What deliberately does **not** exist yet: order execution, the position
-lifecycle, autonomous trading and any form of live trading. Commands covering
-those exist in the CLI but exit `3` naming the milestone that delivers them.
-They never fabricate output.
+What deliberately does **not** exist yet: the position lifecycle, autonomous
+trading and any form of live trading. Commands covering those exist in the CLI
+but exit `3` naming the milestone that delivers them. They never fabricate
+output.
 
-**No code path in this repository can submit an order.** See
+**Submitting an order requires three deliberate acts**: `execution.enabled` in
+`config/execution.yaml` (ships `false`), `IBKR_READ_ONLY=false` in the
+environment (ships `true`), and `--confirm` on the command line. Nothing else in
+the repository can reach a broker's order path. See
 [Safety properties](#safety-properties).
 
 See section 46 of [the implementation specification](CLOUD_CODE_IMPLEMENTATION_SPEC.md)
@@ -225,6 +235,24 @@ were visible when the contract was chosen. It requires a stored account
 snapshot and reports `ACCOUNT_SNAPSHOT_UNAVAILABLE` rather than assuming the
 money is there. Re-running over the same upstream artifacts is idempotent: the
 second run records `ALREADY_ALLOCATED` and reserves nothing.
+
+### Execution
+
+```bash
+python -m trading_system.cli execution validate        # the policy in force
+python -m trading_system.cli execution run --dry-run   # builds an order; opens no broker
+python -m trading_system.cli execution run --confirm   # SUBMITS
+python -m trading_system.cli execution show [--execution-id <ID>] [--run-id <ID>]
+python -m trading_system.cli execution history [--allocation-id <ID>]
+python -m trading_system.cli execution explain --execution-id <ID> [--resolve]
+python -m trading_system.cli execution cancel --execution-id <ID> --confirm
+```
+
+The only command group that can place an order, and it needs
+`execution.enabled: true`, `IBKR_READ_ONLY=false` and `--confirm` — all three,
+each shipped in the safe position. Without `--confirm` nothing is built and
+nothing is sent; with `--dry-run` no broker is constructed at all. See
+[Execution](#execution).
 
 ## Data architecture
 
@@ -494,13 +522,99 @@ Known limitations, stated rather than hidden:
   daily-loss limit is recorded as `NOT_EVALUATED` — never as passed;
 - an authorisation that was never executed still consumes campaign budget;
   releasing stale reservations belongs to the milestone that learns whether an
-  order filled;
+  order filled — and Milestone 8 records *submission*, not settlement, so the
+  gap is narrower but still open;
 - the shipped EUR campaign refuses a USD-quoted contract with
   `CURRENCY_MISMATCH`, because no FX rate is invented. Either denominate the
   campaign in the currency it trades, or list the currency explicitly in
   `campaign.currency_policy.treat_as_campaign_currency`;
 - correlation is not modelled. Concentration is explicit and countable: per
   underlying, per strategy, per direction, plus a position count.
+
+## Execution
+
+The first stage permitted to send an order, and the only one.
+
+```
+APPROVED CampaignAllocation
+      |
+      v
+ExecutionRequest          a deliberate authorisation, never implied by an id
+      |
+      v
+deterministic validation  windows, market session, currency, structure
+      |
+      v
+PurchaseCard + RiskDecision   the Milestone 1 artifacts, minted not forked
+      |
+      v
+OrderIntent               the one place a price becomes an instruction
+      |
+      v
+idempotency check         has this exact trade already been sent?
+      |
+      v
+Broker                    one submission, one short-lived connection
+      |
+      v
+immutable record + append-only events
+```
+
+Nothing here re-decides anything. The quantity, the capital committed and the
+maximum loss are copied from the authorisation; if the broker refuses because
+the market moved, that is recorded as a failure and the trade needs a *new*
+Milestone 7 authorisation. Execution never shrinks an order to fit.
+
+Three distinctions carry the milestone:
+
+**An acknowledgement is not a fill.** `SUBMITTED` means IBKR took the order.
+Only an execution report produces `FILLED` or `PARTIALLY_FILLED`, and where a
+broker's status disagrees with its own counts, the counts win — reporting three
+of ten as `FILLED` would claim a position that does not exist. The
+disagreement is recorded rather than smoothed over.
+
+**"We did not send it" and "we do not know whether we sent it" are different
+facts.** `FAILED` is reserved for attempts that provably never left the
+process. Anything else — a timeout, a dropped connection — is `UNKNOWN`, and an
+`UNKNOWN` execution is resolved by *observing* the broker. There is no code
+path from an uncertain submission to a second one, and the configuration that
+would enable one fails to load.
+
+**A multi-leg structure is one order.** A straddle goes to IBKR as a combo, so
+it fills as a structure or not at all. Submitting the legs independently could
+leave a naked long call where a straddle was authorised — a position nobody
+approved, against limits nobody checked for it — so that configuration is
+refused at load time rather than at runtime.
+
+```bash
+python -m trading_system.cli execution validate   # the policy in force
+python -m trading_system.cli execution run --dry-run   # builds an order, opens no broker
+python -m trading_system.cli execution run --confirm   # SUBMITS
+python -m trading_system.cli execution explain --execution-id <ID> --resolve
+```
+
+`--dry-run` never constructs a broker at all, which makes "a dry run cannot
+place an order" structural rather than a flag someone has to check correctly.
+
+One subtlety worth knowing before reading the code: Milestone 7 records the
+cost of a structure as **money** (`ask x multiplier x ratio`, summed over legs),
+while a broker limit price is a **quote**, per multiplier unit. The conversion
+happens exactly once, in `order_builder.py`. Sending 605 where 6.05 was meant
+is a hundredfold overpayment that every downstream number would faithfully
+reproduce, so the record names the two apart rather than relying on a comment,
+and rounding is always *down*.
+
+Validating against a real paper account is opt-in and doubly gated — a
+developer who unlocked the gateway for a read-only diagnostic must not thereby
+have authorised an order:
+
+```bash
+make test-paper-execution   # submits ONE far-from-market paper order, then cancels it
+```
+
+That test handles the possibility that its order fills. "Extremely unlikely to
+fill" is not "guaranteed not to fill", and if it does, the fill is reported
+rather than hidden.
 
 ## IBKR architecture
 
@@ -607,6 +721,9 @@ make test-risk         # limits, engine, account snapshots, boundaries
 make test-allocation   # quantity, allocator, scorer, service, CLI
 make test-allocation-unit         # the engine arithmetic alone
 make test-allocation-integration  # research -> allocation, end to end
+make test-execution    # state machine, idempotency, fills, boundaries, CLI
+make test-execution-unit          # the pure layers alone
+make test-execution-integration   # research -> execution, end to end
 make test-agents       # AI agent contract tests; needs no API key
 make test-contract     # workflow-boundary schema compatibility
 make test-integration  # multi-component, simulated broker
@@ -631,6 +748,19 @@ ALLOW_LIVE_TESTS=true ANTHROPIC_API_KEY=... \
 Those tests are read-only and assert `orders_submitted == 0`. They fail loudly
 if the gateway is unreachable — they never fake a pass.
 
+**One test can place a real order**, and it needs a second variable of its own:
+
+```bash
+ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true IBKR_READ_ONLY=false \
+  pytest -m paper_execution -s        # or: make test-paper-execution
+```
+
+Two variables rather than one is the point: unlocking the gateway for a
+read-only diagnostic must not also authorise an order. It refuses to run in any
+mode but PAPER, submits exactly one far-from-market order, cancels it, verifies
+the cancellation, and reports what actually happened — including a fill, if the
+order fills despite being priced not to.
+
 The opt-in `llm` tests in `tests/agents/test_research_agent.py` and
 `tests/agents/test_strategy_selector.py` each make **one** real model call
 against the shipped prompt and the shipped schema. They are doubly gated
@@ -644,12 +774,30 @@ its job.
 
 Enforced in code and covered by tests, not left to convention:
 
-- **No order can be submitted.** `Broker.place_order` is `@final`, refuses
-  while read-only, and its submission hook raises `NOT_IMPLEMENTED` in every
-  implementation. Order execution arrives in Milestone 8.
-- **Three independent order blocks**: the application's `read_only` flag,
-  `IB.connect(readonly=True)` so IBKR itself rejects orders, and
-  `READ_ONLY_API=yes` on the gateway container.
+- **Submitting an order takes three deliberate acts**, and no two of them are in
+  the same place: `execution.enabled: true` in `config/execution.yaml`,
+  `IBKR_READ_ONLY=false` in the environment, and `--confirm` on
+  `execution run`. Each ships in the safe position. `Broker.place_order` stays
+  `@final` and refuses while read-only, so the guard cannot be subclassed away.
+- **Only the execution service can obtain a writable broker.**
+  `build_broker` — what every diagnostic, the data layer and every upstream
+  stage calls — returns a read-only connection whatever the settings say.
+  `build_execution_broker` is the only alternative, and a test asserts the
+  execution service is its only caller. Research, strategy, contract selection,
+  risk and allocation cannot import the broker package at all.
+- **Three independent order blocks** on a read-only connection: the
+  application's `read_only` flag, `IB.connect(readonly=True)` so IBKR itself
+  rejects orders, and `READ_ONLY_API=yes` on the gateway container.
+- **An acknowledgement is never reported as a fill**, and an ambiguous
+  submission is never retried. A client timeout after a send is `UNKNOWN` — the
+  order may be live — and resolution is by asking the broker, never by sending
+  again. `auto_retry_on_timeout: true` fails to load.
+- **The same trade cannot be submitted twice.** Submission identity is derived
+  from the authorisation and how it would be sent, and any prior attempt that
+  *may* have reached the broker blocks another.
+- **`pytest` cannot place an order.** The one test that submits needs both
+  `ALLOW_LIVE_TESTS=true` and `RUN_PAPER_EXECUTION_TESTS=true`, and refuses to
+  run in any mode but PAPER.
 - **Every read-only command proves it submitted nothing**, printing a count
   read from the broker. Tests run each command against a *writable*
   mutation-recording broker and assert nothing was even attempted.
@@ -756,6 +904,7 @@ src/
   strategies/      registry, strategy structures, deterministic contract selector
   risk/            deterministic risk engine, limits, exposure, account snapshots
   allocation/      deterministic campaign allocation, scoring, immutable ledger
+  execution/       purchase card, order builder, submission, fills, execution ledger
   agents/          LLM agents and their shipped prompts
   infrastructure/  settings, config loading, logging, clock
 skills/            strategy specifications and development guidance (never executable)

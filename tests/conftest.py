@@ -90,8 +90,30 @@ def _force_safe_mode(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip broker/LLM-touching tests unless explicitly unlocked."""
+    """Skip broker/LLM-touching tests unless explicitly unlocked.
+
+    ``paper_execution`` is gated twice over, and deliberately so: it is the only
+    marker in the suite that can place a real order, and a developer who
+    unlocked the gateway to run a read-only diagnostic must not thereby have
+    authorised one (brief section 45). It needs its own variable, and it is
+    checked *before* the general unlock so that ``ALLOW_LIVE_TESTS=true`` alone
+    never reaches it.
+    """
     import os
+
+    execution_unlocked = (
+        os.environ.get("ALLOW_LIVE_TESTS", "false").lower() == "true"
+        and os.environ.get("RUN_PAPER_EXECUTION_TESTS", "false").lower() == "true"
+    )
+    skip_execution = pytest.mark.skip(
+        reason=(
+            "SUBMITS A REAL PAPER ORDER: requires both ALLOW_LIVE_TESTS=true and "
+            "RUN_PAPER_EXECUTION_TESTS=true"
+        )
+    )
+    for item in items:
+        if "paper_execution" in item.keywords and not execution_unlocked:
+            item.add_marker(skip_execution)
 
     if os.environ.get("ALLOW_LIVE_TESTS", "false").lower() == "true":
         return
@@ -100,7 +122,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         reason="requires ALLOW_LIVE_TESTS=true; may reach a real broker or paid API"
     )
     for item in items:
-        if {"live", "ibkr", "paper", "llm"} & set(item.keywords):
+        if {"live", "ibkr", "paper", "llm", "paper_execution"} & set(item.keywords):
             item.add_marker(skip)
 
 

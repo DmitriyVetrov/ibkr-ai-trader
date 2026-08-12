@@ -5,10 +5,13 @@ returns is a domain model, so no IBKR type escapes this package.
 
 Safety properties, in order of how much they matter:
 
-* **LIVE is refused.** Milestone 2 operates in DRY_RUN and PAPER only.
-* **The API connection is opened read-only.** ``IB.connect(readonly=True)``
+* **LIVE is refused.** DRY_RUN and PAPER only; live readiness is Milestone 12.
+* **The API connection is opened read-only by default.** ``IB.connect(readonly=True)``
   makes IBKR itself reject order placement, so a bug here cannot trade — the
-  guarantee does not depend on our own code being correct.
+  guarantee does not depend on our own code being correct. Milestone 8 can open
+  a *writable* connection, but only in PAPER, only through
+  ``broker.factory.build_execution_broker``, and only after
+  :meth:`IBKRBroker.verify_paper_account` has shown which account answered.
 * **Account identity is required.** If the account cannot be determined, or
   the configured account is not among those the connection manages, the
   connection is closed and an error raised. Unknown broker state is not a
@@ -42,7 +45,16 @@ from trading_system.broker.ibkr.market_data import (
     to_market_data_snapshot,
     to_option_chain_snapshot,
 )
-from trading_system.broker.ibkr.orders import to_broker_orders
+from trading_system.broker.ibkr.order_translation import (
+    IBKROrderRequest,
+    OrderTranslationError,
+    to_ibkr_order_request,
+)
+from trading_system.broker.ibkr.orders import (
+    to_broker_order,
+    to_broker_orders,
+    to_execution_result,
+)
 from trading_system.broker.ibkr.positions import to_broker_positions
 from trading_system.domain.enums import (
     BrokerConnectionState,
@@ -56,12 +68,15 @@ from trading_system.domain.models import (
     BrokerHealth,
     BrokerOrder,
     BrokerPosition,
+    ExecutionResult,
     MarketDataSnapshot,
     OptionChainSnapshot,
+    OrderIntent,
 )
 from trading_system.infrastructure.clock import Clock, SystemClock
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Sequence
     from datetime import datetime
 
 __all__ = ["ACCOUNT_TAGS", "IBKRBroker"]
@@ -112,6 +127,8 @@ class IBKRBroker(Broker):
         connect_timeout_seconds: float = 10.0,
         request_timeout_seconds: float = 30.0,
         market_data_type: int = 3,
+        order_exchange: str = "SMART",
+        order_currency: str = "USD",
         clock: Clock | None = None,
     ) -> None:
         super().__init__(trading_mode=trading_mode, read_only=read_only)
@@ -128,6 +145,11 @@ class IBKRBroker(Broker):
         self._connect_timeout = connect_timeout_seconds
         self._request_timeout = request_timeout_seconds
         self._market_data_type = market_data_type
+        #: Routing for submitted orders. SMART is IBKR's router; the chain the
+        #: contract came from was read from the same venue, so an order routed
+        #: elsewhere could reach a different book than the one that was priced.
+        self._order_exchange = order_exchange
+        self._order_currency = order_currency
         self._clock = clock or SystemClock()
 
         self._ib: Any = None
@@ -150,10 +172,16 @@ class IBKRBroker(Broker):
             raise BrokerConfigurationError(f"IBKR_PORT {port} is outside the valid range")
         if client_id < 0:
             raise BrokerConfigurationError(f"IBKR_CLIENT_ID {client_id} must not be negative")
-        if not read_only:
+        if not read_only and trading_mode is not TradingMode.PAPER:
+            # A writable connection exists for exactly one purpose: submitting
+            # a paper order through the Milestone 8 execution service. Any
+            # other mode asking for one is a configuration error, and DRY_RUN
+            # in particular must never reach a real gateway — that is what the
+            # simulator is for.
             raise BrokerConfigurationError(
-                "IBKRBroker refuses a writable connection in Milestone 2. Order "
-                "execution is delivered in Milestone 8."
+                f"a writable IBKR connection requires TRADING_MODE=PAPER, not "
+                f"{trading_mode.value}. Order submission is permitted against the paper "
+                f"account only; live readiness is Milestone 12."
             )
 
     @property
@@ -195,8 +223,12 @@ class IBKRBroker(Broker):
                 port=self._port,
                 clientId=self._client_id,
                 timeout=self._connect_timeout,
-                # IBKR itself blocks order placement on this connection.
-                readonly=True,
+                # When read-only, IBKR itself blocks order placement on this
+                # connection, so the guarantee does not rest on our own code
+                # being correct. A writable connection is only ever opened by
+                # the execution path, in PAPER, and the constructor already
+                # refused every other combination.
+                readonly=self._read_only,
                 account=self._configured_account or "",
             )
         except TimeoutError as exc:
@@ -677,3 +709,198 @@ class IBKRBroker(Broker):
             )
         except ValueError as exc:
             raise OptionChainUnavailableError(str(exc)) from exc
+
+    # --- execution (Milestone 8) -------------------------------------------
+    def verify_paper_account(self, prefixes: Sequence[str]) -> str:
+        """Prove this session speaks for a paper account, or refuse.
+
+        IBKR paper accounts are prefixed ``DU`` (``DF`` for paper advisor
+        accounts) and live accounts are not. That is the only account-level
+        evidence available without spending a round trip, and it is checked
+        against the identity resolved during the handshake rather than by
+        asking again — ``managedAccounts()`` is served from the connection's
+        startup cache, so this costs nothing and cannot hang.
+
+        Fails closed. An account this cannot recognise is refused rather than
+        assumed to be paper, because the failure mode of the other choice is
+        an order against real money.
+        """
+        account = self._account_id
+        if not account:
+            raise BrokerAuthenticationError(
+                "the connection has no resolved account, so it cannot be shown to be a paper "
+                "account. Refusing to submit."
+            )
+        if not any(account.upper().startswith(prefix.upper()) for prefix in prefixes):
+            raise BrokerConfigurationError(
+                f"the connected account does not match any configured paper account prefix "
+                f"({', '.join(prefixes)}). Refusing to submit an order against an account "
+                f"that cannot be shown to be a paper account."
+            )
+        if self.trading_mode is not TradingMode.PAPER:
+            raise BrokerConfigurationError(
+                f"trading mode is {self.trading_mode.value}; paper submission requires PAPER."
+            )
+        return account
+
+    def _submit_order(self, intent: OrderIntent) -> ExecutionResult:
+        """Send one order, and spend the connection's round trip on it.
+
+        Deliberately does *not* run a health check, re-read the account or
+        qualify the contract first. Milestone 2 established that only the first
+        uncached round trip on a freshly opened connection is reliably answered
+        against the validated TWS build, so anything done before the submission
+        risks consuming the one exchange that matters. Every contract is
+        addressed by the ``conId`` Milestone 6 resolved, which is what makes
+        skipping qualification possible rather than merely optimistic.
+
+        A submission that is not acknowledged within the request timeout raises
+        :class:`BrokerTimeoutError`. That is *not* the same as "the order was
+        not sent": the caller records an uncertain submission and resolves it
+        by looking, never by sending a second order.
+        """
+        ib_async = _import_ib_async()
+        ib = self._require_connection()
+
+        try:
+            request = to_ibkr_order_request(
+                intent,
+                exchange=self._order_exchange,
+                currency=self._order_currency,
+                account=self._account_id,
+            )
+        except OrderTranslationError as exc:
+            # Nothing has been sent, and nothing will be. Distinct from a
+            # broker failure on purpose: this is our own refusal.
+            raise BrokerConfigurationError(str(exc)) from exc
+
+        contract = self._build_order_contract(ib_async, request)
+        order = self._build_order(ib_async, request)
+
+        try:
+            trade = ib.placeOrder(contract, order)
+        except Exception as exc:
+            raise BrokerResponseError(
+                f"IBKR refused the order submission: {exc}. Whether it reached the broker is "
+                f"unknown; do not resubmit without checking open orders."
+            ) from exc
+
+        self._await_acknowledgement(ib, trade)
+        self._last_communication = self._clock.now()
+        return to_execution_result(
+            trade,
+            intent_id=intent.intent_id,
+            as_of=self._clock.now(),
+            trading_mode=self.trading_mode,
+            orders_submitted=1,
+        )
+
+    def _await_acknowledgement(self, ib: Any, trade: Any) -> None:
+        """Wait, bounded, for IBKR to say something about the order.
+
+        Bounded is the whole point. ``ib_async``'s waiting primitives can be
+        given no deadline at all, and an unanswered submission would then hang
+        the process holding a live order it cannot describe.
+
+        Not answering is not an error here: an order that has been placed but
+        not yet acknowledged is a real state, and the caller records it as
+        uncertain. What must never happen is waiting forever.
+        """
+        deadline = time.monotonic() + self._request_timeout
+        while time.monotonic() < deadline:
+            status = getattr(getattr(trade, "orderStatus", None), "status", None)
+            if isinstance(status, str) and status.strip() and status != "PendingSubmit":
+                return
+            if getattr(trade, "log", None):
+                return
+            try:
+                ib.waitOnUpdate(timeout=min(1.0, max(deadline - time.monotonic(), 0.05)))
+            except Exception:
+                # A wait that fails is a wait that ended. The loop's own
+                # deadline is what bounds this, not the library's cooperation.
+                return
+
+    def _build_order_contract(self, ib_async: Any, request: IBKROrderRequest) -> Any:
+        """Build the ``ib_async`` contract. The only place a library object appears."""
+        contract = ib_async.Contract(
+            secType=request.security_type,
+            symbol=request.symbol,
+            exchange=request.exchange,
+            currency=request.currency,
+        )
+        if request.contract_id is not None:
+            contract.conId = request.contract_id
+        if request.trading_class:
+            contract.tradingClass = request.trading_class
+        if request.combo_legs:
+            contract.comboLegs = [
+                ib_async.ComboLeg(
+                    conId=leg.contract_id,
+                    ratio=leg.ratio,
+                    action=leg.action,
+                    exchange=leg.exchange,
+                )
+                for leg in request.combo_legs
+            ]
+        return contract
+
+    def _build_order(self, ib_async: Any, request: IBKROrderRequest) -> Any:
+        order = ib_async.Order(
+            action=request.action,
+            orderType=request.order_type,
+            totalQuantity=request.total_quantity,
+            tif=request.time_in_force,
+            transmit=request.transmit,
+        )
+        if request.limit_price is not None:
+            order.lmtPrice = float(request.limit_price)
+        if request.account:
+            order.account = request.account
+        if request.order_ref:
+            order.orderRef = request.order_ref
+        return order
+
+    def _cancel_order(self, broker_order_id: str) -> BrokerOrder:
+        """Cancel one order and report what IBKR then says about it.
+
+        Cancellation is intentionally narrow (brief section 37): it exists so a
+        submitted order's lifecycle can be closed, not so a strategy can manage
+        exits.
+        """
+        ib = self._require_connection()
+        now = self._clock.now()
+
+        trade = self._find_trade(ib, broker_order_id)
+        if trade is None:
+            raise BrokerResponseError(
+                f"IBKR reports no open order {broker_order_id}. It may have filled, been "
+                f"cancelled already, or belong to another session; refusing to report a "
+                f"cancellation that did not happen."
+            )
+
+        try:
+            ib.cancelOrder(trade.order)
+        except Exception as exc:
+            raise BrokerResponseError(f"IBKR refused to cancel {broker_order_id}: {exc}") from exc
+
+        self._last_communication = now
+        return to_broker_order(trade, self._clock.now(), account_id=self._account_id)
+
+    def _find_trade(self, ib: Any, broker_order_id: str) -> Any:
+        """Locate a trade among the open orders the handshake already cached."""
+        try:
+            trades = ib.openTrades()
+        except Exception as exc:
+            raise BrokerResponseError(f"could not read open orders: {exc}") from exc
+        for trade in trades or []:
+            order = getattr(trade, "order", None)
+            status = getattr(trade, "orderStatus", None)
+            for candidate in (
+                getattr(order, "permId", None),
+                getattr(status, "permId", None),
+                getattr(order, "orderId", None),
+                getattr(status, "orderId", None),
+            ):
+                if candidate and str(candidate) == str(broker_order_id):
+                    return trade
+        return None

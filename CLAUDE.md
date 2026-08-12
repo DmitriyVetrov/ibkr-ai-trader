@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Milestones 1–7 of 12 are complete.** Built and tested: the domain layer (models, enums,
-events, state machine), YAML configuration, the 26 JSON workflow schemas, the CLI surface,
-structured logging, an injectable clock, the `Broker` abstraction with `SimulatedBroker` and a
-read-only `IBKRBroker`, the read-only broker diagnostics, the reconciliation foundation, the
+**Milestones 1–8 of 12 are complete.** Built and tested: the domain layer (models, enums,
+events, state machine), YAML configuration, the 30 JSON workflow schemas, the CLI surface,
+structured logging, an injectable clock, the `Broker` abstraction with `SimulatedBroker` and
+`IBKRBroker`, the read-only broker diagnostics, the reconciliation foundation, the
 data layer (providers, canonical models, quality engine, point-in-time snapshots,
 append-only history, repository), **universe selection** — the deterministic pre-filter,
 the first AI agent, and immutable universe runs — **market research**: point-in-time
@@ -15,19 +15,23 @@ evidence assembly, news deduplication, the market researcher agent, deterministi
 and confidence validation, and immutable research reports — **strategy and contract
 selection**: the strategy registry, the strategy selector agent, deterministic decision
 validation, and the *deterministic* contract selector with immutable decision and selection
-records — and **allocation and risk**: the campaign envelope, the deterministic risk engine,
-the deterministic allocation engine, account snapshots, and an immutable allocation ledger.
-2735 passing tests; ruff, ruff format and mypy clean.
+records — **allocation and risk**: the campaign envelope, the deterministic risk engine,
+the deterministic allocation engine, account snapshots, and an immutable allocation ledger —
+and **execution**: the purchase card factory, the deterministic order builder, the execution
+state machine, idempotent submission, combo orders for multi-leg structures, fill tracking
+and an immutable execution ledger with append-only history.
+3199 passing tests; ruff, ruff format and mypy clean.
 
-**Not built, by design:** order execution, position lifecycle, autonomous trading, live
-trading. The CLI exposes those commands but they exit `3` naming the milestone that
-delivers them — they never fabricate output. Follow that pattern for anything still pending.
+**Not built, by design:** position lifecycle, autonomous trading, live trading. The CLI
+exposes those commands but they exit `3` naming the milestone that delivers them — they
+never fabricate output. Follow that pattern for anything still pending.
 
-**Milestone 8 is next: execution** — the order builder, the simulator execution path, IBKR
-Paper execution and fill tracking. It consumes the authorisations Milestone 7 produces: a
-`CampaignAllocation` carries legs, a quantity, the capital committed and the maximum loss,
-and *nothing* in it is an order. Milestone 8 decides how to execute an authorisation and
-stays bound by every figure in it.
+**Milestone 9 is next: position lifecycle** — reconciliation against broker reality, the
+position state machine driven by fills, the thesis monitor, trailing stops, the DTE policy
+and the exit engine. It inherits two things Milestone 8 deliberately left open: an
+`UNKNOWN` execution is resolved by *observing* the broker, and a Milestone 7 authorisation
+that never executed still consumes campaign budget until something learns what happened to
+it. Releasing stale reservations belongs to the milestone that can tell.
 
 [CLOUD_CODE_IMPLEMENTATION_SPEC.md](CLOUD_CODE_IMPLEMENTATION_SPEC.md) remains the source of
 truth for module layout, CLI surface, schemas, testing layers, and milestone order. Read the
@@ -134,6 +138,13 @@ full tree; the boundaries that matter:
   `risk/`, never the reverse, and a test asserts it. `allocation/service.py` is the single
   composition root; both `risk/__init__.py` and `allocation/__init__.py` defer everything
   that touches a repository through `__getattr__`, for the same reason the other packages do.
+- `execution/` — the first stage permitted to send an order. `models · state_machine ·
+  validation · purchase_card · order_builder · fill_tracker · execution_engine · store ·
+  service · report`. The pure half (everything up to `order_builder`) reaches no broker and
+  reads no clock; only `execution_engine` holds one. `execution/service.py` is the single
+  composition root and the only caller of `build_execution_broker`, and
+  `execution/__init__.py` defers it through `__getattr__` — an eager re-export would put a
+  *writable broker* in the import graph of anything that merely names an execution type.
 - `monitoring/` — position monitor, thesis monitor, reconciliation loop, scheduler.
 
 **Two loops, different cadences.** The Opportunity Discovery loop (universe → research → strategy →
@@ -350,14 +361,104 @@ Development guidance, including what to do when adding a strategy or a limit, is
 **no agent**, so there is deliberately no `.claude/agents/` entry for it — one would imply a
 model is involved somewhere, and none is.
 
+## Execution (Milestone 8)
+
+> **An allocation id is not permission to trade, and an acknowledgement is not a fill.**
+
+The first stage in the system permitted to send an order, so every default ships closed and
+every ambiguity fails closed:
+
+```
+APPROVED CampaignAllocation (M7)
+      -> ExecutionRequest        deliberate authorisation, not an id
+      -> deterministic validation windows, session, currency, structure
+      -> PurchaseCard + RiskDecision   the M1 artifacts, minted not forked
+      -> OrderIntent             the only place a price becomes an order
+      -> idempotency check       has this exact trade already been sent?
+      -> Broker                  one submission, one short-lived connection
+      -> immutable record + events
+```
+
+Eight rules govern it, each with tests that fail loudly:
+
+- **Two switches, and neither implies the other.** `execution.enabled` in
+  `config/execution.yaml` (ships `false`) *and* an explicit `--confirm`. `ExecutionRequest`
+  cannot be constructed with `execution_authorized=False` and the schema types the field
+  `const: true`, so there is no shape in which "load this allocation" and "send this order"
+  are the same call. `require_explicit_authorization: false` fails to load.
+- **Execution changes nothing it was given.** Quantity, capital, maximum loss, contract and
+  strategy are *copied* from the authorisation. When a broker refuses because the market
+  moved, the answer is a recorded failure and a new Milestone 7 authorisation — never a
+  smaller order that fits. Nothing here recomputes a size or re-checks a limit.
+- **An acknowledgement is not a fill.** `SUBMITTED` means IBKR took the order; only an
+  execution report produces `FILLED` or `PARTIALLY_FILLED`. Where a broker's status and its
+  own counts disagree, **the counts win** and the contradiction is recorded rather than
+  smoothed over. A `FILLED` record whose fill is short of its quantity fails to construct.
+- **Ambiguity fails closed, and never retries.** A timeout after a submission is `UNKNOWN`,
+  not "safe to retry": the order may be live right now. There is no code path from an
+  uncertain submission to a second one, `auto_retry_on_timeout: true` fails to load, and
+  resolution is by *observing* the broker. `FAILED` is reserved for attempts that provably
+  never left the process — a read-only broker, a broker that was not connected, an order our
+  own translation refused to build.
+- **One trade, one order.** `execution_request_identifier` derives identity from the
+  allocation, the mode, the order type, the time-in-force and the policy version, and
+  excludes the clock — an identity that changed with time would make every retry look new.
+  An attempt in *any* state where an order may exist blocks another, and that set
+  deliberately includes `SUBMISSION_PENDING` and `UNKNOWN`: absence of an acknowledgement is
+  not absence of an order.
+- **The record is written before the send.** A process that dies mid-submission leaves a
+  `SUBMISSION_PENDING` record, which the next run reads as "an order may be in flight"
+  rather than as silence. Later broker news is *appended* as an event and the current record
+  is folded from the history, so an order that reported two fills can still show it once
+  reported one.
+- **A multi-leg structure is one order.** A straddle goes to IBKR as a combo (BAG), so it
+  fills as a structure or not at all. `allow_independent_leg_orders: true` fails to load: a
+  half-filled straddle is a naked long call against limits nobody checked for one. A
+  structure the translation cannot express is `MULTI_LEG_UNSUPPORTED` — a refusal, never an
+  approximation built from unrelated single-leg orders.
+- **The order vocabulary is deliberately narrow.** LIMIT only. `MARKET` exists in the
+  Milestone 1 enum and `permitted_order_types` refuses it: a market order on an option is an
+  unbounded price, and Milestone 7 authorised a specific amount of capital against a specific
+  quoted cost. No stops, no brackets, no trailing anything — those are Milestone 9.
+
+The Milestone 1 artifacts are **reused, not forked**. `execution/purchase_card.py` mints the
+M1 `PurchaseCard` (spec §12 requires one before execution) and projects the M7 risk
+evaluation onto the M1 `RiskDecision`; `ExecutionRecord.to_execution_result()` projects onto
+`schemas/execution_result.json`, exactly as research and strategy project onto their M1
+shapes. That projection deliberately *raises* for `UNKNOWN`: `OrderStatus` has no member for
+"we do not know", and mapping it onto `PENDING_SUBMIT` would turn an ambiguous submission
+into a tidy claim that nothing was sent.
+
+**Units are the subtle part.** Milestone 7 records the cost of a structure as *money* —
+`ask x multiplier x ratio`, summed over legs. A broker limit price is a *quote*, per
+multiplier unit. The conversion happens exactly once, in `order_builder.py`, against a
+multiplier the validator has already proved every leg shares; sending 605 where 6.05 was
+meant is a hundredfold overpayment that every downstream number would faithfully reproduce.
+The record names the two apart (`reference_price` vs `reference_quote`/`submitted_price`)
+rather than distinguishing them by comment. Rounding is always *down*, so it can only ever
+bid below what was authorised.
+
+`build_execution_broker` is the **only** writable broker constructor and the execution
+service is its only caller; `build_broker` returns a read-only connection whatever the
+settings say, so every diagnostic, the data layer and every upstream stage hold a broker that
+would refuse. `IBKR_READ_ONLY=false` is required on top of that, and a writable IBKR
+connection additionally requires PAPER — LIVE is refused in the config, in the factory and in
+the adapter, which is the right number of refusals for the one irreversible action here.
+
+Development guidance — what to do when adding a failure mode, an order type or a structure,
+and what this milestone deliberately does not do — is in
+[skills/execution/README.md](skills/execution/README.md). Milestone 8 introduces **no agent**,
+so there is deliberately no `.claude/agents/` entry for it, exactly as in Milestone 7.
+
 **Configuration over hardcoding.** Schedules live in `config/schedules.yaml`, risk in `risk.yaml`,
 strategies in `config/strategies/*.yaml`, data policy in `data.yaml`, the candidate pool,
 eligibility filters and ranking policy in `universe.yaml`, the research horizon, data
 windows, cost ceilings, deduplication and confidence policy in `research.yaml`, the strategy
 stage's eligibility gates and agent in `strategy.yaml`, the expiration rule, strike
-policy, quote requirements and liquidity policy in `contract_selection.yaml`, and the campaign
+policy, quote requirements and liquidity policy in `contract_selection.yaml`, the campaign
 envelope, allocation policy, position limits, currency policy and ranking weights in
-`campaign.yaml`. Note the splits: `strategy.yaml` configures the *stage*,
+`campaign.yaml`, and the execution switch, order vocabulary, validity windows, drift ceiling
+and combo policy in `execution.yaml`. Note the splits: `strategy.yaml` configures the *stage*,
 `config/strategies/*.yaml` configure the *payoffs* — one is an agent, the others are
 instruments; and `risk.yaml` states the outer boundary of the whole system while
 `campaign.yaml` states what *this* campaign permits inside it. Source trust lives in
@@ -502,6 +603,19 @@ python -m trading_system.cli allocation show [--run-id <ID>] [--symbol NVDA]
 python -m trading_system.cli allocation explain --symbol NVDA [--run-id <ID>]
 python -m trading_system.cli allocation history [--symbol NVDA]
 
+# Execution. The ONLY command group that can place an order. Deterministic: no
+# model is consulted. Needs BOTH execution.enabled and --confirm to submit.
+python -m trading_system.cli execution validate          # the policy in force
+python -m trading_system.cli execution validate --execution-id <ID>
+python -m trading_system.cli execution run --dry-run     # builds an order, opens no broker
+python -m trading_system.cli execution run --confirm     # SUBMITS
+python -m trading_system.cli execution run --allocation-id <ID> --confirm
+python -m trading_system.cli execution run --symbol NVDA --dry-run
+python -m trading_system.cli execution show [--execution-id <ID>] [--run-id <ID>]
+python -m trading_system.cli execution history [--allocation-id <ID>]
+python -m trading_system.cli execution explain --execution-id <ID> [--resolve]
+python -m trading_system.cli execution cancel --execution-id <ID> --confirm
+
 pytest -m "not ibkr and not llm"                # default: no gateway, no API key needed
 pytest tests/universe                           # filters, point-in-time, snapshots, CLI
 pytest tests/research                           # evidence, dedup, validation, snapshots, CLI
@@ -510,13 +624,20 @@ pytest tests/strategies                         # one suite per strategy specifi
 pytest tests/contract_selection                 # policy, point-in-time, determinism
 pytest tests/risk                               # limits, engine, account snapshots, boundaries
 pytest tests/allocation                         # quantity, allocator, scorer, service, CLI
+pytest tests/execution                          # state machine, idempotency, fills, boundaries
 pytest tests/integration/test_research_to_allocation.py   # the whole chain; 0 orders
+pytest tests/integration/test_research_to_execution.py    # the chain through execution
 pytest tests/agents/test_universe_selector.py   # agent contract; needs no API key
 pytest tests/agents/test_research_agent.py      # agent contract; needs no API key
 pytest tests/agents/test_strategy_selector.py   # agent contract; needs no API key
 ALLOW_LIVE_TESTS=true pytest -m ibkr            # requires a running IB Gateway
 ALLOW_LIVE_TESTS=true pytest -m ibkr tests/data # data layer against IBKR Paper
 ALLOW_LIVE_TESTS=true ANTHROPIC_API_KEY=... pytest -m llm   # one real model call, no trades
+
+# SUBMITS A REAL PAPER ORDER. Two variables, deliberately: unlocking the gateway
+# for a read-only diagnostic must not also authorise an order.
+ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true IBKR_READ_ONLY=false \
+  pytest -m paper_execution -s                  # or: make test-paper-execution
 ```
 
 `universe run` reads stored data only — it never collects and never opens a broker connection,
@@ -541,6 +662,16 @@ exactly the prices that were visible when the contract was chosen. It requires a
 account snapshot and reports `ACCOUNT_SNAPSHOT_UNAVAILABLE` rather than assuming the money is
 there — run `risk capture-account` first. Re-running over the same upstream artifacts is
 idempotent: the second run records `ALREADY_ALLOCATED` and reserves nothing.
+
+`execution run` consumes a stored allocation run and executes only `APPROVED` authorisations;
+it takes no `--as-of` because the authorisation's own validity window is what decides whether
+it may still be acted on. Without `--confirm` it builds nothing and sends nothing;
+`--dry-run` never constructs a broker at all, so "a dry run cannot place an order" is
+structural rather than a flag anyone has to check correctly. Re-running is idempotent in the
+strongest sense available: the second run records `ALREADY_SUBMITTED`, reserves no new
+identity and stores no new attempt. An `UNKNOWN` execution is resolved with
+`execution explain --resolve`, which *reads* broker state — there is no command that retries
+a submission.
 
 Every other command exits `3` until its milestone lands. Command help is tagged `(read-only)` or
 `(mutates state)` — keep that up when adding commands, and note that Rich swallows
@@ -731,6 +862,40 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   and the rest). Adding members is additive and keeps *one* authoritative list evaluation can
   aggregate across milestones; a parallel enum would have guaranteed the two drifted.
   `schemas/risk_decision.json` enumerates the same set and must be updated with it.
+- **`ExecutionReasonCode` is a separate vocabulary from `RiskReasonCode`, deliberately.**
+  Risk answers *may we trade this?*; execution answers *what happened when we tried to send
+  it?* — a question the risk engine has no opinion about. Codes that look alike mean
+  different things: `CURRENCY_MISMATCH` there refused to size a position, here it refuses to
+  place an order for one that was somehow sized anyway. This is the one place a parallel enum
+  is right, and the reason is that they are answers to different questions rather than two
+  lists of the same answers.
+- **`Broker.orders_submitted` counts *attempts*, and the increment happens before the
+  submission.** Milestone 2 counted successes, which was safe only because no submission
+  could succeed. Counting successes now would let a client timeout — the one case where an
+  order may be live and unacknowledged — report zero submitted orders, which is exactly when
+  a caller must not believe nothing was sent. A read-only refusal still counts zero, because
+  that guard runs before anything leaves the process.
+- **An execution run's id includes the ledger's state, not only its inputs.** The same
+  authorisations executed against a ledger that has since recorded a submission are a
+  different decision reaching a different answer — the second run refuses where the first
+  sent. An id derived from the inputs alone collides the two and the immutable store refuses
+  to write the second. Exactly the lesson `allocation` records about the campaign's committed
+  state, rediscovered by a test.
+- **A dry run may report any status except one that claims a trade.** The run validator
+  forbids `SUCCESS` and `PARTIAL` rather than requiring `DRY_RUN`: a dry run that found no
+  allocation run has something specific to say, and forcing the label would replace a
+  diagnosis with a placeholder. This was found by running the CLI, not by a test — the
+  stricter rule crashed `execution run --dry-run` on an empty store.
+- **The M1 `PurchaseCard` is minted here, not forked.** Milestone 7 recommended it, and spec
+  §12 requires a card before execution. Its *why* — hypothesis, confidence, invalidation
+  conditions — is read from the stored research report and strategy decision rather than
+  restated, so an execution layer never writes research. Missing provenance is
+  `PROVENANCE_UNAVAILABLE`; "we could not look" and "we declined" stay different facts.
+- **`data/execution/` holds the record of what was actually sent.** Base records are written
+  once, before the broker call; every later observation is a line in
+  `events/<execution_id>.jsonl` and the current record is folded from them. A history that
+  cannot be replayed raises rather than being skipped — a contradiction on disk is worth
+  surfacing, and quietly ignoring it would leave the wrong state on screen.
 
 This directory is its own git repository (`git init`-ed, one commit: the specification). The
 enclosing `/home/dmytro/git/` is a separate repo full of unrelated projects; nothing here should

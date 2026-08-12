@@ -1,0 +1,143 @@
+# Execution policy (Milestone 8).
+#
+# This is the first stage in the whole system permitted to send an order to a
+# broker, so every default here is the conservative one and widening any of
+# them is a deliberate, visible edit.
+#
+# Two switches must BOTH be on before anything is sent:
+#
+#   1. `enabled: true` below — the system-level permission;
+#   2. an explicit execution authorisation per run (`execution run --confirm`).
+#
+# Neither implies the other. An allocation id is not permission to trade, and a
+# configuration flag is not a decision to trade today.
+#
+# Monetary values are quoted strings or integers so they parse as exact
+# decimals. An unquoted 0.50 would be a binary float and is rejected.
+
+# Master switch. Ships OFF. With this false, `execution run` still validates,
+# still builds the purchase card and still shows the order it would send — it
+# simply never reaches a broker.
+enabled: false
+
+# LIVE is refused outright here, on top of the Milestone 1 environment guards
+# (LIVE_TRADING_CONFIRMED and LIVE_READINESS_CHECKLIST_SIGNED_OFF) and on top
+# of the broker adapter's own refusal. Live readiness is Milestone 12; three
+# independent refusals is the correct number for the one irreversible action
+# this system can take.
+allow_live: false
+paper_only: true
+
+# An execution request must carry an explicit authorisation. There is no
+# supported configuration in which loading an allocation submits it; the key
+# exists so that its absence is visible rather than assumed.
+require_explicit_authorization: true
+
+# --- the order --------------------------------------------------------------
+#
+# Deliberately narrow. LIMIT only: a market order on an option with a wide
+# spread is an unbounded price, and Milestone 7 authorised a specific amount of
+# capital based on a specific quoted cost. MARKET is listed in the Milestone 1
+# OrderType vocabulary and is deliberately NOT permitted here.
+default_order_type: LIMIT
+permitted_order_types: [LIMIT]
+
+# DAY, so an unfilled order does not quietly survive into a session whose
+# research nobody has revisited. Milestone 7 authorisations are short-lived by
+# design and a GTC order would outlive the thesis that justified it.
+time_in_force: DAY
+
+# How the limit price is derived from the authorisation's reference price.
+# The reference price is the cost of one unit of the structure as Milestone 7
+# recorded it (the ask, for a debit structure).
+#
+#   0.0  -> submit exactly the reference price.
+#
+# Positive values pay above the reference, negative values bid below it. This
+# is the only knob that changes the price sent, and it is applied to a stored
+# figure — execution never reads a new price and never reprices in flight.
+limit_price_offset_pct: 0.0
+
+# Round the derived limit to this increment, always in the direction that
+# spends LESS (down for a debit). Rounding up would pay a price nobody
+# authorised, one cent at a time.
+price_increment: "0.01"
+
+# --- validity windows -------------------------------------------------------
+#
+# Two different clocks, and both must be inside their window. An authorisation
+# can be fresh while the price it rests on is stale (a run started promptly
+# against yesterday's quotes), and the reverse cannot happen but is not assumed.
+
+# How long an authorisation may be acted on, measured from `decided_at`.
+# 60 minutes: long enough to review a run before confirming it, short enough
+# that the market has not moved out from under the quoted cost.
+allocation_validity_minutes: 60
+
+# How old the quote behind the reference price may be at the execution instant.
+# 900 seconds. Deliberately tighter than contract_selection.yaml's 86,400s
+# selection window and looser than risk.yaml's 300s decision window: selection
+# asks "was this contract choosable", execution asks "is this price still
+# something to send an order at".
+price_validity_seconds: 900
+
+# --- price drift ------------------------------------------------------------
+#
+# Execution does not chase the market. Where a current price is explicitly
+# supplied to the validator, a deviation from the authorisation's reference
+# beyond this percentage is EXECUTION_PRICE_DRIFT and the order is not sent —
+# a changed trade needs a new Milestone 7 authorisation, not a repriced order.
+#
+# Milestone 8 never fetches a price of its own to compare against (the
+# one-live-round-trip constraint makes an extra pre-submission quote unsafe),
+# so this bounds an explicitly supplied comparison rather than a silent one.
+max_price_drift_pct: 2.0
+allow_repricing: false
+
+# --- market session ---------------------------------------------------------
+#
+# Refuse before calling the broker when the exchange calendar says the market
+# is closed. Determined deterministically from config/data.yaml's calendar; a
+# year the calendar does not cover answers UNKNOWN, and `require_market_open`
+# decides whether an unknown session blocks a trade.
+require_market_open: true
+block_on_unknown_session: true
+
+# --- broker -----------------------------------------------------------------
+#
+# One submission, one short-lived connection. Milestone 2 established that only
+# the first uncached round trip on a connection is reliably answered against the
+# validated TWS build, so the execution path spends that round trip on the order
+# itself: no health check, no account read, no contract qualification first.
+one_connection_per_submission: true
+
+# Bound on waiting for the broker to acknowledge a submission. A timeout is
+# BROKER_TIMEOUT and the execution goes to UNKNOWN — never to "safe to retry".
+submission_timeout_seconds: 30
+
+# Never. A timeout means the order may already be at the broker; a retry is how
+# one intention becomes two positions. Resolution is by observation, and this
+# key exists to make the absence of retry a stated policy rather than an
+# oversight.
+auto_retry_on_timeout: false
+
+# The connected session must prove it is the expected paper account before an
+# order is sent. IBKR paper accounts are prefixed DU (DF for paper advisors);
+# a session whose account does not match refuses rather than guesses.
+verify_paper_account: true
+paper_account_prefixes: [DU, DF]
+
+# --- structures -------------------------------------------------------------
+#
+# A multi-leg strategy is ONE position and is sent as ONE order. Straddles and
+# strangles go to IBKR as a combo (BAG) order so the structure fills or does
+# not; submitting the legs independently could leave a naked long call where a
+# straddle was authorised. Where a combo cannot be built, the answer is
+# MULTI_LEG_UNSUPPORTED — never two unrelated single-leg orders.
+multi_leg_as_combo: true
+allow_independent_leg_orders: false
+
+# The shipped strategies are all long-premium structures. A SELL leg would be a
+# short option, which nothing upstream is authorised to select; refusing it here
+# means a bug upstream cannot become an uncovered position.
+allow_short_legs: false

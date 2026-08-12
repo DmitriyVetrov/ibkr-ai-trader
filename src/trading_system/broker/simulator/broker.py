@@ -11,14 +11,21 @@ code that mishandles positions or orders pass unnoticed.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from trading_system.broker.base import (
     Broker,
     BrokerConnectionError,
+    BrokerResponseError,
     MarketDataUnavailableError,
     OptionChainUnavailableError,
+)
+from trading_system.broker.simulator.execution import (
+    SimulatedOrder,
+    SimulatedOrderBook,
+    cancel_order,
+    simulate_order_submission,
 )
 from trading_system.broker.simulator.market import (
     SIMULATED_SOURCE,
@@ -28,6 +35,7 @@ from trading_system.broker.simulator.market import (
 )
 from trading_system.domain.enums import (
     BrokerConnectionState,
+    LegAction,
     OptionRight,
     OrderSide,
     OrderStatus,
@@ -41,8 +49,10 @@ from trading_system.domain.models import (
     BrokerHealth,
     BrokerOrder,
     BrokerPosition,
+    ExecutionResult,
     MarketDataSnapshot,
     OptionChainSnapshot,
+    OrderIntent,
 )
 from trading_system.infrastructure.clock import Clock, SystemClock
 
@@ -74,6 +84,11 @@ class SimulatedBrokerState:
     positions: list[BrokerPosition] = field(default_factory=list)
     open_orders: list[BrokerOrder] = field(default_factory=list)
     executions: list[BrokerExecution] = field(default_factory=list)
+
+    #: Orders this simulator has been sent (Milestone 8). Separate from
+    #: ``open_orders``, which is the pre-existing fixture: a test asserting
+    #: "this run submitted one order" must not have to subtract the scenery.
+    book: SimulatedOrderBook = field(default_factory=SimulatedOrderBook)
 
     #: Symbols the simulator refuses to quote, for exercising the
     #: "market data unavailable" path without touching a real broker.
@@ -176,9 +191,10 @@ def default_simulated_state(
 class SimulatedBroker(Broker):
     """An in-process broker backed by fixed state.
 
-    Read-only by default like every other broker in the system. Order
-    submission raises ``NOT_IMPLEMENTED`` even when the read-only flag is
-    cleared, because Milestone 2 has no matching engine to route to.
+    Read-only by default like every other broker in the system. Constructed
+    with ``read_only=False`` it can execute against the deterministic matching
+    engine in :mod:`trading_system.broker.simulator.execution` — no network, no
+    randomness, and every outcome arranged by the scenario beforehand.
     """
 
     def __init__(
@@ -335,3 +351,69 @@ class SimulatedBroker(Broker):
     def reference_price(self, symbol: str) -> Decimal:
         """Expose the deterministic reference price used by the simulated quote."""
         return simulated_reference_price(symbol)
+
+    # --- execution (Milestone 8) -------------------------------------------
+    @property
+    def book(self) -> SimulatedOrderBook:
+        """Orders this broker has been sent. Empty until something submits one."""
+        return self._state.book
+
+    @property
+    def submitted_orders(self) -> list[SimulatedOrder]:
+        return list(self._state.book.orders.values())
+
+    def _submit_order(self, intent: OrderIntent) -> ExecutionResult:
+        """Route an order into the deterministic matching engine.
+
+        Reached only through :meth:`Broker.place_order`, which refuses while
+        read-only and has already counted the attempt.
+        """
+        self._require_connection()
+        return simulate_order_submission(
+            intent,
+            self._state.book,
+            broker_name=self.name,
+            now=self._clock.now(),
+            trading_mode=self.trading_mode,
+        )
+
+    def _cancel_order(self, broker_order_id: str) -> BrokerOrder:
+        self._require_connection()
+        if broker_order_id not in self._state.book.orders:
+            raise BrokerResponseError(
+                f"{self.name} has no order {broker_order_id}; refusing to report a "
+                f"cancellation of an order it never received"
+            )
+        now = self._clock.now()
+        order = cancel_order(self._state.book, broker_order_id, at=now)
+        return self._to_broker_order(order, now)
+
+    def get_order(self, broker_order_id: str) -> BrokerOrder | None:
+        """Look one submitted order up. ``None`` when this broker never saw it."""
+        self._require_connection()
+        order = self._state.book.orders.get(broker_order_id)
+        return None if order is None else self._to_broker_order(order, self._clock.now())
+
+    def _to_broker_order(self, order: SimulatedOrder, now: datetime) -> BrokerOrder:
+        leg = order.intent.legs[0]
+        return BrokerOrder(
+            broker_order_id=order.broker_order_id,
+            account_id=self._state.account_id,
+            as_of=now,
+            source=self.name,
+            contract_id=leg.broker_contract_id,
+            symbol=order.intent.underlying,
+            security_type=SecurityType.OPTION,
+            local_symbol=leg.occ_symbol,
+            side=OrderSide.BUY if leg.action is LegAction.BUY else OrderSide.SELL,
+            quantity=Decimal(order.intent.quantity),
+            order_type=order.intent.order_type.value,
+            limit_price=order.intent.limit_price,
+            time_in_force=order.intent.time_in_force.value,
+            status=order.status,
+            filled_quantity=Decimal(order.filled_quantity),
+            remaining_quantity=Decimal(order.remaining_quantity),
+            average_fill_price=order.average_fill_price,
+            submitted_at=order.submitted_at,
+            updated_at=order.updated_at or now,
+        )

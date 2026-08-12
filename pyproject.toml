@@ -68,6 +68,12 @@ markers = [
     "paper: runs against the IBKR paper account; requires ALLOW_LIVE_TESTS=true",
     "live: capable of touching a real broker account; requires ALLOW_LIVE_TESTS=true",
     "llm: requires a real Anthropic API call; never run by default",
+    # The only marker in the suite that can place a real order. It needs
+    # ALLOW_LIVE_TESTS=true *and* RUN_PAPER_EXECUTION_TESTS=true, and refuses
+    # to run in any mode but PAPER. Two variables rather than one because a
+    # developer who unlocked the gateway for a read-only diagnostic must not
+    # thereby have authorised an order (brief section 45).
+    "paper_execution: SUBMITS A REAL PAPER ORDER; needs ALLOW_LIVE_TESTS=true and RUN_PAPER_EXECUTION_TESTS=true",
 ]
 filterwarnings = [
     "error",

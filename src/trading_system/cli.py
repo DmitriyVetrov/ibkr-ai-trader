@@ -45,6 +45,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from trading_system.data.collectors import CollectionReport
     from trading_system.data.service import DataService
     from trading_system.domain.enums import DataType
+    from trading_system.execution.service import ExecutionService
     from trading_system.research.service import ResearchService
     from trading_system.strategies.service import ContractSelectionService, StrategyService
     from trading_system.universe.service import UniverseSelectionService
@@ -131,6 +132,16 @@ allocation_app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+execution_app = typer.Typer(
+    help=(
+        "Submit approved authorisations to the broker, and inspect what was "
+        "sent. The ONLY command group in this system that can place an order. "
+        "It requires both execution.enabled in configuration and an explicit "
+        "--confirm; --dry-run builds and shows an order without opening a "
+        "broker connection at all. (mutates broker state)"
+    ),
+    no_args_is_help=True,
+)
 reports_app = typer.Typer(
     help="Generate and inspect reports. (read-only)",
     no_args_is_help=True,
@@ -145,6 +156,7 @@ app.add_typer(strategy_app, name="strategy")
 app.add_typer(contract_app, name="contract")
 app.add_typer(risk_app, name="risk")
 app.add_typer(allocation_app, name="allocation")
+app.add_typer(execution_app, name="execution")
 app.add_typer(reports_app, name="reports")
 
 
@@ -3089,6 +3101,378 @@ def reports_daily() -> None:
 def reports_performance() -> None:
     """Show campaign performance attribution. (read-only)"""
     _not_implemented("performance report", "Milestone 11 (evaluation)")
+
+
+# ---------------------------------------------------------------------------
+# Execution (Milestone 8)
+#
+# The only command group in this system that can place an order, and the only
+# one whose commands can change broker state. Two independent switches must
+# both be on before anything is sent — `execution.enabled` in configuration and
+# `--confirm` on the command line — and neither implies the other. `--dry-run`
+# never constructs a broker at all, so its promise is structural.
+# ---------------------------------------------------------------------------
+def _execution_service() -> ExecutionService:
+    from trading_system.execution.service import ExecutionService
+
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        err_console.print(f"[red]CONFIGURATION ERROR[/red]\n{exc}")
+        raise typer.Exit(code=EXIT_ERROR) from exc
+    return ExecutionService(settings=settings, config=config)
+
+
+def _print_execution_mode(settings: Settings, *, dry_run: bool, enabled: bool) -> None:
+    """State the mode plainly, at the top, before anything else is printed.
+
+    An operator reading terminal scrollback must never have to infer whether
+    the run they are looking at sent real orders.
+    """
+    if dry_run:
+        console.print("\n[bold yellow]EXECUTION DRY RUN[/bold yellow]")
+        console.print("Broker submission : [green]NOT PERFORMED[/green]")
+    else:
+        colour = "red" if settings.trading_mode is TradingMode.LIVE else "cyan"
+        console.print(f"\n[bold {colour}]EXECUTION — {settings.trading_mode.value}[/bold {colour}]")
+    console.print(f"Mode              : {settings.trading_mode.value}")
+    console.print(f"Submission enabled: {'yes' if enabled else 'no (execution.enabled=false)'}")
+
+
+@execution_app.command("validate")
+def execution_validate(
+    execution_id: Annotated[
+        str | None,
+        typer.Option("--execution-id", help="Re-check a stored execution instead of the policy."),
+    ] = None,
+) -> None:
+    """Validate the execution policy, or re-check a stored execution. (read-only)
+
+    Without ``--execution-id`` this prints the policy in force and the switches
+    that would have to be on for an order to be sent. It opens no broker
+    connection and submits nothing.
+    """
+    service = _execution_service()
+    settings = _load_settings()
+
+    if execution_id is not None:
+        record = service.get(execution_id)
+        if record is None:
+            console.print(f"[yellow]UNAVAILABLE[/yellow]  no stored execution {execution_id}")
+            raise typer.Exit(code=EXIT_OK)
+        from trading_system.execution.report import render_execution
+
+        console.print()
+        console.print(render_execution(record))
+        raise typer.Exit(code=EXIT_OK)
+
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        _fail(str(exc))
+        raise AssertionError("unreachable") from exc  # pragma: no cover
+    policy = config.execution
+
+    console.print("\n[bold]EXECUTION POLICY[/bold]")
+    console.print("Model involved : [green]none[/green] — execution is deterministic")
+
+    table = Table(title="Policy in force", show_header=True, header_style="bold")
+    table.add_column("Setting")
+    table.add_column("Value")
+    for name, value in (
+        ("enabled", str(policy.enabled)),
+        ("paper only", str(policy.paper_only)),
+        ("allow live", str(policy.allow_live)),
+        ("requires explicit authorisation", str(policy.require_explicit_authorization)),
+        ("order types", ", ".join(t.value for t in policy.permitted_order_types)),
+        ("time in force", policy.time_in_force.value),
+        ("limit price offset %", str(policy.limit_price_offset_pct)),
+        ("price increment", str(policy.price_increment)),
+        ("allocation validity (min)", str(policy.allocation_validity_minutes)),
+        ("price validity (s)", str(policy.price_validity_seconds)),
+        ("max price drift %", str(policy.max_price_drift_pct)),
+        ("requires market open", str(policy.require_market_open)),
+        ("multi-leg as combo", str(policy.multi_leg_as_combo)),
+        ("independent leg orders", str(policy.allow_independent_leg_orders)),
+        ("short legs", str(policy.allow_short_legs)),
+        ("auto retry on timeout", str(policy.auto_retry_on_timeout)),
+        ("verify paper account", str(policy.verify_paper_account)),
+    ):
+        table.add_row(name, value)
+    console.print(table)
+
+    console.print(
+        "\nTwo switches must BOTH be on for an order to be sent: [bold]execution.enabled[/bold] "
+        "in config/execution.yaml, and [bold]--confirm[/bold] on 'execution run'. Naming an "
+        "allocation is not permission to trade."
+    )
+    console.print(
+        "A timeout is never retried: an order that may already be at the broker is resolved by "
+        "looking, not by sending a second one."
+    )
+    console.print("[green]PASS[/green]  Policy is valid. No orders were submitted.")
+
+
+@execution_app.command("run")
+def execution_run_command(
+    allocation_id: Annotated[
+        list[str] | None,
+        typer.Option("--allocation-id", help="Execute these authorisations. Repeatable."),
+    ] = None,
+    run_id: Annotated[
+        str | None,
+        typer.Option(
+            "--run-id",
+            "--allocation-run-id",
+            help="The allocation run to execute. Defaults to the most recent.",
+        ),
+    ] = None,
+    symbol: Annotated[
+        list[str] | None,
+        typer.Option("--symbol", help="Restrict to these underlyings. Repeatable."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Build and show the order; never contact a broker."),
+    ] = False,
+    confirm: Annotated[
+        bool,
+        typer.Option(
+            "--confirm",
+            help="Explicitly authorise submission. Required for any real order.",
+        ),
+    ] = False,
+) -> None:
+    """Submit approved authorisations to the broker. (MUTATES BROKER STATE)
+
+    The only command in this system that can place an order.
+
+    ``--dry-run`` loads the authorisation, validates it, builds the purchase
+    card and the broker order, and prints exactly what would be sent — without
+    constructing a broker at all. ``--confirm`` is the deliberate execution
+    request; without it, and outside a dry run, nothing is built and nothing is
+    sent, because an allocation id is not permission to trade.
+
+    Nothing here recalculates a quantity, a price or a risk limit: every figure
+    comes from the Milestone 7 authorisation. If the broker refuses because the
+    market moved, that is recorded as a failure — never retried as a smaller
+    order that fits.
+    """
+    from trading_system.domain.enums import ExecutionRunStatus
+    from trading_system.execution.report import render_execution_run
+
+    if dry_run and confirm:
+        _fail(
+            "--dry-run and --confirm contradict each other. A dry run submits nothing; "
+            "--confirm authorises submission. Pick one."
+        )
+
+    service = _execution_service()
+    settings = _load_settings()
+    _print_execution_mode(settings, dry_run=dry_run, enabled=service.enabled)
+
+    run = service.run(
+        allocation_ids=list(allocation_id) if allocation_id else None,
+        allocation_run_id=run_id,
+        symbols=list(symbol) if symbol else None,
+        dry_run=dry_run,
+        authorized=confirm,
+    )
+
+    console.print()
+    console.print(render_execution_run(run.result))
+
+    if dry_run:
+        console.print(
+            "\n[yellow]DRY RUN[/yellow]  No broker connection was opened, no order was sent "
+            "and no broker state changed."
+        )
+        for plan in run.plans:
+            from trading_system.execution.report import render_plan
+
+            console.print()
+            console.print(render_plan(plan))
+        raise typer.Exit(code=EXIT_OK)
+
+    style = "green" if run.result.orders_submitted == 0 else "bold cyan"
+    console.print(
+        f"\nOrders submitted (read off the broker): "
+        f"[{style}]{run.result.orders_submitted}[/{style}]"
+    )
+    if run.stored:
+        console.print(f"[green]Stored[/green] run {run.result.run_id}")
+
+    if run.result.counts.uncertain:
+        _fail(
+            f"{run.result.counts.uncertain} submission(s) are UNCERTAIN. An order may be live "
+            f"at the broker. Do NOT re-run: resolve with 'execution explain --execution-id "
+            f"<ID>', which asks the broker what it actually has."
+        )
+    if run.result.status not in (ExecutionRunStatus.SUCCESS, ExecutionRunStatus.DRY_RUN):
+        _fail(
+            f"execution ended as {run.result.status.value}. "
+            f"{run.result.status_detail or 'No order was submitted.'}"
+        )
+
+
+@execution_app.command("show")
+def execution_show(
+    execution_id: Annotated[
+        str | None,
+        typer.Option("--execution-id", help="One execution. Defaults to the latest run."),
+    ] = None,
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="A specific execution run."),
+    ] = None,
+) -> None:
+    """Show an execution, or the latest execution run. (read-only)"""
+    from trading_system.execution.report import render_execution, render_execution_run
+
+    service = _execution_service()
+    if execution_id is not None:
+        record = service.get(execution_id)
+        if record is None:
+            console.print(f"[yellow]UNAVAILABLE[/yellow]  no stored execution {execution_id}")
+            raise typer.Exit(code=EXIT_OK)
+        console.print()
+        console.print(render_execution(record))
+        return
+
+    result = service.get_run(run_id) if run_id else service.latest_run()
+    if result is None:
+        console.print(
+            "[yellow]UNAVAILABLE[/yellow]  no execution run has been recorded. "
+            "Run 'execution run --dry-run' to see what would be submitted."
+        )
+        raise typer.Exit(code=EXIT_OK)
+    console.print()
+    console.print(render_execution_run(result))
+
+
+@execution_app.command("history")
+def execution_history(
+    allocation_id: Annotated[
+        str | None,
+        typer.Option("--allocation-id", help="Only executions of this authorisation."),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="How many entries to show.")] = 20,
+) -> None:
+    """List recorded executions, newest first. (read-only)"""
+    service = _execution_service()
+    entries = service.history(limit=None)
+    if allocation_id:
+        entries = [entry for entry in entries if entry.allocation_id == allocation_id]
+    entries = entries[:limit]
+
+    if not entries:
+        console.print("[yellow]No executions recorded.[/yellow]")
+        raise typer.Exit(code=EXIT_OK)
+
+    table = Table(title="Execution history", show_header=True, header_style="bold")
+    for column in ("created", "execution", "symbol", "qty", "state", "mode", "broker order"):
+        table.add_column(column)
+    for entry in entries:
+        table.add_row(
+            entry.created_at.isoformat(),
+            entry.execution_id,
+            entry.symbol,
+            str(entry.quantity),
+            entry.state,
+            entry.trading_mode,
+            entry.broker_order_id or "-",
+        )
+    console.print(table)
+
+
+@execution_app.command("explain")
+def execution_explain(
+    execution_id: Annotated[str, typer.Option("--execution-id", help="The execution to explain.")],
+    resolve: Annotated[
+        bool,
+        typer.Option(
+            "--resolve",
+            help="Ask the broker what it actually has, and record the answer.",
+        ),
+    ] = False,
+) -> None:
+    """Explain one execution from its stored event history. (read-only by default)
+
+    With ``--resolve`` it opens a short-lived broker connection and asks what
+    the broker actually holds, appending the answer to the history. That is the
+    supported response to an uncertain submission — it reads state and never
+    submits an order.
+    """
+    from trading_system.execution.report import render_execution
+
+    service = _execution_service()
+    record = service.get(execution_id)
+    if record is None:
+        console.print(f"[yellow]UNAVAILABLE[/yellow]  no stored execution {execution_id}")
+        raise typer.Exit(code=EXIT_OK)
+
+    if resolve:
+        console.print(
+            "[cyan]Asking the broker what it has...[/cyan]  (reads state; submits nothing)"
+        )
+        record = service.resolve(execution_id) or record
+
+    console.print()
+    console.print(render_execution(record))
+
+    events = service.repository.events(execution_id)
+    table = Table(title="Event history (append-only)", show_header=True, header_style="bold")
+    for column in ("#", "observed", "event", "state", "reason", "detail"):
+        table.add_column(column)
+    for event in events:
+        table.add_row(
+            str(event.sequence),
+            event.observed_at.isoformat(),
+            event.event_type.value,
+            event.state.value,
+            event.reason_code.value if event.reason_code else "-",
+            (event.detail or "")[:60],
+        )
+    console.print(table)
+    console.print(
+        "\nThe record above is folded from these events. Nothing was rewritten: a later fill "
+        "appends, it does not edit."
+    )
+
+
+@execution_app.command("cancel")
+def execution_cancel(
+    execution_id: Annotated[str, typer.Option("--execution-id", help="The execution to cancel.")],
+    confirm: Annotated[
+        bool,
+        typer.Option("--confirm", help="Explicitly authorise the cancellation."),
+    ] = False,
+) -> None:
+    """Cancel a live order. (MUTATES BROKER STATE)
+
+    Narrow by design: this closes a submitted order's lifecycle. It is not an
+    exit, and this milestone ships no automated exits — trailing stops, take
+    profits and thesis exits are Milestone 9.
+    """
+    from trading_system.execution.report import render_execution
+
+    if not confirm:
+        _fail("cancelling changes broker state. Pass --confirm to authorise it explicitly.")
+
+    service = _execution_service()
+    record = service.get(execution_id)
+    if record is None:
+        console.print(f"[yellow]UNAVAILABLE[/yellow]  no stored execution {execution_id}")
+        raise typer.Exit(code=EXIT_OK)
+    if not record.submitted:
+        _fail(
+            f"execution {execution_id} is {record.state.value}; there is no live order to cancel."
+        )
+
+    updated = service.cancel(execution_id) or record
+    console.print()
+    console.print(render_execution(updated))
 
 
 def _mask_account(account_id: str | None) -> str:

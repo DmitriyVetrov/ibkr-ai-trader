@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/execution_request.json",
+  "title": "ExecutionRequest",
+  "description": "A deliberate instruction to submit one approved authorisation. Distinct from the allocation it names: an allocation id is a thing that exists, not a decision to act on it. execution_authorized has const true, so an unauthorised request cannot be expressed at all.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "execution_request_id",
+    "allocation_id",
+    "campaign_id",
+    "opportunity_id",
+    "requested_at",
+    "execution_authorized",
+    "order_type",
+    "time_in_force",
+    "trading_mode",
+    "policy_version",
+    "versions"
+  ],
+  "properties": {
+    "execution_request_id": { "type": "string", "minLength": 1 },
+    "allocation_id": { "type": "string", "minLength": 1 },
+    "campaign_id": { "type": "string", "minLength": 1 },
+    "opportunity_id": { "type": "string", "minLength": 1 },
+    "requested_at": { "type": "string", "format": "date-time" },
+    "schema_version": { "type": "string", "minLength": 1 },
+
+    "execution_authorized": {
+      "description": "Always true. A request that could carry false would be one a caller can forget to check; the unauthorised case is expressed by building no request at all.",
+      "const": true
+    },
+    "requested_by": { "type": "string", "minLength": 1 },
+
+    "order_type": {
+      "description": "LIMIT only in this milestone. MARKET exists in the Milestone 1 vocabulary and is refused by execution policy: a market order on an option is an unbounded price.",
+      "enum": ["LIMIT"]
+    },
+    "time_in_force": { "enum": ["DAY", "GTC"] },
+    "trading_mode": { "enum": ["DRY_RUN", "PAPER", "LIVE"] },
+    "dry_run": { "type": "boolean" },
+
+    "policy_version": { "type": "string", "minLength": 1 },
+    "versions": { "$ref": "#/$defs/system_versions" }
+  },
+  "$defs": {
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_version", "config_version"],
+      "properties": {
+        "application_version": { "type": "string", "minLength": 1 },
+        "config_version": { "type": "string", "minLength": 1 },
+        "strategy_spec_version": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

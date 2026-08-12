@@ -111,13 +111,37 @@ def test_read_only_broker_refuses_to_cancel(simulated_broker: SimulatedBroker) -
 
 
 @pytest.mark.unit
-def test_writable_broker_still_reports_not_implemented() -> None:
-    """Clearing read-only does not unlock trading: there is no engine behind it."""
+def test_a_writable_simulator_can_execute_since_milestone_8() -> None:
+    """Milestone 8 supplies the engine that Milestone 2 deliberately left absent.
+
+    Clearing ``read_only`` is now sufficient *for the simulator*, which never
+    leaves the process. Obtaining a writable **IBKR** broker still requires
+    ``build_execution_broker``, PAPER mode and an explicit ``IBKR_READ_ONLY``
+    — see ``tests/execution/test_boundaries.py``.
+    """
+    from trading_system.execution.models import EXECUTION_SCHEMA_VERSION
+
+    assert EXECUTION_SCHEMA_VERSION  # the milestone that made this reachable
+
     broker = SimulatedBroker(read_only=False)
     broker.connect()
+
+    assert broker.orders_submitted == 0
+    assert broker.book.orders == {}
+
+
+@pytest.mark.unit
+def test_a_broker_with_no_engine_still_reports_not_implemented() -> None:
+    """The default hook is unchanged: a broker with no execution path says so.
+
+    Reported rather than fabricated — a simulated fill that looks real is
+    exactly the output that makes an unfinished system appear to work.
+    """
+    broker = RecordingBroker()
+    broker.connect()
+
     with pytest.raises(OrderSubmissionNotImplementedError, match="NOT_IMPLEMENTED"):
         broker.place_order(None)  # type: ignore[arg-type]
-    assert broker.orders_submitted == 0
 
 
 @pytest.mark.unit
@@ -129,14 +153,39 @@ def test_not_implemented_error_names_the_milestone_and_denies_sending() -> None:
 
 
 @pytest.mark.unit
-def test_failed_submission_does_not_increment_the_counter() -> None:
+def test_a_failed_submission_still_counts_as_an_attempt() -> None:
+    """Deliberately the opposite of what Milestone 2 asserted, and a safety fix.
+
+    The counter is incremented *before* ``_submit_order``. If a submission
+    raises — a client timeout, a dropped socket — the order may already have
+    reached the broker. Counting only successes would let exactly that case
+    report zero submitted orders, which is the one circumstance in which a
+    caller must **not** believe nothing was sent.
+
+    Milestone 2 could safely count successes because no submission could ever
+    succeed. Milestone 8 can, so the count means "attempted".
+    """
     broker = RecordingBroker()
     broker.connect()
+
     with pytest.raises(OrderSubmissionNotImplementedError):
         broker.place_order(None)  # type: ignore[arg-type]
-    assert broker.orders_submitted == 0
-    # The attempt is visible even though nothing was submitted.
+
+    assert broker.orders_submitted == 1
     assert broker.order_submission_count == 1
+
+
+@pytest.mark.unit
+def test_a_read_only_refusal_is_not_an_attempt() -> None:
+    """The guard runs first, so nothing left the process and nothing is counted."""
+    broker = RecordingBroker(read_only=True)
+    broker.connect()
+
+    with pytest.raises(ReadOnlyBrokerError):
+        broker.place_order(None)  # type: ignore[arg-type]
+
+    assert broker.orders_submitted == 0
+    assert broker.order_submission_count == 0
 
 
 @pytest.mark.unit

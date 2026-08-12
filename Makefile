@@ -6,12 +6,14 @@ CLI := $(PYTHON) -m trading_system.cli
 .PHONY: help install test test-unit test-contract test-agents test-universe \
         test-research test-strategy test-strategies test-contract-selection \
         test-allocation test-allocation-unit test-allocation-integration test-risk \
+        test-execution test-execution-unit test-execution-integration test-paper-execution \
         test-broker test-data test-integration \
         test-e2e universe-validate universe-run universe-show research-validate \
         research-run research-show strategy-validate strategy-run strategy-show \
         contract-validate contract-select contract-show \
         risk-validate risk-evaluate risk-capture-account \
         allocation-validate allocation-run allocation-show \
+        execution-validate execution-dry-run execution-show execution-history \
         lint format typecheck check health config ibkr-connection ibkr-portfolio clean
 
 help:  ## Show this help
@@ -61,6 +63,23 @@ test-allocation-integration:  ## Research to allocation, end to end, simulated b
 
 test-risk:  ## Risk engine tests (Milestone 7)
 	$(PYTEST) tests/risk
+
+test-execution:  ## Execution tests (Milestone 8). Submits no orders.
+	$(PYTEST) tests/execution
+
+test-execution-unit:  ## Execution units: state machine, order builder, validation
+	$(PYTEST) tests/execution -m unit
+
+test-execution-integration:  ## Research to execution, end to end, simulated broker
+	$(PYTEST) tests/integration/test_research_to_execution.py
+
+test-paper-execution:  ## SUBMITS A REAL PAPER ORDER. Needs a running IB Gateway.
+	@echo "This submits a REAL order to your IBKR PAPER account."
+	@echo "It needs: ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true IBKR_READ_ONLY=false"
+	@echo "Press Ctrl-C within 5 seconds to abort."
+	@sleep 5
+	ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true \
+		$(PYTEST) tests/integration/test_paper_execution.py -m paper_execution -s
 
 test-broker:  ## Broker adapter and simulator tests (Milestone 2)
 	$(PYTEST) tests/broker
@@ -146,6 +165,22 @@ allocation-run:  ## Allocate campaign capital. Submits no orders (Milestone 7)
 
 allocation-show:  ## Show the latest allocation run (Milestone 7)
 	$(CLI) allocation show
+
+execution-validate:  ## Print the execution policy in force (Milestone 8)
+	$(CLI) execution validate
+
+execution-dry-run:  ## Show what would be submitted. Contacts no broker (Milestone 8)
+	$(CLI) execution run --dry-run
+
+execution-show:  ## Show the latest execution run (Milestone 8)
+	$(CLI) execution show
+
+execution-history:  ## List recorded executions (Milestone 8)
+	$(CLI) execution history
+
+# Deliberately no `execution-run` target. Submitting requires `--confirm` on the
+# command line, and a make target that wrapped it would be a way to place an
+# order by typing four characters.
 
 ibkr-connection:  ## Read-only IBKR connection test (Milestone 2)
 	$(CLI) test ibkr-connection

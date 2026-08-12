@@ -29,7 +29,6 @@ from trading_system.broker.base import (
     Broker,
     BrokerConfigurationError,
     BrokerTimeoutError,
-    OrderSubmissionNotImplementedError,
     ReadOnlyBrokerError,
 )
 from trading_system.broker.ibkr import IBKRBroker
@@ -243,10 +242,21 @@ def test_the_brokers_the_data_layer_builds_are_read_only(data_clock) -> None:
         broker.place_order(None)  # type: ignore[arg-type]
 
 
-def test_order_submission_remains_unimplemented(data_clock) -> None:
-    broker = SimulatedBroker(clock=data_clock, read_only=False)
+def test_the_data_layer_can_never_obtain_a_writable_broker(data_clock) -> None:
+    """Milestone 8 made submission possible; the data layer still cannot reach it.
 
-    with pytest.raises(OrderSubmissionNotImplementedError):
+    ``build_broker`` — the only factory the data layer uses — returns a
+    read-only connection whatever the settings say, so this holds even in a
+    deployment where the account has been opened for trading.
+    """
+    from trading_system.broker.factory import build_broker
+    from trading_system.infrastructure.settings import BrokerBackend, Settings
+
+    opened_for_trading = Settings(_env_file=None, ibkr_read_only=False)
+    broker = build_broker(opened_for_trading, backend=BrokerBackend.SIMULATOR)
+
+    assert broker.read_only
+    with pytest.raises(ReadOnlyBrokerError):
         broker.place_order(None)  # type: ignore[arg-type]
     assert broker.orders_submitted == 0
 

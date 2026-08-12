@@ -106,12 +106,32 @@ def test_factory_refuses_live_mode() -> None:
 
 
 @pytest.mark.integration
-def test_factory_refuses_a_writable_ibkr_connection() -> None:
-    from trading_system.broker.base import BrokerConfigurationError
+def test_the_ordinary_factory_never_returns_a_writable_connection() -> None:
+    """Even with the account explicitly opened for trading.
 
+    Milestone 8 added a *second* factory for order submission.
+    ``build_broker`` — what every diagnostic, the data layer and every upstream
+    stage calls — is unchanged: it hands back a connection that refuses to
+    trade regardless of ``IBKR_READ_ONLY``.
+    """
     settings = Settings(_env_file=None, trading_mode=TradingMode.PAPER, ibkr_read_only=False)
-    with pytest.raises(BrokerConfigurationError, match="Milestone 8"):
-        build_broker(settings)
+
+    broker = build_broker(settings, backend=BrokerBackend.SIMULATOR)
+
+    assert broker.read_only
+    assert broker.orders_submitted == 0
+
+
+@pytest.mark.integration
+def test_the_execution_factory_requires_the_read_only_guard_to_be_cleared() -> None:
+    """The writable path exists, and the shipped default still refuses it."""
+    from trading_system.broker.base import BrokerConfigurationError
+    from trading_system.broker.factory import build_execution_broker
+
+    shipped = Settings(_env_file=None, trading_mode=TradingMode.PAPER, ibkr_read_only=True)
+
+    with pytest.raises(BrokerConfigurationError, match="IBKR_READ_ONLY"):
+        build_execution_broker(shipped, backend=BrokerBackend.IBKR)
 
 
 # ---------------------------------------------------------------------------
