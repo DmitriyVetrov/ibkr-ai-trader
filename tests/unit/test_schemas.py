@@ -66,6 +66,20 @@ REQUIRED_SCHEMAS = (
     "execution_event",
     "execution_run",
     "position_snapshot",
+    # Milestone 9 adds the position, reservation and reconciliation boundaries.
+    # `position_snapshot` above stays the narrow Milestone 1 contract, which a
+    # `StrategyPosition` projects onto; `broker_position_snapshot` is what the
+    # broker actually reported, `expected_position` is what confirmed fills say
+    # should exist, and the two are deliberately different artifacts. There is
+    # no Milestone 1 schema for a reconciliation report, so
+    # `reconciliation_result` is the only stored shape for one.
+    "broker_position_snapshot",
+    "expected_position",
+    "position_fill",
+    "reservation",
+    "reservation_event",
+    "reconciliation_result",
+    "reconciliation_event",
     "exit_decision",
     "trade_snapshot",
 )

@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/reconciliation_result.json",
+  "title": "ReconciliationResult",
+  "description": "The immutable record of one comparison between internal records and broker reality (Milestone 9). Reconciliation REPORTS; it does not repair: orders_submitted and corrective_orders are both structurally zero and validated as such. This is the wide audit artifact; schemas/reconciliation_report.json's Milestone 1 shape is projected from it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reconciliation_id",
+    "campaign_id",
+    "as_of",
+    "observed_at",
+    "generated_at",
+    "status",
+    "broker",
+    "account_reference",
+    "trading_mode",
+    "content_hash",
+    "versions"
+  ],
+  "properties": {
+    "reconciliation_id": { "type": "string", "minLength": 1 },
+    "campaign_id": { "type": "string", "minLength": 1 },
+    "as_of": { "type": "string", "format": "date-time" },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "status": {
+      "enum": [
+        "MATCH",
+        "MISMATCH",
+        "BROKER_DATA_UNAVAILABLE",
+        "INTERNAL_DATA_UNAVAILABLE",
+        "CONFIGURATION_ERROR"
+      ]
+    },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "broker": { "type": "string", "minLength": 1 },
+    "account_reference": {
+      "description": "Masked. A full broker account number is never stored.",
+      "type": "string",
+      "minLength": 1
+    },
+    "trading_mode": { "enum": ["DRY_RUN", "PAPER", "LIVE"] },
+    "account_read": { "$ref": "#/$defs/read_status" },
+    "positions_read": { "$ref": "#/$defs/read_status" },
+    "orders_read": { "$ref": "#/$defs/read_status" },
+    "fills_read": { "$ref": "#/$defs/read_status" },
+    "position_snapshot_id": { "type": ["string", "null"] },
+    "account_snapshot_id": { "type": ["string", "null"] },
+    "execution_ids": { "type": "array", "items": { "type": "string" } },
+    "reservation_ids": { "type": "array", "items": { "type": "string" } },
+    "expected_position_count": { "type": "integer", "minimum": 0 },
+    "broker_position_count": { "type": "integer", "minimum": 0 },
+    "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "counts": { "$ref": "#/$defs/counts" },
+    "reservations_released": { "type": "array", "items": { "type": "string" } },
+    "reservations_consumed": { "type": "array", "items": { "type": "string" } },
+    "reservations_retained_unknown": { "type": "array", "items": { "type": "string" } },
+    "executions_resolved": { "type": "array", "items": { "type": "string" } },
+    "orders_submitted": {
+      "description": "Structurally zero. Read off the broker's own counter, never asserted.",
+      "type": "integer",
+      "const": 0
+    },
+    "corrective_orders": {
+      "description": "Structurally zero. Automatic corrective trading is out of scope.",
+      "type": "integer",
+      "const": 0
+    },
+    "content_hash": { "type": "string", "minLength": 1 },
+    "versions": { "$ref": "#/$defs/versions" },
+    "status_detail": { "type": ["string", "null"] }
+  },
+  "allOf": [
+    {
+      "description": "MATCH requires that broker positions were actually read. Agreeing with an absence of data is not agreement.",
+      "if": {
+        "properties": { "status": { "const": "MATCH" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": { "positions_read": { "enum": ["OK", "EMPTY"] } },
+        "required": ["positions_read"]
+      }
+    }
+  ],
+  "$defs": {
+    "read_status": {
+      "enum": ["OK", "EMPTY", "UNAVAILABLE", "TIMEOUT", "MALFORMED", "NOT_REQUESTED"]
+    },
+    "severity": { "enum": ["INFO", "WARNING", "CRITICAL"] },
+    "finding_type": {
+      "enum": [
+        "POSITION_MATCH",
+        "ORDER_MATCH",
+        "FILL_MATCH",
+        "RESERVATION_MATCH",
+        "EXPECTED_POSITION_MISSING",
+        "ORPHAN_BROKER_POSITION",
+        "POSITION_QUANTITY_MISMATCH",
+        "POSITION_CONTRACT_MISMATCH",
+        "PARTIAL_STRUCTURE",
+        "ORDER_STATE_MISMATCH",
+        "ORPHAN_BROKER_ORDER",
+        "EXPECTED_ORDER_MISSING",
+        "FAILED_EXECUTION_HAS_BROKER_ORDER",
+        "UNKNOWN_EXECUTION_RESOLVED",
+        "UNKNOWN_EXECUTION_UNRESOLVED",
+        "FILL_MISMATCH",
+        "ORPHAN_BROKER_FILL",
+        "RESERVATION_MISMATCH",
+        "RESERVATION_RELEASED",
+        "RESERVATION_CONSUMED",
+        "RESERVATION_RETAINED_UNKNOWN",
+        "BROKER_DATA_UNAVAILABLE",
+        "BROKER_RETURNED_EMPTY",
+        "INTERNAL_DATA_UNAVAILABLE",
+        "CURRENCY_MISMATCH"
+      ]
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finding_id", "finding_type", "severity", "identifier", "summary"],
+      "properties": {
+        "finding_id": { "type": "string", "minLength": 1 },
+        "finding_type": { "$ref": "#/$defs/finding_type" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "identifier": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "schema_version": { "type": "string", "minLength": 1 },
+        "expected_value": { "type": ["string", "null"] },
+        "observed_value": { "type": ["string", "null"] },
+        "delta": { "type": ["string", "null"] },
+        "expected_provenance": { "type": ["string", "null"] },
+        "broker_provenance": { "type": ["string", "null"] },
+        "observed_at": { "type": ["string", "null"], "format": "date-time" },
+        "broker_timestamp": { "type": ["string", "null"], "format": "date-time" },
+        "symbol": { "type": ["string", "null"] },
+        "contract_id": { "type": ["integer", "null"] },
+        "execution_id": { "type": ["string", "null"] },
+        "allocation_id": { "type": ["string", "null"] },
+        "opportunity_id": { "type": ["string", "null"] },
+        "reservation_id": { "type": ["string", "null"] },
+        "broker_order_id": { "type": ["string", "null"] },
+        "detail": { "type": ["string", "null"] },
+        "recommended_action": {
+          "description": "What a person should do. Never an instruction to trade.",
+          "type": ["string", "null"]
+        }
+      },
+      "allOf": [
+        {
+          "description": "A quantity-style mismatch must show both sides; one side alone cannot be acted on.",
+          "if": {
+            "properties": {
+              "finding_type": {
+                "enum": ["POSITION_QUANTITY_MISMATCH", "ORDER_STATE_MISMATCH", "FILL_MISMATCH"]
+              }
+            },
+            "required": ["finding_type"]
+          },
+          "then": {
+            "properties": {
+              "expected_value": { "type": "string" },
+              "observed_value": { "type": "string" }
+            },
+            "required": ["expected_value", "observed_value"]
+          }
+        }
+      ]
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "positions_compared": { "type": "integer", "minimum": 0 },
+        "positions_matched": { "type": "integer", "minimum": 0 },
+        "orders_compared": { "type": "integer", "minimum": 0 },
+        "fills_compared": { "type": "integer", "minimum": 0 },
+        "reservations_compared": { "type": "integer", "minimum": 0 },
+        "executions_considered": { "type": "integer", "minimum": 0 },
+        "mismatches": { "type": "integer", "minimum": 0 },
+        "critical": { "type": "integer", "minimum": 0 },
+        "warnings": { "type": "integer", "minimum": 0 },
+        "unresolved_unknown": { "type": "integer", "minimum": 0 },
+        "orphan_positions": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["application_version", "config_version"],
+      "properties": {
+        "application_version": { "type": "string", "minLength": 1 },
+        "config_version": { "type": "string", "minLength": 1 },
+        "strategy_spec_version": { "type": ["string", "null"] },
+        "agent_version": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "data_source_versions": { "type": "object" }
+      }
+    }
+  }
+}

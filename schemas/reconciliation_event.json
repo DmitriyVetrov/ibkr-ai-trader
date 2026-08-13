@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/reconciliation_event.json",
+  "title": "ReconciliationEvent",
+  "description": "One appended step in a reconciliation's own history (Milestone 9). Append-only, in the order things happened, so 'what did this run actually do' stays answerable — which is the question a reservation that moved unexpectedly turns into.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "reconciliation_id",
+    "sequence",
+    "event_type",
+    "occurred_at",
+    "observed_at",
+    "source"
+  ],
+  "properties": {
+    "event_id": { "type": "string", "minLength": 1 },
+    "reconciliation_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "event_type": {
+      "enum": [
+        "RECONCILIATION_STARTED",
+        "BROKER_SNAPSHOT_CAPTURED",
+        "BROKER_READ_FAILED",
+        "INTERNAL_LEDGER_READ",
+        "POSITION_MATCH",
+        "POSITION_MISMATCH",
+        "ORDER_MISMATCH",
+        "FILL_MISMATCH",
+        "EXECUTION_RESOLVED",
+        "RESERVATION_CONSUMED",
+        "RESERVATION_RELEASED",
+        "RESERVATION_RETAINED",
+        "SNAPSHOT_REOBSERVED",
+        "RECONCILIATION_COMPLETED"
+      ]
+    },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "source": { "type": "string", "minLength": 1 },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "detail": { "type": ["string", "null"] },
+    "finding_id": { "type": ["string", "null"] },
+    "reservation_id": { "type": ["string", "null"] },
+    "execution_id": { "type": ["string", "null"] },
+    "amount": { "type": ["string", "null"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$" }
+  }
+}

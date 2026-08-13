@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/broker_position_snapshot.json",
+  "title": "BrokerPositionSnapshot",
+  "description": "Everything the broker reported holding at one instant (Milestone 9). Broker reality, normalised and never corrected. A failed read is recorded with read_status UNAVAILABLE/TIMEOUT/MALFORMED and carries NO positions: it must never be readable as an empty account.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "snapshot_id",
+    "account_reference",
+    "broker",
+    "trading_mode",
+    "as_of",
+    "observed_at",
+    "read_status",
+    "content_hash"
+  ],
+  "properties": {
+    "snapshot_id": { "type": "string", "minLength": 1 },
+    "account_reference": {
+      "description": "Masked account reference. A full broker account number is never stored.",
+      "type": "string",
+      "minLength": 1
+    },
+    "broker": { "type": "string", "minLength": 1 },
+    "trading_mode": { "enum": ["DRY_RUN", "PAPER", "LIVE"] },
+    "as_of": { "type": "string", "format": "date-time" },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "read_status": { "$ref": "#/$defs/read_status" },
+    "positions": { "type": "array", "items": { "$ref": "#/$defs/observed_position" } },
+    "content_hash": { "type": "string", "minLength": 1 },
+    "broker_timestamp": { "type": ["string", "null"], "format": "date-time" },
+    "orders_submitted": {
+      "description": "Structurally zero: capturing positions reads and does nothing else.",
+      "type": "integer",
+      "const": 0
+    },
+    "read_only": { "type": "boolean" },
+    "simulated": { "type": "boolean" },
+    "detail": { "type": ["string", "null"] }
+  },
+  "allOf": [
+    {
+      "description": "A failed read carries no positions and must say why.",
+      "if": {
+        "properties": { "read_status": { "enum": ["UNAVAILABLE", "TIMEOUT", "MALFORMED", "NOT_REQUESTED"] } },
+        "required": ["read_status"]
+      },
+      "then": {
+        "properties": {
+          "positions": { "type": "array", "maxItems": 0 },
+          "detail": { "type": "string", "minLength": 1 }
+        },
+        "required": ["detail"]
+      }
+    },
+    {
+      "description": "EMPTY means the broker answered and holds nothing.",
+      "if": {
+        "properties": { "read_status": { "const": "EMPTY" } },
+        "required": ["read_status"]
+      },
+      "then": { "properties": { "positions": { "type": "array", "maxItems": 0 } } }
+    },
+    {
+      "description": "OK means the broker answered with content.",
+      "if": {
+        "properties": { "read_status": { "const": "OK" } },
+        "required": ["read_status"]
+      },
+      "then": { "properties": { "positions": { "type": "array", "minItems": 1 } } }
+    }
+  ],
+  "$defs": {
+    "money": { "type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "nullable_money": { "type": ["string", "null"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "read_status": {
+      "description": "EMPTY and UNAVAILABLE are different facts: one is about the account, the other about the connection.",
+      "enum": ["OK", "EMPTY", "UNAVAILABLE", "TIMEOUT", "MALFORMED", "NOT_REQUESTED"]
+    },
+    "security_type": {
+      "enum": ["STOCK", "OPTION", "FUTURE", "FUTURE_OPTION", "CASH", "INDEX", "OTHER"]
+    },
+    "observed_position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "position_id",
+        "account_reference",
+        "key",
+        "as_of",
+        "observed_at",
+        "underlying",
+        "asset_class",
+        "symbol",
+        "quantity",
+        "broker_source"
+      ],
+      "properties": {
+        "position_id": { "type": "string", "minLength": 1 },
+        "account_reference": { "type": "string", "minLength": 1 },
+        "key": {
+          "description": "Deterministic contract identity. 'cid:<id>' when the broker supplied a contract id, 'sym:...' otherwise.",
+          "type": "string",
+          "minLength": 1
+        },
+        "as_of": { "type": "string", "format": "date-time" },
+        "observed_at": { "type": "string", "format": "date-time" },
+        "schema_version": { "type": "string", "minLength": 1 },
+        "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+        "asset_class": { "$ref": "#/$defs/security_type" },
+        "symbol": { "type": "string", "minLength": 1 },
+        "contract_id": { "type": ["integer", "null"] },
+        "trading_class": { "type": ["string", "null"] },
+        "exchange": { "type": ["string", "null"] },
+        "local_symbol": { "type": ["string", "null"] },
+        "currency": { "type": ["string", "null"] },
+        "multiplier": { "type": ["integer", "null"], "minimum": 1 },
+        "expiration": { "type": ["string", "null"], "format": "date" },
+        "strike": { "$ref": "#/$defs/nullable_money" },
+        "right": { "enum": ["CALL", "PUT", null] },
+        "quantity": {
+          "description": "Signed. Negative is short. A Decimal because that is what the broker reports.",
+          "$ref": "#/$defs/money"
+        },
+        "average_cost": {
+          "description": "Money for one contract, multiplier included — IBKR's avgCost.",
+          "$ref": "#/$defs/nullable_money"
+        },
+        "market_price": { "$ref": "#/$defs/nullable_money" },
+        "market_value": { "$ref": "#/$defs/nullable_money" },
+        "unrealized_pnl": { "$ref": "#/$defs/nullable_money" },
+        "realized_pnl": { "$ref": "#/$defs/nullable_money" },
+        "broker_source": { "type": "string", "minLength": 1 },
+        "broker_timestamp": { "type": ["string", "null"], "format": "date-time" },
+        "provenance": { "enum": ["SYSTEM_EXECUTION", "UNKNOWN"] },
+        "identified_by_contract_id": { "type": "boolean" },
+        "simulated": { "type": "boolean" }
+      }
+    }
+  }
+}

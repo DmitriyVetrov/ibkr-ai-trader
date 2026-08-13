@@ -1027,3 +1027,234 @@ def test_the_allocation_names_every_upstream_artifact(campaign_allocation) -> No
         "allocation_id",
     ):
         assert payload[field], f"{field} is empty"
+
+
+# ---------------------------------------------------------------------------
+# Milestone 9: positions, reservations and reconciliation
+#
+# The milestone stores two position records deliberately kept apart — what the
+# broker reported, and what confirmed fills say should exist — plus the capital
+# ledger and the comparison between them. Each has its own schema, and the
+# narrow Milestone 1 shapes (``position_snapshot``, ``ReconciliationReport``)
+# are projected from them rather than replaced by them.
+# ---------------------------------------------------------------------------
+_MILESTONE_9_ARTIFACTS = [
+    ("broker_position_snapshot", "broker_position_snapshot"),
+    ("expected_position", "expected_position"),
+    ("position_fill", "position_fill"),
+    ("reservation", "reservation"),
+    ("reservation_event", "reservation_event"),
+    ("reconciliation_result", "reconciliation_result"),
+    ("reconciliation_event", "reconciliation_event"),
+]
+
+
+@pytest.mark.contract
+@pytest.mark.parametrize(("fixture_name", "schema_name"), _MILESTONE_9_ARTIFACTS)
+def test_a_milestone_9_artifact_validates_against_its_own_schema(
+    fixture_name: str,
+    schema_name: str,
+    request: pytest.FixtureRequest,
+    load_schema: Callable[[str], dict[str, Any]],
+) -> None:
+    model = request.getfixturevalue(fixture_name)
+    _validator(load_schema(schema_name)).validate(_dump(model))
+
+
+@pytest.mark.contract
+@pytest.mark.parametrize(("fixture_name", "schema_name"), _MILESTONE_9_ARTIFACTS)
+def test_a_milestone_9_schema_rejects_unknown_fields(
+    fixture_name: str,
+    schema_name: str,
+    request: pytest.FixtureRequest,
+    load_schema: Callable[[str], dict[str, Any]],
+) -> None:
+    payload = _dump(request.getfixturevalue(fixture_name))
+    payload["smuggled_field"] = "surprise"
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema(schema_name)).validate(payload)
+
+
+@pytest.mark.contract
+@pytest.mark.parametrize(("fixture_name", "schema_name"), _MILESTONE_9_ARTIFACTS)
+def test_a_milestone_9_schema_requires_its_required_fields(
+    fixture_name: str,
+    schema_name: str,
+    request: pytest.FixtureRequest,
+    load_schema: Callable[[str], dict[str, Any]],
+) -> None:
+    schema = load_schema(schema_name)
+    payload = _dump(request.getfixturevalue(fixture_name))
+
+    for field in schema["required"]:
+        broken = copy.deepcopy(payload)
+        del broken[field]
+        with pytest.raises(ValidationError):
+            _validator(schema).validate(broken)
+
+
+@pytest.mark.contract
+def test_a_reconciliation_schema_refuses_a_submitted_order(
+    reconciliation_result, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """Structural, in the schema as well as in the model: it cannot have traded."""
+    payload = _dump(reconciliation_result)
+    payload["orders_submitted"] = 1
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("reconciliation_result")).validate(payload)
+
+
+@pytest.mark.contract
+def test_a_reconciliation_schema_refuses_a_corrective_order(
+    reconciliation_result, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    payload = _dump(reconciliation_result)
+    payload["corrective_orders"] = 1
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("reconciliation_result")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_snapshot_schema_refuses_a_failed_read_carrying_positions(
+    broker_position_snapshot, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """ "We could not look" must not be expressible as "here is what it holds"."""
+    payload = _dump(broker_position_snapshot)
+    payload["read_status"] = "UNAVAILABLE"
+    payload["detail"] = "gateway down"
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("broker_position_snapshot")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_snapshot_schema_refuses_a_match_over_an_unread_broker(
+    reconciliation_result, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    payload = _dump(reconciliation_result)
+    assert payload["status"] == "MATCH"
+    payload["positions_read"] = "UNAVAILABLE"
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("reconciliation_result")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_reservation_schema_requires_a_reason_for_an_unknown(
+    reservation, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """An operator must be able to filter for exactly the locked capital."""
+    payload = _dump(reservation)
+    payload["state"] = "UNKNOWN"
+    payload["reason_codes"] = ["AUTHORIZED"]
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("reservation")).validate(payload)
+
+
+@pytest.mark.contract
+def test_the_reservation_schema_requires_evidence_for_an_overrun(
+    reservation, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    payload = _dump(reservation)
+    payload["over_authorized_amount"] = "100.00"
+
+    with pytest.raises(ValidationError):
+        _validator(load_schema("reservation")).validate(payload)
+
+
+@pytest.mark.contract
+def test_reservation_money_crosses_the_boundary_as_exact_strings(reservation) -> None:
+    payload = _dump(reservation)
+
+    for field in ("authorized_amount", "consumed_amount", "released_amount", "remaining_amount"):
+        assert isinstance(payload[field], str)
+    assert Decimal(payload["consumed_amount"]) + Decimal(payload["released_amount"]) + Decimal(
+        payload["remaining_amount"]
+    ) == Decimal(payload["authorized_amount"])
+
+
+@pytest.mark.contract
+def test_a_reconciliation_projects_onto_the_milestone_1_report(reconciliation_result) -> None:
+    """Milestone 9 -> the narrow ``ReconciliationReport`` the system was built on."""
+    projected = reconciliation_result.to_reconciliation_report()
+
+    assert projected.broker == reconciliation_result.broker
+    assert projected.as_of == reconciliation_result.as_of
+    assert projected.blocks_new_executions is (not reconciliation_result.matched)
+
+
+@pytest.mark.contract
+def test_a_strategy_position_projects_onto_the_milestone_1_position_snapshot(
+    load_schema: Callable[[str], dict[str, Any]],
+) -> None:
+    from decimal import Decimal as _Decimal
+
+    from tests.positions.factories import MASKED, NOW, execution_leg, execution_record
+
+    from trading_system.domain.enums import TradingMode as _TradingMode
+    from trading_system.domain.models import OptionLeg as _OptionLeg
+    from trading_system.positions.expected import strategy_position_for
+    from trading_system.positions.snapshot import build_position_snapshot
+
+    record = execution_record(quantity=2, filled_quantity=2)
+    snapshot = build_position_snapshot(
+        [_broker_position_for(record)],
+        broker="SIMULATOR",
+        account_id="DU1234567",
+        trading_mode=_TradingMode.PAPER,
+        as_of=NOW,
+        observed_at=NOW,
+    )
+    structure = strategy_position_for(record, snapshot=snapshot, as_of=NOW, account=MASKED)
+    assert structure is not None
+
+    leg = execution_leg()
+    projected = structure.to_position_snapshot(
+        legs=[
+            _OptionLeg(
+                underlying=leg.underlying,
+                right=leg.right,
+                strike=leg.strike,
+                expiration=leg.expiration,
+                action=leg.action,
+                multiplier=leg.multiplier,
+                broker_contract_id=leg.contract_id,
+            )
+        ],
+        source="SIMULATOR",
+        average_entry_price=_Decimal("5.95"),
+    )
+
+    _validator(load_schema("position_snapshot")).validate(_dump(projected))
+    assert projected.quantity == 2
+
+
+def _broker_position_for(record):
+    """The broker holding one execution's legs would have created."""
+    from decimal import Decimal as _Decimal
+
+    from tests.positions.factories import ACCOUNT, NOW
+
+    from trading_system.domain.enums import SecurityType as _SecurityType
+    from trading_system.domain.models import BrokerPosition as _BrokerPosition
+
+    leg = record.legs[0]
+    return _BrokerPosition(
+        account_id=ACCOUNT,
+        symbol=record.underlying,
+        security_type=_SecurityType.OPTION,
+        as_of=NOW,
+        source="SIMULATOR",
+        contract_id=leg.contract_id,
+        currency=leg.currency,
+        multiplier=leg.multiplier,
+        quantity=_Decimal(record.filled_quantity * leg.ratio),
+        average_cost=_Decimal("595.00"),
+        expiration=leg.expiration,
+        strike=leg.strike,
+        right=leg.right,
+    )

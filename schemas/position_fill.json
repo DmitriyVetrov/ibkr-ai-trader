@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/position_fill.json",
+  "title": "ObservedFill",
+  "description": "One execution report from the broker, recorded once (Milestone 9). The ground truth for what actually traded: a position is reconstructed from these and never from the orders that were submitted. commission is nullable and stays nullable — IBKR routinely reports a fill before its commission report, and zero is a claim about cost.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "fill_id",
+    "account_reference",
+    "key",
+    "underlying",
+    "symbol",
+    "asset_class",
+    "side",
+    "quantity",
+    "price",
+    "executed_at",
+    "observed_at",
+    "broker_source"
+  ],
+  "properties": {
+    "fill_id": {
+      "description": "Derived from the broker's execution id where there is one; otherwise from the strongest deterministic combination of authoritative broker fields.",
+      "type": "string",
+      "minLength": 1
+    },
+    "account_reference": { "type": "string", "minLength": 1 },
+    "key": { "type": "string", "minLength": 1 },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "broker_execution_id": { "type": ["string", "null"] },
+    "broker_order_id": { "type": ["string", "null"] },
+    "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+    "symbol": { "type": "string", "minLength": 1 },
+    "asset_class": {
+      "enum": ["STOCK", "OPTION", "FUTURE", "FUTURE_OPTION", "CASH", "INDEX", "OTHER"]
+    },
+    "contract_id": { "type": ["integer", "null"] },
+    "expiration": { "type": ["string", "null"], "format": "date" },
+    "strike": { "$ref": "#/$defs/nullable_money" },
+    "right": { "enum": ["CALL", "PUT", null] },
+    "multiplier": { "type": ["integer", "null"], "minimum": 1 },
+    "local_symbol": { "type": ["string", "null"] },
+    "trading_class": { "type": ["string", "null"] },
+    "side": { "enum": ["BUY", "SELL"] },
+    "quantity": {
+      "description": "Always positive. Direction lives in 'side'.",
+      "$ref": "#/$defs/money"
+    },
+    "price": {
+      "description": "The broker's quoted terms (6.05 for an option), not money.",
+      "$ref": "#/$defs/money"
+    },
+    "commission": { "$ref": "#/$defs/nullable_money" },
+    "currency": { "type": ["string", "null"] },
+    "executed_at": { "type": "string", "format": "date-time" },
+    "broker_timestamp": { "type": ["string", "null"], "format": "date-time" },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "broker_source": { "type": "string", "minLength": 1 },
+    "execution_id": { "type": ["string", "null"] },
+    "allocation_id": { "type": ["string", "null"] },
+    "opportunity_id": { "type": ["string", "null"] },
+    "provenance": { "enum": ["SYSTEM_EXECUTION", "UNKNOWN"] },
+    "identity_from_broker": {
+      "description": "False when the broker supplied no execution id and identity had to be derived, which is a weaker deduplication guarantee.",
+      "type": "boolean"
+    },
+    "simulated": { "type": "boolean" }
+  },
+  "$defs": {
+    "money": { "type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "nullable_money": { "type": ["string", "null"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$" }
+  }
+}

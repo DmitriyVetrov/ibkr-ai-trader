@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/expected_position.json",
+  "title": "ExpectedPosition",
+  "description": "What this system believes should exist for one instrument, projected from CONFIRMED BROKER FILLS and from nothing else (Milestone 9). An allocation, a submitted order, an acknowledgement and an UNKNOWN submission all establish nothing. This is the internal ledger, deliberately distinct from broker reality; comparing the two is reconciliation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "position_id",
+    "account_reference",
+    "key",
+    "as_of",
+    "underlying",
+    "asset_class",
+    "symbol",
+    "quantity"
+  ],
+  "properties": {
+    "position_id": { "type": "string", "minLength": 1 },
+    "account_reference": { "type": "string", "minLength": 1 },
+    "key": { "type": "string", "minLength": 1 },
+    "as_of": { "type": "string", "format": "date-time" },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+    "asset_class": {
+      "enum": ["STOCK", "OPTION", "FUTURE", "FUTURE_OPTION", "CASH", "INDEX", "OTHER"]
+    },
+    "symbol": { "type": "string", "minLength": 1 },
+    "contract_id": { "type": ["integer", "null"] },
+    "expiration": { "type": ["string", "null"], "format": "date" },
+    "strike": { "$ref": "#/$defs/nullable_money" },
+    "right": { "enum": ["CALL", "PUT", null] },
+    "multiplier": { "type": ["integer", "null"], "minimum": 1 },
+    "currency": { "type": ["string", "null"] },
+    "quantity": {
+      "description": "Net signed quantity: buys add, sells subtract. Zero is a real answer.",
+      "$ref": "#/$defs/money"
+    },
+    "bought_quantity": { "$ref": "#/$defs/money" },
+    "sold_quantity": { "$ref": "#/$defs/money" },
+    "average_price": {
+      "description": "Volume-weighted, in the broker's quoted terms (6.05).",
+      "$ref": "#/$defs/nullable_money"
+    },
+    "average_cost": {
+      "description": "The same figure as money for one contract, multiplier included (605.00). Null when no multiplier was reported — never an assumed 100.",
+      "$ref": "#/$defs/nullable_money"
+    },
+    "total_cost": { "$ref": "#/$defs/nullable_money" },
+    "commission": { "$ref": "#/$defs/nullable_money" },
+    "commission_complete": {
+      "description": "False when a contributing fill reported no commission, so a partial total is never read as complete.",
+      "type": "boolean"
+    },
+    "fill_ids": { "type": "array", "items": { "type": "string" } },
+    "execution_ids": { "type": "array", "items": { "type": "string" } },
+    "allocation_ids": { "type": "array", "items": { "type": "string" } },
+    "opportunity_ids": { "type": "array", "items": { "type": "string" } },
+    "first_fill_at": { "type": ["string", "null"], "format": "date-time" },
+    "last_fill_at": { "type": ["string", "null"], "format": "date-time" },
+    "provenance": { "enum": ["SYSTEM_EXECUTION", "UNKNOWN"] }
+  },
+  "$defs": {
+    "money": { "type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "nullable_money": { "type": ["string", "null"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$" }
+  }
+}

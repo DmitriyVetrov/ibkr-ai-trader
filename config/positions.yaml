@@ -1,0 +1,97 @@
+# Position ledger policy (Milestone 9).
+#
+# Two different things are stored under this policy and they must never be
+# confused:
+#
+#   BROKER OBSERVED POSITION  what the broker says it holds, right now;
+#   INTERNAL EXPECTED POSITION what this system believes should exist, derived
+#                              from confirmed fills and from nothing else.
+#
+# Nothing here can place, cancel or modify an order. The position stage reads
+# broker state and writes its own records; a command in this group that
+# submitted anything would be a bug, and every test asserts zero.
+
+# --- account privacy --------------------------------------------------------
+#
+# Account numbers end up in logs, artifacts and pasted terminal output. Only
+# the trailing characters are ever stored or printed; the full number is never
+# needed to confirm the right account is connected.
+account_mask_visible_characters: 4
+
+# --- contract identity ------------------------------------------------------
+#
+# A position is identified by the broker's own contract id wherever the broker
+# supplies one. Symbol, strike, expiration and right are human-readable labels
+# that several distinct contracts can share (adjusted options after a corporate
+# action are the standard case), so identifying a position by them alone would
+# eventually merge two different instruments into one record.
+#
+# With this true, an option position that arrives without a contract id is
+# recorded with a derived fallback key and flagged, never silently keyed on its
+# human-readable fields as though that were equivalent.
+prefer_broker_contract_id: true
+
+# --- snapshots --------------------------------------------------------------
+snapshot:
+  # An account that genuinely holds nothing is a fact worth recording: it is
+  # the difference between "we looked and there was nothing" and "we never
+  # looked". A failed read is never stored as an empty snapshot.
+  store_empty_snapshots: true
+
+  # How old a stored broker snapshot may be before a consumer should treat it
+  # as stale. Measured against the instant being reconciled, exactly as
+  # risk.yaml's staleness window is.
+  max_age_seconds: 900
+
+# --- fills ------------------------------------------------------------------
+fills:
+  # The broker's own execution id is what makes repeated observation
+  # idempotent. Polling the same fill five times must record one fill and four
+  # re-observations, never five fills.
+  deduplicate_by_broker_execution_id: true
+
+  # A fill with no broker execution id cannot be deduplicated by identity, so
+  # it is keyed on the strongest deterministic combination of authoritative
+  # broker fields available. With this true, such a fill is additionally
+  # flagged, because a weaker key is a weaker guarantee and that should be
+  # visible rather than assumed.
+  flag_fills_without_broker_execution_id: true
+
+  # Commission is preserved exactly as reported. IBKR frequently reports a fill
+  # before its commission report arrives; an absent commission is None and is
+  # never read as zero. This key exists so that the absence of a
+  # "default_commission" setting is a stated policy.
+  require_commission: false
+
+# --- expected positions -----------------------------------------------------
+expected_positions:
+  # Only CONFIRMED BROKER FILLS may contribute to an expected position. An
+  # allocation is not a position, a submitted order is not a position, an
+  # acknowledgement is not a position, and an UNKNOWN submission is not a
+  # position. Setting this false fails to load.
+  from_confirmed_fills_only: true
+
+  # A partial fill produces the position that actually exists — four of ten,
+  # not ten. The remainder is never inferred.
+  reflect_partial_fills: true
+
+  # Multi-leg structures are reported as one logical strategy position *and* as
+  # the individual broker contract positions they are made of. Neither view
+  # replaces the other: collapsing two broker positions into one synthetic
+  # contract would invent an instrument, and reporting only the legs would lose
+  # the fact that they were authorised as one trade.
+  report_strategy_structures: true
+
+  # A structure whose legs are only partly present is PARTIAL_STRUCTURE. It is
+  # neither a complete structure nor an absence of one, and nothing in this
+  # milestone hedges, completes or closes it.
+  report_partial_structures: true
+
+# --- adoption ---------------------------------------------------------------
+#
+# A broker position with no internal execution behind it is reported as
+# ORPHAN_BROKER_POSITION and left exactly where it is. Adopting it would mean
+# inventing an allocation id, an execution id, a strategy and a research thesis
+# for a holding this system knows nothing about. Setting this true fails to
+# load; a controlled onboarding workflow is a later milestone's job.
+adopt_orphan_positions: false

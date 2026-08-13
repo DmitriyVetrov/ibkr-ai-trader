@@ -146,9 +146,7 @@ def test_config_validates_and_prints() -> None:
     "args",
     [
         ["portfolio"],
-        ["positions"],
         ["opportunities"],
-        ["reconcile"],
         ["run", "opportunities"],
         ["run", "position-monitor"],
         ["run", "thesis-monitor"],
@@ -175,6 +173,12 @@ def test_config_validates_and_prints() -> None:
         # allocation`, landed in Milestone 7 and are covered by
         # tests/allocation/test_cli.py, which repoints the service at tmp_path
         # so no command touches the repository's own data/.
+        # The `positions`, `reservations` and `reconciliation` groups, and the
+        # top-level `reconcile` alias, landed in Milestone 9. They are covered
+        # by tests/positions/test_cli.py, tests/reservations/test_cli.py and
+        # tests/reconciliation/test_cli.py, each of which repoints the service
+        # at tmp_path so no command touches the repository's own data/ — and
+        # each of which asserts zero submitted and zero corrective orders.
         ["reports", "daily"],
         ["reports", "performance"],
     ],

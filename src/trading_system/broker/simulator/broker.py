@@ -299,8 +299,18 @@ class SimulatedBroker(Broker):
         return list(self._state.positions)
 
     def get_open_orders(self) -> list[BrokerOrder]:
+        """Scenery orders plus anything this simulator has actually been sent.
+
+        The second half matters from Milestone 9 onwards: resolving an
+        ambiguous submission means asking the broker what it has, and a
+        simulator that never reported its own working orders could not be used
+        to test that at all. Orders the book has finished with (filled,
+        cancelled, rejected) are not open and are not listed.
+        """
         self._require_connection()
-        return list(self._state.open_orders)
+        now = self._clock.now()
+        working = [self._to_broker_order(order, now) for order in self._state.book.open_orders]
+        return [*self._state.open_orders, *working]
 
     def get_executions(self) -> list[BrokerExecution]:
         self._require_connection()

@@ -1,0 +1,156 @@
+# Reconciliation and reservation lifecycle policy (Milestone 9).
+#
+# Reconciliation compares what this system believes against what the broker
+# reports, and the broker wins every time. It REPORTS; it does not REPAIR.
+# There is no configuration in this file that lets it place, cancel or modify
+# an order, and the two keys that name that possibility exist only so that
+# their refusal is visible rather than assumed.
+
+enabled: true
+
+# --- what must be read before a comparison is trustworthy -------------------
+#
+# "We could not look" and "there is nothing there" are different facts. Where a
+# required read fails, the run is BROKER_DATA_UNAVAILABLE and no comparison is
+# reported — reconciling against an empty set would report every real position
+# as missing.
+require_broker_account: true
+require_broker_positions: true
+require_broker_orders: true
+
+# Fills are NOT required, and that is deliberate. IBKR's execution list is
+# session-scoped: it reports today's fills, not the account's history. Absence
+# from it is therefore not evidence that a fill never happened, so a missing
+# fill list degrades what can be concluded rather than invalidating the run.
+require_broker_fills: false
+
+# Following from the same fact: an internal fill the broker's list does not
+# contain is only a discrepancy if the list is authoritative over the period in
+# question, which it is not. With this false, such a case is recorded as
+# information rather than reported as a fill that never happened.
+treat_broker_fills_as_complete_history: false
+
+# --- how the broker is read -------------------------------------------------
+#
+# Milestone 2's constraint, carried forward: against the validated TWS build,
+# only the first uncached round trip on a connection is reliably answered.
+# Account summary, positions, open orders and fills are all served from
+# ib_async's startup handshake cache, so one connection can supply all four —
+# but nothing else may be asked of it, and no health probe may spend its one
+# reliable request.
+one_connection_per_read: true
+probe_connection_latency: false
+
+# How old broker data may be at the reconciliation instant before it is
+# reported as stale rather than compared as current.
+max_broker_data_age_seconds: 300
+
+# --- what reconciliation may do ---------------------------------------------
+#
+# Both false, and both fail to load if set. They exist as named refusals: an
+# operator reading this file learns that automatic corrective trading and
+# automatic adoption of unknown holdings are not merely absent, they are
+# refused.
+corrective_orders_permitted: false
+auto_adopt_orphan_positions: false
+
+# Resolving an UNKNOWN execution means asking the broker what it actually has
+# and recording the answer. It reads state and submits nothing. An UNKNOWN that
+# the broker cannot settle stays UNKNOWN.
+resolve_unknown_executions: true
+
+# An order at the broker for an execution recorded as FAILED is a serious
+# consistency violation: FAILED means the attempt provably never left the
+# process. With this true the run reports it and fails; it never relabels the
+# execution, because one of the two records is wrong and quietly picking a
+# winner destroys the evidence of which.
+fail_on_failed_execution_with_broker_order: true
+
+# --- severity ---------------------------------------------------------------
+#
+# How alarming a finding is depends on how the account is operated, so the
+# policy lives here rather than in code. Every finding type must appear; an
+# unlisted type fails to load rather than defaulting to something reassuring.
+severity:
+  # Agreement.
+  POSITION_MATCH: INFO
+  ORDER_MATCH: INFO
+  FILL_MATCH: INFO
+  RESERVATION_MATCH: INFO
+  BROKER_RETURNED_EMPTY: INFO
+
+  # Positions. A position we believe in that the broker does not hold is
+  # CRITICAL: every downstream risk number is computed from a holding that does
+  # not exist.
+  EXPECTED_POSITION_MISSING: CRITICAL
+  ORPHAN_BROKER_POSITION: WARNING
+  POSITION_QUANTITY_MISMATCH: CRITICAL
+  POSITION_CONTRACT_MISMATCH: CRITICAL
+  PARTIAL_STRUCTURE: CRITICAL
+
+  # Orders.
+  ORDER_STATE_MISMATCH: WARNING
+  ORPHAN_BROKER_ORDER: WARNING
+  EXPECTED_ORDER_MISSING: WARNING
+  FAILED_EXECUTION_HAS_BROKER_ORDER: CRITICAL
+
+  # Executions.
+  UNKNOWN_EXECUTION_RESOLVED: INFO
+  UNKNOWN_EXECUTION_UNRESOLVED: CRITICAL
+
+  # Fills.
+  FILL_MISMATCH: WARNING
+  ORPHAN_BROKER_FILL: WARNING
+
+  # Reservations.
+  RESERVATION_MISMATCH: WARNING
+  RESERVATION_RELEASED: INFO
+  RESERVATION_CONSUMED: INFO
+  RESERVATION_RETAINED_UNKNOWN: WARNING
+
+  # Data availability.
+  BROKER_DATA_UNAVAILABLE: CRITICAL
+  INTERNAL_DATA_UNAVAILABLE: WARNING
+  CURRENCY_MISMATCH: WARNING
+
+# --- reservation lifecycle --------------------------------------------------
+#
+# Milestone 7 authorises capital and cannot know whether the order ever filled,
+# so an unexecuted authorisation keeps consuming campaign budget. This is the
+# policy that finally lets that capital move, and every switch here is about
+# one question: is there PROOF that the capital was not spent?
+reservations:
+  # Proof of non-delivery. FAILED means the attempt never left the process, and
+  # a broker rejection, a cancellation with no fill and an expiry with no fill
+  # are all the broker itself saying nothing traded.
+  release_on_execution_failed: true
+  release_on_broker_rejected: true
+  release_on_cancelled_without_fill: true
+  release_on_expired_without_fill: true
+
+  # NEVER. An UNKNOWN execution may be a live order at the broker right now.
+  # Releasing its capital and allocating it again is exactly how one intention
+  # becomes two positions, so this fails to load if set.
+  release_on_unknown: false
+
+  # An authorisation nobody has executed yet keeps its reservation. It is not
+  # evidence of anything except that the run has not happened, and freeing the
+  # budget would let the same euro be authorised twice.
+  release_when_never_executed: false
+
+  # A confirmed fill consumes capital, and what it consumes is what actually
+  # traded — fill price times quantity times multiplier — not Milestone 7's
+  # estimate. Both figures are preserved on the record; the authorised amount
+  # is never overwritten by the executed one.
+  consume_on_fill: true
+  use_actual_fill_economics: true
+
+  # A partial fill consumes the filled portion and releases nothing: the rest
+  # of the order may still be working. Only a terminal outcome frees it.
+  release_remainder_on_partial_fill: false
+
+  # No FX. Where fill economics are quoted in a currency the campaign does not
+  # hold, the reservation is reported as CURRENCY_MISMATCH and left alone.
+  # Converting at an invented rate would misstate committed capital by an
+  # amount nobody recorded. Fails to load if set.
+  allow_currency_conversion: false

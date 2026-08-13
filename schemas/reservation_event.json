@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/reservation_event.json",
+  "title": "ReservationEvent",
+  "description": "One appended observation about a reservation (Milestone 9). Deltas rather than totals: a total recorded on an event is a second copy of the record's own state and drifts from it the first time two observations arrive out of order. The current reservation is a fold of these, so 'when did this capital stop being available, and on what evidence' stays answerable.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "reservation_id",
+    "sequence",
+    "event_type",
+    "state",
+    "occurred_at",
+    "observed_at",
+    "source"
+  ],
+  "properties": {
+    "event_id": { "type": "string", "minLength": 1 },
+    "reservation_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "event_type": {
+      "enum": [
+        "RESERVATION_CREATED",
+        "RESERVATION_INCREASED",
+        "RESERVATION_PARTIALLY_CONSUMED",
+        "RESERVATION_CONSUMED",
+        "RESERVATION_RELEASED",
+        "RESERVATION_RETAINED_UNKNOWN",
+        "RESERVATION_CORRECTED",
+        "RESERVATION_OBSERVED"
+      ]
+    },
+    "state": {
+      "description": "The state the reservation is in AFTER this event.",
+      "enum": ["RESERVED", "PARTIALLY_CONSUMED", "CONSUMED", "RELEASED", "UNKNOWN"]
+    },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "source": { "type": "string", "minLength": 1 },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "consumed_delta": { "$ref": "#/$defs/money" },
+    "released_delta": { "$ref": "#/$defs/money" },
+    "over_delta": { "$ref": "#/$defs/money" },
+    "consumed_quantity_delta": { "type": "integer" },
+    "consumed_from_actual_fills": { "type": "boolean" },
+    "reason_code": {
+      "type": ["string", "null"],
+      "enum": [
+        "AUTHORIZED",
+        "NOT_EXECUTED",
+        "EXECUTION_FAILED_BEFORE_SUBMISSION",
+        "BROKER_REJECTED",
+        "CANCELLED_WITHOUT_FILL",
+        "CANCELLED_AFTER_PARTIAL_FILL",
+        "EXPIRED_WITHOUT_FILL",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "ORDER_WORKING",
+        "EXECUTION_UNKNOWN",
+        "RELEASE_REFUSED_UNKNOWN",
+        "BROKER_DATA_UNAVAILABLE",
+        "CURRENCY_MISMATCH",
+        "BROKER_CORRECTION",
+        null
+      ]
+    },
+    "detail": { "type": ["string", "null"] },
+    "execution_id": { "type": ["string", "null"] },
+    "broker_order_id": { "type": ["string", "null"] },
+    "reconciliation_id": {
+      "description": "The reconciliation that produced this observation, where one did. An economic change with no evidence behind it should not be recordable silently.",
+      "type": ["string", "null"]
+    },
+    "fill_ids": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "money": { "type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$" }
+  }
+}

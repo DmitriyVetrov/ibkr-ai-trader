@@ -256,14 +256,34 @@ def test_capture_account_masks_the_account_number(runner, wired):
     assert "DU0000000" not in result.output
 
 
-def test_no_cli_test_leaves_history_in_the_repository(wired, repo_root: Path):
+def test_no_cli_test_leaves_history_in_the_repository(runner, wired, repo_root: Path):
     """The stray-file check every stage's CLI suite carries.
 
     A test that wrote into the checkout's own ``data/`` would leave the next
     run reading capital nobody committed.
+
+    Stated as "these commands added nothing" rather than "this file does not
+    exist": from Milestone 9 onwards a developer who has actually run
+    ``risk capture-account`` or ``reconciliation run`` against their paper
+    gateway has a legitimate ``data/accounts/history.jsonl``, and a test that
+    failed because the CLI had been *used* would be measuring the wrong thing.
     """
-    assert not (repo_root / "data" / "allocation" / "history.jsonl").exists()
-    assert not (repo_root / "data" / "accounts" / "history.jsonl").exists()
+    watched = ("allocation", "accounts")
+    before = {name: _lines(repo_root / "data" / name / "history.jsonl") for name in watched}
+
+    runner.invoke(cli.app, ["allocation", "run"])
+    runner.invoke(cli.app, ["allocation", "show"])
+    runner.invoke(cli.app, ["risk", "capture-account", "--simulated"])
+
+    after = {name: _lines(repo_root / "data" / name / "history.jsonl") for name in watched}
+    assert after == before
+
+
+def _lines(path: Path) -> int:
+    """How many history entries a store holds, or none at all."""
+    if not path.exists():
+        return -1
+    return len(path.read_text(encoding="utf-8").splitlines())
 
 
 def test_the_allocated_capital_is_decimal_exact_in_the_output(runner, wired):

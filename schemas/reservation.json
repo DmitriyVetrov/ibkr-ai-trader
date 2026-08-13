@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/reservation.json",
+  "title": "Reservation",
+  "description": "Capital this campaign committed to one authorisation, and what became of it (Milestone 9). RESERVED is not INVESTED: only a confirmed fill turns committed capital into a position. UNKNOWN is not RELEASED: an execution whose outcome was never learned may be a live order, so its capital stays locked. consumed + released + remaining equals what was authorised, exactly, in decimal.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reservation_id",
+    "campaign_id",
+    "allocation_id",
+    "opportunity_id",
+    "symbol",
+    "strategy",
+    "currency",
+    "authorized_amount",
+    "authorized_quantity",
+    "authorized_at",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "reservation_id": { "type": "string", "minLength": 1 },
+    "campaign_id": { "type": "string", "minLength": 1 },
+    "allocation_id": { "type": "string", "minLength": 1 },
+    "opportunity_id": { "type": "string", "minLength": 1 },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "symbol": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+    "strategy": { "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"] },
+    "currency": { "type": "string", "minLength": 3, "maxLength": 8 },
+    "authorized_amount": {
+      "description": "What Milestone 7 authorised. Never overwritten by what was spent.",
+      "$ref": "#/$defs/money"
+    },
+    "authorized_max_loss": { "$ref": "#/$defs/money" },
+    "authorized_quantity": { "type": "integer", "minimum": 0 },
+    "authorized_at": { "type": "string", "format": "date-time" },
+    "consumed_amount": { "$ref": "#/$defs/money" },
+    "consumed_quantity": { "type": "integer", "minimum": 0 },
+    "released_amount": { "$ref": "#/$defs/money" },
+    "remaining_amount": { "$ref": "#/$defs/money" },
+    "over_authorized_amount": {
+      "description": "Consumed capital beyond the authorisation. Non-zero only with a recorded broker correction.",
+      "$ref": "#/$defs/money"
+    },
+    "consumed_from_actual_fills": {
+      "description": "True when consumed_amount came from actual fill economics rather than the authorisation's own unit cost.",
+      "type": "boolean"
+    },
+    "state": { "$ref": "#/$defs/reservation_state" },
+    "reason_codes": { "type": "array", "items": { "$ref": "#/$defs/reason_code" } },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "execution_id": { "type": ["string", "null"] },
+    "execution_request_id": { "type": ["string", "null"] },
+    "purchase_card_id": { "type": ["string", "null"] },
+    "contract_selection_id": { "type": ["string", "null"] },
+    "research_report_id": { "type": ["string", "null"] },
+    "allocation_run_id": { "type": ["string", "null"] },
+    "broker_order_id": { "type": ["string", "null"] },
+    "detail": { "type": ["string", "null"] }
+  },
+  "allOf": [
+    {
+      "description": "An UNKNOWN reservation must say so in its reason codes, so an operator can filter for exactly this case.",
+      "if": {
+        "properties": { "state": { "const": "UNKNOWN" } },
+        "required": ["state"]
+      },
+      "then": {
+        "properties": {
+          "reason_codes": { "type": "array", "contains": { "const": "EXECUTION_UNKNOWN" } }
+        },
+        "required": ["reason_codes"]
+      }
+    },
+    {
+      "description": "An overrun beyond the authorisation needs a recorded broker correction.",
+      "if": {
+        "properties": {
+          "over_authorized_amount": { "not": { "enum": ["0", "0.0", "0.00"] } }
+        },
+        "required": ["over_authorized_amount"]
+      },
+      "then": {
+        "properties": {
+          "reason_codes": { "type": "array", "contains": { "const": "BROKER_CORRECTION" } }
+        },
+        "required": ["reason_codes"]
+      }
+    }
+  ],
+  "$defs": {
+    "money": { "type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "reservation_state": {
+      "enum": ["RESERVED", "PARTIALLY_CONSUMED", "CONSUMED", "RELEASED", "UNKNOWN"]
+    },
+    "reason_code": {
+      "enum": [
+        "AUTHORIZED",
+        "NOT_EXECUTED",
+        "EXECUTION_FAILED_BEFORE_SUBMISSION",
+        "BROKER_REJECTED",
+        "CANCELLED_WITHOUT_FILL",
+        "CANCELLED_AFTER_PARTIAL_FILL",
+        "EXPIRED_WITHOUT_FILL",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "ORDER_WORKING",
+        "EXECUTION_UNKNOWN",
+        "RELEASE_REFUSED_UNKNOWN",
+        "BROKER_DATA_UNAVAILABLE",
+        "CURRENCY_MISMATCH",
+        "BROKER_CORRECTION"
+      ]
+    }
+  }
+}

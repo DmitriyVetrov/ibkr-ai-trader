@@ -204,6 +204,66 @@ reasoning that governs snapshot ids everywhere else here. Every monetary field
 the broker omitted stays `null`: "no buying power reported" and "zero buying
 power" are different facts about an account.
 
+### `positions/` and `fills/`
+
+What the broker actually holds, and what actually traded:
+
+```
+positions/snapshots/<as_of>-<snapshot_id>.json     positions/history.jsonl
+fills/fills/<executed_at>-<fill_id>.json           fills/history.jsonl
+```
+
+Written by `positions snapshot` and by `reconciliation run`, both of which read
+the broker once over one short-lived read-only connection. A snapshot records
+its `read_status`: a **failed read is stored as a failed read**, carries no
+positions, and can never be mistaken for an account that holds nothing. That
+distinction is the whole reason this directory exists separately from the
+internal ledger.
+
+Snapshot ids are content-derived over the *holdings* — instrument, quantity,
+average cost — and not over their valuation, so re-reading the same portfolio at
+a different mark is recorded as a re-observation rather than as a second account
+state. Fills are keyed on the broker's own execution id wherever there is one,
+which is what makes polling idempotent: observing the same fill five times
+records one fill and four re-observations.
+
+### `reservations/`
+
+Where the campaign's money went:
+
+```
+reservations/reservations/<created>-<reservation_id>.json
+reservations/events/<reservation_id>.jsonl        reservations/history.jsonl
+```
+
+The base record is written once and never edited; every later movement is an
+appended event, and the current state is *folded* from them — so a reservation
+that consumed 605 can still show that it once held 1,210 in reserve. Events
+carry **deltas**, not totals, which is what makes applying the same conclusion
+twice a no-op.
+
+A history that cannot be replayed raises rather than being skipped. A
+contradiction in a money ledger is worth surfacing loudly; quietly ignoring one
+leaves the wrong balance on screen and no trace of why.
+
+### `reconciliation/`
+
+Every comparison between our records and broker reality:
+
+```
+reconciliation/results/<as_of>-<reconciliation_id>.json
+reconciliation/events/<reconciliation_id>.jsonl   reconciliation/history.jsonl
+```
+
+Content-addressed, so reconciling unchanged state again lands on the same id and
+is recorded as a re-observation rather than as a second comparison that happens
+to agree. Historical results are never overwritten: a comparison is evidence
+about a moment, and a moment does not change because a later one disagreed.
+
+Every stored result carries `orders_submitted: 0` and `corrective_orders: 0`,
+and refuses to be constructed otherwise. Reconciliation reports; it does not
+repair.
+
 ## Required metadata
 
 Every snapshot carries:

@@ -10,12 +10,13 @@ not reachable by configuration alone — see [Trading modes](#trading-modes).
 
 ## Status
 
-**Milestone 8 of 12 — execution.** What exists today:
+**Milestone 9 of 12 — positions, reservations and reconciliation.** What exists
+today:
 
 - domain models, enums, events and the position state machine;
 - YAML configuration for campaign, risk, schedules, sources, strategies, data,
-  universe, research and execution;
-- the 30 JSON schemas for the workflow boundaries;
+  universe, research, execution, positions and reconciliation;
+- the 37 JSON schemas for the workflow boundaries;
 - structured logging and an injectable clock;
 - a `Broker` abstraction with a deterministic `SimulatedBroker` and an
   `IBKRBroker` over IB Gateway, read-only unless deliberately opened for paper
@@ -48,12 +49,31 @@ not reachable by configuration alone — see [Trading modes](#trading-modes).
   multi-leg structure fills as one thing or not at all, fill tracking that
   never infers a fill, and an immutable execution ledger with append-only
   history;
+- **positions**: a broker position ledger that records what the account
+  actually holds, recorded fills deduplicated on the broker's own execution
+  ids, and an internal expected-position ledger projected from confirmed fills
+  and from nothing else — the two are kept deliberately apart, because one is a
+  fact and the other is a belief;
+- **reservations**: the capital lifecycle Milestone 7 could not complete —
+  committed capital is consumed by a confirmed fill, released on proof it was
+  never spent, and *held* while an execution's outcome is unknown;
+- **reconciliation**: a deterministic engine that compares the two ledgers
+  against broker reality and reports every difference with both sides, the
+  delta, both provenances and both clocks — and repairs nothing;
 - the CLI surface, with every command tagged read-only or state-mutating.
 
-What deliberately does **not** exist yet: the position lifecycle, autonomous
-trading and any form of live trading. Commands covering those exist in the CLI
-but exit `3` naming the milestone that delivers them. They never fabricate
-output.
+What deliberately does **not** exist yet: exits, autonomous trading and any
+form of live trading. A position is *observed*, never managed — there is no
+trailing stop, no take profit, no time-to-expiration policy, no thesis monitor
+and no exit engine, and nothing in this system closes a position. Commands
+covering those exist in the CLI but exit `3` naming the milestone that delivers
+them. They never fabricate output.
+
+**Reconciliation reports; it does not repair.** It cannot place, cancel or
+modify an order — two configuration keys that would permit it fail to load, the
+stored result refuses a non-zero order count, and a test walks the import graph
+to prove the writable broker constructor is unreachable from the position,
+reservation and reconciliation packages.
 
 **Submitting an order requires three deliberate acts**: `execution.enabled` in
 `config/execution.yaml` (ships `false`), `IBKR_READ_ONLY=false` in the
@@ -616,6 +636,86 @@ That test handles the possibility that its order fills. "Extremely unlikely to
 fill" is not "guaranteed not to fill", and if it does, the fill is reported
 rather than hidden.
 
+## Positions, reservations and reconciliation
+
+The loop closes here. Execution sends an order; this milestone answers the two
+questions that follow — *what does the broker actually hold now?* and *how much
+of our capital is still reserved rather than invested?*
+
+**Two position records, never merged.** A `BrokerPositionSnapshot` is what the
+broker says it holds. An `ExpectedPosition` is what this system believes should
+exist, projected from confirmed broker fills and from nothing else. Comparing
+them is reconciliation; merging them would destroy the only evidence they ever
+disagreed, which is the whole point of keeping both.
+
+**Only a confirmed fill makes a position.** An allocation is not a position, a
+submitted order is not a position, an acknowledgement is not a position, and an
+`UNKNOWN` submission is not a position. A partial fill establishes exactly what
+filled — four of ten is four — and the remainder is never inferred.
+
+**"We could not look" is not "there is nothing there".** A failed broker read
+is stored as a failed read and no comparison is made against it. An empty
+portfolio the broker actually reported is a different, valid answer about the
+account. Reconciling an unreadable broker against the internal ledger would
+report every real holding as gone, with total confidence and no basis, so a
+`MATCH` requires that the broker was genuinely read.
+
+**An `UNKNOWN` execution keeps its capital.** Milestone 7 authorises capital and
+cannot know whether the order filled, so every authorisation consumed campaign
+budget indefinitely. This milestone finally lets that capital move — but only on
+proof:
+
+| execution outcome | reservation |
+|---|---|
+| FAILED before submission | released |
+| rejected by the broker | released |
+| cancelled or expired with no fill | released |
+| filled | consumed, at what actually traded |
+| partly filled | partly consumed; the rest stays committed |
+| **UNKNOWN** | **held — the order may be live right now** |
+
+There is no configuration that releases an `UNKNOWN`, no force-release command,
+and where any attempt against an authorisation is unresolved nothing at all is
+released. It is settled by *observing* the broker — and absence from the
+open-order list settles nothing, because a filled, a cancelled and a never-sent
+order look identical from there.
+
+**Reconciliation reports; it does not repair.** Every difference is a finding
+with the contract identity, the expected value, the observed value, the
+difference, both provenances and both clocks — because "positions differ" is
+not something anyone can act on. Nothing is corrected, adopted, hedged,
+cancelled or traded. A broker holding with no execution behind it is an
+`ORPHAN_BROKER_POSITION`, real, and left exactly where it is with acquisition
+provenance `UNKNOWN`; the first reconciliation of an account that traded before
+this system existed is *expected* to report several.
+
+```bash
+python -m trading_system.cli positions validate       # the ledger policy
+python -m trading_system.cli positions snapshot       # capture what the broker holds
+python -m trading_system.cli positions show           # BROKER OBSERVED
+python -m trading_system.cli positions show --expected  # INTERNAL EXPECTED
+python -m trading_system.cli reservations show        # committed vs available capital
+python -m trading_system.cli reservations validate    # what would move, moving nothing
+python -m trading_system.cli reconciliation run       # compare; places no orders
+python -m trading_system.cli reconciliation run --dry-run   # writes nothing at all
+python -m trading_system.cli reconciliation explain   # the append-only event history
+```
+
+Every one of those prints the submitted-order count next to a corrective-order
+count that is always zero, both read off the broker rather than asserted:
+
+```text
+orders submitted  : 0
+corrective orders : 0
+```
+
+Running reconciliation twice over unchanged state changes nothing: the result
+is content-addressed, fills deduplicate on the broker's own execution ids,
+reservation outcomes are deltas against current state, and the second run
+records a re-observation rather than a second history.
+
+Development guidance is in [skills/positions/README.md](skills/positions/README.md).
+
 ## IBKR architecture
 
 ```
@@ -724,6 +824,10 @@ make test-allocation-integration  # research -> allocation, end to end
 make test-execution    # state machine, idempotency, fills, boundaries, CLI
 make test-execution-unit          # the pure layers alone
 make test-execution-integration   # research -> execution, end to end
+make test-positions    # snapshots, fills, expected positions, boundaries, CLI
+make test-reservations # lifecycle, release, UNKNOWN, invariants, CLI
+make test-reconciliation          # engine, orders, fills, orphans, idempotency, CLI
+make test-position-integration    # execution -> fill -> position -> reconciliation
 make test-agents       # AI agent contract tests; needs no API key
 make test-contract     # workflow-boundary schema compatibility
 make test-integration  # multi-component, simulated broker
@@ -815,6 +919,18 @@ Enforced in code and covered by tests, not left to convention:
   short-lived connection each.
 - **The broker is authoritative.** Reconciliation reports discrepancies and
   blocks new executions; it never resolves them or trades to correct them.
+  Automatic corrective trading and automatic adoption of unknown holdings are
+  both *named refusals* in `config/reconciliation.yaml` — setting either fails
+  to load — and a stored reconciliation refuses to be constructed with a
+  non-zero submitted-order or corrective-order count.
+- **A failed broker read is never an empty account.** Each read carries its own
+  status, and reconciling against an unreadable broker is refused rather than
+  performed against nothing. `MATCH` requires that the broker was actually
+  read: agreeing with an absence of data is not agreement.
+- **Committed capital moves only on proof.** A reservation is released when the
+  broker shows the order never traded, and consumed by a confirmed fill. An
+  execution whose outcome was never learned keeps its capital indefinitely —
+  there is no configuration, and no command, that releases it.
 - **The AI cannot widen its own remit.** The universe agent is handed a
   validated contract that cannot express a rejected asset, and everything it
   returns is checked against that contract before storage. It has no field for
@@ -905,6 +1021,9 @@ src/
   risk/            deterministic risk engine, limits, exposure, account snapshots
   allocation/      deterministic campaign allocation, scoring, immutable ledger
   execution/       purchase card, order builder, submission, fills, execution ledger
+  positions/       broker position snapshots, recorded fills, expected positions
+  reservations/    the campaign capital lifecycle: consumed, released, held
+  reconciliation/  deterministic comparison of the two ledgers against the broker
   agents/          LLM agents and their shipped prompts
   infrastructure/  settings, config loading, logging, clock
 skills/            strategy specifications and development guidance (never executable)

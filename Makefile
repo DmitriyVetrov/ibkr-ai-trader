@@ -7,6 +7,7 @@ CLI := $(PYTHON) -m trading_system.cli
         test-research test-strategy test-strategies test-contract-selection \
         test-allocation test-allocation-unit test-allocation-integration test-risk \
         test-execution test-execution-unit test-execution-integration test-paper-execution \
+        test-positions test-reservations test-reconciliation test-position-integration \
         test-broker test-data test-integration \
         test-e2e universe-validate universe-run universe-show research-validate \
         research-run research-show strategy-validate strategy-run strategy-show \
@@ -14,6 +15,9 @@ CLI := $(PYTHON) -m trading_system.cli
         risk-validate risk-evaluate risk-capture-account \
         allocation-validate allocation-run allocation-show \
         execution-validate execution-dry-run execution-show execution-history \
+        positions-validate positions-snapshot positions-show \
+        reservations-show reservations-validate \
+        reconciliation-validate reconciliation-run reconciliation-show \
         lint format typecheck check health config ibkr-connection ibkr-portfolio clean
 
 help:  ## Show this help
@@ -80,6 +84,19 @@ test-paper-execution:  ## SUBMITS A REAL PAPER ORDER. Needs a running IB Gateway
 	@sleep 5
 	ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true \
 		$(PYTEST) tests/integration/test_paper_execution.py -m paper_execution -s
+
+test-positions:  ## Position ledger tests (Milestone 9). Submits no orders.
+	$(PYTEST) tests/positions
+
+test-reservations:  ## Reservation lifecycle tests (Milestone 9). Submits no orders.
+	$(PYTEST) tests/reservations
+
+test-reconciliation:  ## Reconciliation tests (Milestone 9). Submits no orders.
+	$(PYTEST) tests/reconciliation
+
+test-position-integration:  ## Execution to fill to position to reconciliation, simulated
+	$(PYTEST) tests/integration/test_execution_to_position.py \
+		tests/integration/test_reconciliation_workflow.py
 
 test-broker:  ## Broker adapter and simulator tests (Milestone 2)
 	$(PYTEST) tests/broker
@@ -177,6 +194,30 @@ execution-show:  ## Show the latest execution run (Milestone 8)
 
 execution-history:  ## List recorded executions (Milestone 8)
 	$(CLI) execution history
+
+positions-validate:  ## Print the position ledger policy in force (Milestone 9)
+	$(CLI) positions validate
+
+positions-snapshot:  ## Capture what the broker holds. Read-only; submits no orders
+	$(CLI) positions snapshot
+
+positions-show:  ## Show the latest broker position snapshot (Milestone 9)
+	$(CLI) positions show
+
+reservations-show:  ## Show committed campaign capital (Milestone 9)
+	$(CLI) reservations show
+
+reservations-validate:  ## Show what would move, without moving it (Milestone 9)
+	$(CLI) reservations validate
+
+reconciliation-validate:  ## Print the reconciliation policy in force (Milestone 9)
+	$(CLI) reconciliation validate
+
+reconciliation-run:  ## Compare records against broker reality. Places no orders
+	$(CLI) reconciliation run
+
+reconciliation-show:  ## Show the latest reconciliation (Milestone 9)
+	$(CLI) reconciliation show
 
 # Deliberately no `execution-run` target. Submitting requires `--confirm` on the
 # command line, and a make target that wrapped it would be a way to place an

@@ -20,7 +20,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 from rich.console import Console
@@ -46,7 +46,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from trading_system.data.service import DataService
     from trading_system.domain.enums import DataType
     from trading_system.execution.service import ExecutionService
+    from trading_system.positions.service import PositionService
+    from trading_system.reconciliation.service import ReconciliationService
     from trading_system.research.service import ResearchService
+    from trading_system.reservations.service import ReservationService
     from trading_system.strategies.service import ContractSelectionService, StrategyService
     from trading_system.universe.service import UniverseSelectionService
 
@@ -142,6 +145,33 @@ execution_app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+positions_app = typer.Typer(
+    help=(
+        "Inspect what the broker holds and what this system believes it holds. "
+        "Every command distinguishes BROKER OBSERVED positions from INTERNAL "
+        "EXPECTED positions, because they are different claims. Read-only with "
+        "respect to the broker; submits zero orders."
+    ),
+    no_args_is_help=True,
+)
+reservations_app = typer.Typer(
+    help=(
+        "Inspect the campaign capital committed to authorisations, and what "
+        "became of it. Committed is not invested, and UNKNOWN is not released: "
+        "an execution whose outcome was never learned keeps its capital. "
+        "Submits zero orders."
+    ),
+    no_args_is_help=True,
+)
+reconciliation_app = typer.Typer(
+    help=(
+        "Compare internal records against broker reality. The broker wins every "
+        "time, and this group REPORTS discrepancies — it never repairs one, "
+        "adopts a position, cancels an order or places a corrective trade. "
+        "Submits zero orders."
+    ),
+    no_args_is_help=True,
+)
 reports_app = typer.Typer(
     help="Generate and inspect reports. (read-only)",
     no_args_is_help=True,
@@ -157,6 +187,9 @@ app.add_typer(contract_app, name="contract")
 app.add_typer(risk_app, name="risk")
 app.add_typer(allocation_app, name="allocation")
 app.add_typer(execution_app, name="execution")
+app.add_typer(positions_app, name="positions")
+app.add_typer(reservations_app, name="reservations")
+app.add_typer(reconciliation_app, name="reconciliation")
 app.add_typer(reports_app, name="reports")
 
 
@@ -372,12 +405,6 @@ def portfolio() -> None:
 
 
 @app.command()
-def positions() -> None:
-    """List tracked positions and their lifecycle state. (read-only)"""
-    _not_implemented("position listing", "Milestone 9 (position lifecycle)")
-
-
-@app.command()
 def opportunities() -> None:
     """Show the current ranked opportunities. (read-only)"""
     _not_implemented(
@@ -388,17 +415,20 @@ def opportunities() -> None:
 
 
 @app.command()
-def reconcile() -> None:
-    """Reconcile and persist the result. (mutates state)
+def reconcile(
+    simulated: SimulatedOption = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Compare and print; write nothing at all."),
+    ] = False,
+) -> None:
+    """Reconcile against the broker and persist the result. (mutates state)
 
-    The read-only comparison exists today as `test reconciliation`. This
-    command additionally persists the outcome and gates execution on it, which
-    needs the position repository from Milestone 9.
+    An alias for ``reconciliation run``, kept because the specification names
+    this command. It reads broker state and writes this system's own records;
+    it never places, cancels or modifies an order, and it submits zero.
     """
-    _not_implemented(
-        "persisted reconciliation (use 'test reconciliation' for the read-only check)",
-        "Milestone 9 (position lifecycle)",
-    )
+    _run_reconciliation(simulated=simulated, dry_run=dry_run)
 
 
 # ---------------------------------------------------------------------------
@@ -3473,6 +3503,652 @@ def execution_cancel(
     updated = service.cancel(execution_id) or record
     console.print()
     console.print(render_execution(updated))
+
+
+# ---------------------------------------------------------------------------
+# Positions, reservations and reconciliation (Milestone 9)
+#
+# Three groups, and none of them can place an order. They build their broker
+# through the read-only factory, assert the broker's own submitted-order
+# counter is still zero after every read, and every rendering prints that
+# count next to a corrective-order count that is always zero. It must be
+# impossible to mistake any of this for trading.
+#
+# The distinction every command here preserves:
+#
+#   BROKER OBSERVED POSITION   what the broker says the account holds
+#   INTERNAL EXPECTED POSITION what confirmed fills say should exist
+#
+# They are labelled separately everywhere, because a reader who cannot tell
+# them apart cannot tell a fact from a belief.
+# ---------------------------------------------------------------------------
+def _services(simulated: bool) -> tuple[Settings, ReconciliationService]:
+    """Build the Milestone 9 composition root, optionally against the simulator."""
+    from trading_system.reconciliation.service import ReconciliationService
+
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        err_console.print(f"[red]CONFIGURATION ERROR[/red]\n{exc}")
+        raise typer.Exit(code=EXIT_ERROR) from exc
+
+    factory = None
+    if simulated:
+
+        def factory(resolved: Settings, **kwargs: Any) -> Broker:
+            return build_broker(resolved, backend=BrokerBackend.SIMULATOR, **kwargs)
+
+    return settings, ReconciliationService(settings=settings, config=config, broker_factory=factory)
+
+
+def _position_service(simulated: bool) -> PositionService:
+    return _services(simulated)[1].positions
+
+
+def _reservation_service() -> ReservationService:
+    return _services(False)[1].reservations
+
+
+def _print_zero_order_footer(orders_submitted: int, *, corrective: int = 0) -> None:
+    """State plainly that nothing was traded. Read off the broker, not asserted."""
+    style = "green" if orders_submitted == 0 else "bold red"
+    console.print(f"\nOrders submitted  : [{style}]{orders_submitted}[/{style}]")
+    console.print(f"Corrective orders : [green]{corrective}[/green]")
+    if orders_submitted or corrective:
+        _fail(
+            f"a read-only stage reported {orders_submitted} submitted and {corrective} "
+            f"corrective order(s). This must never happen"
+        )
+
+
+# --- positions -------------------------------------------------------------
+@positions_app.command("snapshot")
+def positions_snapshot(
+    simulated: SimulatedOption = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Read the broker and store nothing."),
+    ] = False,
+) -> None:
+    """Capture what the broker holds right now. (mutates local state)
+
+    Opens one short-lived read-only connection and reads account, positions,
+    open orders and fills from it — all served by the gateway's startup cache,
+    so no second uncached round trip is needed. A failed read is stored as a
+    failed read: it can never be mistaken for an empty account.
+    """
+    from trading_system.positions.report import render_capture
+
+    service = _position_service(simulated)
+    capture = service.capture(store=not dry_run, record_fills=not dry_run)
+    console.print()
+    console.print(render_capture(capture))
+    if dry_run:
+        console.print("\n[yellow]DRY RUN[/yellow]  nothing was written.")
+    _print_zero_order_footer(capture.orders_submitted)
+    if not capture.snapshot.usable:
+        _fail(
+            "broker position state could not be read. This is NOT an empty account: no "
+            "comparison should be made against it."
+        )
+
+
+@positions_app.command("show")
+def positions_show(
+    contract_id: Annotated[
+        str | None,
+        typer.Option("--contract-id", help="Only this broker contract id."),
+    ] = None,
+    symbol: Annotated[str | None, typer.Option("--symbol", help="Only this underlying.")] = None,
+    expected: Annotated[
+        bool,
+        typer.Option("--expected", help="Show the INTERNAL EXPECTED ledger instead."),
+    ] = False,
+) -> None:
+    """Show stored positions. (read-only)
+
+    Without ``--expected`` this shows BROKER OBSERVED positions from the latest
+    stored snapshot. With it, the INTERNAL EXPECTED ledger derived from
+    confirmed fills. The two are different claims and are never merged.
+    """
+    from trading_system.positions.report import (
+        render_expected,
+        render_observed,
+        render_projection,
+        render_snapshot,
+    )
+
+    service = _position_service(False)
+    if expected:
+        projection = service.expected(snapshot=service.latest_usable_snapshot())
+        positions = [
+            position
+            for position in projection.positions
+            if (symbol is None or position.underlying == symbol.strip().upper())
+            and (contract_id is None or str(position.contract_id) == contract_id)
+        ]
+        if symbol or contract_id:
+            console.print("\n[bold]INTERNAL EXPECTED POSITIONS[/bold] (filtered)\n")
+            for position in positions:
+                console.print(render_expected(position))
+            if not positions:
+                console.print("  (none)")
+            return
+        console.print()
+        console.print(render_projection(projection))
+        return
+
+    snapshot = service.latest_snapshot()
+    if snapshot is None:
+        console.print(
+            "[yellow]UNAVAILABLE[/yellow]  no position snapshot has been captured. "
+            "Run 'positions snapshot' first."
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    if symbol or contract_id:
+        chosen = [
+            position
+            for position in snapshot.positions
+            if (symbol is None or position.underlying == symbol.strip().upper())
+            and (contract_id is None or str(position.contract_id) == contract_id)
+        ]
+        console.print("\n[bold]BROKER OBSERVED POSITIONS[/bold] (filtered)\n")
+        for observed in chosen:
+            console.print(render_observed(observed))
+        if not chosen:
+            console.print("  (none)")
+        return
+
+    console.print()
+    console.print(render_snapshot(snapshot))
+
+
+@positions_app.command("history")
+def positions_history(
+    limit: Annotated[int, typer.Option("--limit", help="How many entries to show.")] = 20,
+    contract_id: Annotated[
+        str | None,
+        typer.Option("--contract-id", help="History of one instrument instead."),
+    ] = None,
+) -> None:
+    """List captured broker snapshots, newest first. (read-only)"""
+    from trading_system.positions.report import render_observed
+
+    service = _position_service(False)
+    if contract_id is not None:
+        key = contract_id if contract_id.startswith(("cid:", "sym:")) else f"cid:{contract_id}"
+        observations = service.repository.by_contract(key, limit=limit)
+        console.print(f"\n[bold]BROKER OBSERVED history[/bold] for {key}\n")
+        for observation in observations:
+            console.print(f"{observation.observed_at.isoformat()}  {render_observed(observation)}")
+        if not observations:
+            console.print("  (none)")
+        return
+
+    entries = service.repository.history(limit=limit)
+    if not entries:
+        console.print("[yellow]No position snapshots recorded.[/yellow]")
+        raise typer.Exit(code=EXIT_OK)
+
+    table = Table(title="Broker position snapshots", show_header=True, header_style="bold")
+    for column in ("observed", "snapshot", "broker", "account", "read", "positions", "note"):
+        table.add_column(column)
+    for entry in entries:
+        table.add_row(
+            entry.observed_at.isoformat(),
+            entry.snapshot_id,
+            entry.broker,
+            entry.account_reference,
+            entry.read_status,
+            str(entry.positions),
+            "re-observation" if entry.reobserved else "",
+        )
+    console.print(table)
+
+
+@positions_app.command("validate")
+def positions_validate() -> None:
+    """Validate the position ledger policy in force. (read-only)"""
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        _fail(str(exc))
+        raise AssertionError("unreachable") from exc  # pragma: no cover
+    policy = config.positions
+
+    console.print("\n[bold]POSITION LEDGER POLICY[/bold]")
+    console.print("Model involved : [green]none[/green] — the position ledger is deterministic")
+
+    table = Table(title="Policy in force", show_header=True, header_style="bold")
+    table.add_column("Setting")
+    table.add_column("Value")
+    for name, value in (
+        ("account mask (visible chars)", str(policy.account_mask_visible_characters)),
+        ("prefer broker contract id", str(policy.prefer_broker_contract_id)),
+        ("store empty snapshots", str(policy.snapshot.store_empty_snapshots)),
+        ("snapshot max age (s)", str(policy.snapshot.max_age_seconds)),
+        ("deduplicate fills by broker id", str(policy.fills.deduplicate_by_broker_execution_id)),
+        ("flag fills without broker id", str(policy.fills.flag_fills_without_broker_execution_id)),
+        (
+            "expected from confirmed fills only",
+            str(policy.expected_positions.from_confirmed_fills_only),
+        ),
+        ("reflect partial fills", str(policy.expected_positions.reflect_partial_fills)),
+        ("report partial structures", str(policy.expected_positions.report_partial_structures)),
+        ("adopt orphan positions", str(policy.adopt_orphan_positions)),
+    ):
+        table.add_row(name, value)
+    console.print(table)
+    console.print(
+        "\nOnly a CONFIRMED BROKER FILL establishes an internal expected position. An "
+        "allocation, a submitted order, an acknowledgement and an UNKNOWN submission all "
+        "establish nothing."
+    )
+    console.print("[green]PASS[/green]  Policy is valid. No orders were submitted.")
+
+
+@positions_app.command("explain")
+def positions_explain(
+    contract_id: Annotated[str, typer.Option("--contract-id", help="The instrument to explain.")],
+) -> None:
+    """Explain one instrument: what we expect, what the broker holds. (read-only)"""
+    from trading_system.positions.report import render_expected, render_observed
+
+    service = _position_service(False)
+    key = contract_id if contract_id.startswith(("cid:", "sym:")) else f"cid:{contract_id}"
+    snapshot = service.latest_usable_snapshot()
+    projection = service.expected(snapshot=snapshot)
+
+    console.print(f"\n[bold]{key}[/bold]\n")
+    console.print("[bold]INTERNAL EXPECTED[/bold] (from confirmed fills)")
+    expected_position = projection.by_key(key)
+    console.print(
+        f"  {render_expected(expected_position)}" if expected_position else "  (nothing expected)"
+    )
+
+    console.print("\n[bold]BROKER OBSERVED[/bold]")
+    if snapshot is None:
+        console.print("  (no usable snapshot — run 'positions snapshot')")
+    else:
+        observed_position = snapshot.by_key(key)
+        console.print(
+            f"  {render_observed(observed_position)}"
+            if observed_position
+            else "  (broker holds none)"
+        )
+
+    fills = service.fills.for_contract(key)
+    console.print(f"\n[bold]RECORDED FILLS[/bold] ({len(fills)})")
+    from trading_system.positions.report import render_fill
+
+    for fill in fills:
+        console.print(f"  {render_fill(fill)}")
+    if not fills:
+        console.print("  (none)")
+
+
+# --- reservations ----------------------------------------------------------
+@reservations_app.command("show")
+def reservations_show(
+    reservation_id: Annotated[
+        str | None, typer.Option("--reservation-id", help="One reservation, in full.")
+    ] = None,
+) -> None:
+    """Show committed campaign capital. (read-only)"""
+    from trading_system.reservations.report import (
+        render_capital,
+        render_reservation,
+        render_reservations,
+    )
+
+    service = _reservation_service()
+    service.sync()
+    if reservation_id is not None:
+        reservation = service.get(reservation_id)
+        if reservation is None:
+            console.print(f"[yellow]UNAVAILABLE[/yellow]  no reservation {reservation_id}")
+            raise typer.Exit(code=EXIT_OK)
+        console.print()
+        console.print(render_reservation(reservation))
+        return
+
+    console.print()
+    console.print(render_capital(service.capital()))
+    console.print()
+    console.print(render_reservations(service.all()))
+
+
+@reservations_app.command("history")
+def reservations_history(
+    reservation_id: Annotated[
+        str | None, typer.Option("--reservation-id", help="Events for one reservation.")
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="How many entries to show.")] = 20,
+) -> None:
+    """List reservations, or one reservation's economic history. (read-only)"""
+    service = _reservation_service()
+    if reservation_id is not None:
+        events = service.repository.events(reservation_id)
+        if not events:
+            console.print(f"[yellow]No events recorded for {reservation_id}.[/yellow]")
+            raise typer.Exit(code=EXIT_OK)
+        table = Table(title="Reservation history", show_header=True, header_style="bold")
+        for column in ("#", "observed", "event", "state", "consumed Δ", "released Δ", "reason"):
+            table.add_column(column)
+        for event in events:
+            table.add_row(
+                str(event.sequence),
+                event.observed_at.isoformat(),
+                event.event_type.value,
+                event.state.value,
+                str(event.consumed_delta),
+                str(event.released_delta),
+                event.reason_code.value if event.reason_code else "-",
+            )
+        console.print(table)
+        console.print(
+            "\nThe reservation above is folded from these events. Nothing was rewritten: a "
+            "consumption appends, it does not edit."
+        )
+        return
+
+    entries = service.repository.history(limit=limit)
+    if not entries:
+        console.print("[yellow]No reservations recorded.[/yellow]")
+        raise typer.Exit(code=EXIT_OK)
+    table = Table(title="Reservations", show_header=True, header_style="bold")
+    for column in ("created", "reservation", "symbol", "allocation", "authorised"):
+        table.add_column(column)
+    for entry in entries:
+        table.add_row(
+            entry.created_at.isoformat(),
+            entry.reservation_id,
+            entry.symbol,
+            entry.allocation_id,
+            f"{entry.authorized_amount} {entry.currency}",
+        )
+    console.print(table)
+
+
+@reservations_app.command("validate")
+def reservations_validate() -> None:
+    """Show what would move, and why, without moving it. (read-only)
+
+    Evaluates every reservation against the execution ledger and prints the
+    conclusion. Nothing is written: this is the safe way to see the effect of a
+    reconciliation on committed capital before running one.
+    """
+    from trading_system.reservations.report import render_capital, render_update
+
+    service = _reservation_service()
+    service.sync()
+    updates = service.apply_executions(dry_run=True)
+
+    console.print()
+    console.print(render_capital(service.capital()))
+    console.print()
+    if not updates:
+        console.print("No reservations to evaluate.")
+        return
+    for update in updates:
+        console.print(render_update(update))
+        console.print()
+    console.print(
+        "[green]PASS[/green]  Nothing was written and no order was submitted. Run "
+        "'reconciliation run' to apply these conclusions against fresh broker state."
+    )
+
+
+@reservations_app.command("release")
+def reservations_release(
+    reservation_id: Annotated[
+        str, typer.Option("--reservation-id", help="The reservation to release.")
+    ],
+    confirm: Annotated[
+        bool, typer.Option("--confirm", help="Explicitly authorise the release.")
+    ] = False,
+) -> None:
+    """Release a reservation's capital, if there is proof it was not spent. (mutates state)
+
+    Deliberately narrow. It refuses outright while any execution against the
+    authorisation is UNKNOWN — an order may be live at the broker, and freeing
+    its capital is how the campaign funds the same trade twice. There is no
+    force-release, by design: resolve the execution against the broker instead,
+    and the resolved state releases the capital on its own.
+    """
+    from trading_system.reservations.report import render_reservation, render_update
+
+    if not confirm:
+        _fail("releasing capital changes campaign state. Pass --confirm to authorise it.")
+
+    service = _reservation_service()
+    service.sync()
+    try:
+        update = service.release(reservation_id)
+    except KeyError:
+        console.print(f"[yellow]UNAVAILABLE[/yellow]  no reservation {reservation_id}")
+        raise typer.Exit(code=EXIT_OK) from None
+
+    console.print()
+    console.print(render_update(update))
+    console.print()
+    console.print(render_reservation(update.reservation))
+    if not update.applied:
+        _fail(f"nothing was released: {update.outcome.reason_code.value}. {update.outcome.detail}")
+
+
+# --- reconciliation --------------------------------------------------------
+def _run_reconciliation(*, simulated: bool, dry_run: bool) -> None:
+    """Shared by 'reconciliation run' and the top-level 'reconcile' alias."""
+    from trading_system.reconciliation.report import render_run
+
+    settings, service = _services(simulated)
+    console.print(f"\n[bold cyan]RECONCILIATION — {settings.trading_mode.value}[/bold cyan]")
+    console.print("Broker access : READ-ONLY")
+    console.print("Corrective trading : [green]not possible[/green] — this stage reports only")
+
+    run = service.run(dry_run=dry_run)
+    console.print()
+    console.print(render_run(run))
+    _print_zero_order_footer(run.orders_submitted, corrective=run.corrective_orders)
+
+    if run.result.counts.critical:
+        _fail(
+            f"{run.result.counts.critical} critical finding(s). ACTION REQUIRED: nothing was "
+            f"corrected automatically. Do not open new positions until these are resolved."
+        )
+
+
+@reconciliation_app.command("run")
+def reconciliation_run(
+    simulated: SimulatedOption = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Compare and print; write nothing at all."),
+    ] = False,
+) -> None:
+    """Compare internal records against broker reality. (mutates local state)
+
+    Reads the broker once, over one short-lived read-only connection, and
+    records what it finds. It resolves ambiguous submissions by *observing* the
+    broker and moves committed capital only on proof — never on elapsed time.
+
+    It cannot place, cancel or modify an order. ``--dry-run`` additionally
+    writes nothing at all: no snapshot, no fill, no execution resolution, no
+    reservation movement and no result.
+    """
+    _run_reconciliation(simulated=simulated, dry_run=dry_run)
+
+
+@reconciliation_app.command("show")
+def reconciliation_show(
+    reconciliation_id: Annotated[
+        str | None,
+        typer.Option("--reconciliation-id", help="One comparison. Defaults to the latest."),
+    ] = None,
+    all_findings: Annotated[
+        bool,
+        typer.Option("--all", help="Include findings that record agreement."),
+    ] = False,
+) -> None:
+    """Show a stored reconciliation. (read-only)"""
+    from trading_system.reconciliation.report import render_reconciliation
+
+    _, service = _services(False)
+    result = service.get(reconciliation_id) if reconciliation_id is not None else service.latest()
+    if result is None:
+        console.print(
+            "[yellow]UNAVAILABLE[/yellow]  no reconciliation has been recorded. "
+            "Run 'reconciliation run' first."
+        )
+        raise typer.Exit(code=EXIT_OK)
+    console.print()
+    console.print(render_reconciliation(result, include_agreements=all_findings))
+
+
+@reconciliation_app.command("history")
+def reconciliation_history(
+    limit: Annotated[int, typer.Option("--limit", help="How many entries to show.")] = 20,
+) -> None:
+    """List recorded reconciliations, newest first. (read-only)"""
+    _, service = _services(False)
+    entries = service.history(limit=limit)
+    if not entries:
+        console.print("[yellow]No reconciliations recorded.[/yellow]")
+        raise typer.Exit(code=EXIT_OK)
+
+    table = Table(title="Reconciliation history", show_header=True, header_style="bold")
+    for column in (
+        "observed",
+        "reconciliation",
+        "status",
+        "findings",
+        "critical",
+        "orders",
+        "note",
+    ):
+        table.add_column(column)
+    for entry in entries:
+        table.add_row(
+            entry.observed_at.isoformat(),
+            entry.reconciliation_id,
+            entry.status,
+            str(entry.mismatches),
+            str(entry.critical),
+            str(entry.orders_submitted),
+            "re-observation" if entry.reobserved else "",
+        )
+    console.print(table)
+
+
+@reconciliation_app.command("validate")
+def reconciliation_validate(
+    reconciliation_id: Annotated[
+        str | None,
+        typer.Option("--reconciliation-id", help="Re-check a stored comparison instead."),
+    ] = None,
+) -> None:
+    """Validate the reconciliation policy, or re-check a stored result. (read-only)"""
+    from trading_system.reconciliation.report import render_reconciliation
+
+    settings, service = _services(False)
+    if reconciliation_id is not None:
+        result = service.get(reconciliation_id)
+        if result is None:
+            console.print(f"[yellow]UNAVAILABLE[/yellow]  no reconciliation {reconciliation_id}")
+            raise typer.Exit(code=EXIT_OK)
+        console.print()
+        console.print(render_reconciliation(result))
+        raise typer.Exit(code=EXIT_OK)
+
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        _fail(str(exc))
+        raise AssertionError("unreachable") from exc  # pragma: no cover
+    policy = config.reconciliation
+
+    console.print("\n[bold]RECONCILIATION POLICY[/bold]")
+    console.print("Model involved : [green]none[/green] — reconciliation is deterministic")
+
+    table = Table(title="Policy in force", show_header=True, header_style="bold")
+    table.add_column("Setting")
+    table.add_column("Value")
+    for name, value in (
+        ("enabled", str(policy.enabled)),
+        ("require broker account", str(policy.require_broker_account)),
+        ("require broker positions", str(policy.require_broker_positions)),
+        ("require broker orders", str(policy.require_broker_orders)),
+        ("require broker fills", str(policy.require_broker_fills)),
+        ("broker fills are complete history", str(policy.treat_broker_fills_as_complete_history)),
+        ("one connection per read", str(policy.one_connection_per_read)),
+        ("max broker data age (s)", str(policy.max_broker_data_age_seconds)),
+        ("corrective orders permitted", str(policy.corrective_orders_permitted)),
+        ("auto-adopt orphan positions", str(policy.auto_adopt_orphan_positions)),
+        ("resolve UNKNOWN executions", str(policy.resolve_unknown_executions)),
+        ("release on execution FAILED", str(policy.reservations.release_on_execution_failed)),
+        ("release on broker rejection", str(policy.reservations.release_on_broker_rejected)),
+        (
+            "release on cancel without fill",
+            str(policy.reservations.release_on_cancelled_without_fill),
+        ),
+        ("release on UNKNOWN", str(policy.reservations.release_on_unknown)),
+        ("release when never executed", str(policy.reservations.release_when_never_executed)),
+        ("use actual fill economics", str(policy.reservations.use_actual_fill_economics)),
+        ("allow currency conversion", str(policy.reservations.allow_currency_conversion)),
+    ):
+        table.add_row(name, value)
+    console.print(table)
+
+    console.print(
+        "\nReconciliation REPORTS. It cannot place, cancel or modify an order: "
+        "corrective_orders_permitted and auto_adopt_orphan_positions both fail to load if set."
+    )
+    console.print(
+        "An UNKNOWN execution never releases its capital. There is no configuration that "
+        "permits it, and no command that forces it."
+    )
+    console.print("[green]PASS[/green]  Policy is valid. No orders were submitted.")
+
+
+@reconciliation_app.command("explain")
+def reconciliation_explain(
+    reconciliation_id: Annotated[
+        str | None,
+        typer.Option("--reconciliation-id", help="The comparison to explain."),
+    ] = None,
+) -> None:
+    """Explain one reconciliation from its stored event history. (read-only)"""
+    from trading_system.reconciliation.report import render_reconciliation
+
+    _, service = _services(False)
+    result = service.get(reconciliation_id) if reconciliation_id is not None else service.latest()
+    if result is None:
+        console.print("[yellow]UNAVAILABLE[/yellow]  no reconciliation has been recorded.")
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    console.print(render_reconciliation(result, include_agreements=True))
+
+    events = service.repository.events(result.reconciliation_id)
+    table = Table(title="Event history (append-only)", show_header=True, header_style="bold")
+    for column in ("#", "observed", "event", "detail"):
+        table.add_column(column)
+    for event in events:
+        table.add_row(
+            str(event.sequence),
+            event.observed_at.isoformat(),
+            event.event_type.value,
+            (event.detail or "")[:70],
+        )
+    console.print(table)
+    console.print(
+        f"\nOrders submitted: [green]{result.orders_submitted}[/green]   "
+        f"Corrective orders: [green]{result.corrective_orders}[/green]"
+    )
 
 
 def _mask_account(account_id: str | None) -> str:

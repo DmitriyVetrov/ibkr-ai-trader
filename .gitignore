@@ -52,6 +52,13 @@ data/execution/*
 # Account snapshots additionally carry an account number and real balances.
 # Nothing under data/ may ever be committed, and this one least of all.
 data/accounts/*
+# What the broker actually holds, what actually filled, where the campaign's
+# money went, and every comparison between our records and the account. Real
+# positions, real fills, a real account reference. Never committed.
+data/positions/*
+data/fills/*
+data/reservations/*
+data/reconciliation/*
 trades/open/*
 trades/closed/*
 trades/rejected/*

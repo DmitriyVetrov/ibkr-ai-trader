@@ -12,12 +12,14 @@ from __future__ import annotations
 from enum import StrEnum, unique
 
 __all__ = [
+    "AcquisitionProvenance",
     "AllocationOutcome",
     "AllocationPolicy",
     "AllocationReason",
     "AllocationRunStatus",
     "BarInterval",
     "BrokerConnectionState",
+    "BrokerReadStatus",
     "BudgetSource",
     "ClaimSupport",
     "CollectionOutcome",
@@ -56,11 +58,18 @@ __all__ = [
     "OrderType",
     "PositionState",
     "PriceSource",
+    "ReconciliationEventType",
+    "ReconciliationFindingType",
+    "ReconciliationRunStatus",
+    "ReconciliationSeverity",
     "ReconciliationStatus",
     "RegulatoryFormType",
     "RelevanceLevel",
     "ResearchDataGap",
     "ResearchStatus",
+    "ReservationEventType",
+    "ReservationReasonCode",
+    "ReservationState",
     "RiskCategory",
     "RiskCheckOutcome",
     "RiskLimitScope",
@@ -74,6 +83,7 @@ __all__ = [
     "StrategySelectionStatus",
     "StrategyType",
     "StrikeSelectionPolicy",
+    "StructureStatus",
     "ThesisStatus",
     "TimeInForce",
     "TradingMode",
@@ -1611,6 +1621,321 @@ class ExecutionRunStatus(StrEnum):
     EXECUTION_DISABLED = "EXECUTION_DISABLED"
     NOT_AUTHORIZED = "NOT_AUTHORIZED"
     CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
+
+
+# ---------------------------------------------------------------------------
+# Positions, reservations and reconciliation (Milestone 9)
+#
+# Three vocabularies, deliberately separate, because they answer three
+# different questions:
+#
+#   BrokerReadStatus     did we manage to look, and what did we see?
+#   ReservationState     what has become of the capital we committed?
+#   ReconciliationFinding what disagrees between our records and the broker?
+#
+# The distinction that governs all three is the Milestone 8 invariant carried
+# forward: *not knowing is not the same as knowing nothing happened*. A failed
+# broker read is not an empty portfolio, an unresolved submission is not a
+# released reservation, and a missing position is not a position that never
+# existed.
+# ---------------------------------------------------------------------------
+@unique
+class BrokerReadStatus(StrEnum):
+    """What happened when broker state was read.
+
+    ``EMPTY`` and ``UNAVAILABLE`` are the two members this enum exists for. A
+    broker that answered with no positions is a fact about the account; a
+    broker that did not answer is a fact about the connection. Reconciling
+    against the second as though it were the first would report every position
+    the system believes in as missing, and every real broker position as gone.
+    """
+
+    #: The broker answered and the answer had content.
+    OK = "OK"
+    #: The broker answered, and the answer was genuinely empty. Valid data.
+    EMPTY = "EMPTY"
+    #: The broker could not be reached or refused. **Not** zero positions.
+    UNAVAILABLE = "UNAVAILABLE"
+    #: The request was not answered inside the configured timeout. Also not
+    #: zero positions — the account is simply unknown right now.
+    TIMEOUT = "TIMEOUT"
+    #: The broker answered with something this system could not normalise.
+    MALFORMED = "MALFORMED"
+    #: The read was not attempted, typically because policy did not ask for it.
+    NOT_REQUESTED = "NOT_REQUESTED"
+
+    @property
+    def usable(self) -> bool:
+        """Whether the answer may be reconciled against."""
+        return self in (BrokerReadStatus.OK, BrokerReadStatus.EMPTY)
+
+
+@unique
+class AcquisitionProvenance(StrEnum):
+    """How a position came to be held, as far as this system can tell.
+
+    A broker position with no internal execution history is ``UNKNOWN`` and
+    stays ``UNKNOWN``. Inventing an allocation, an execution, a strategy or a
+    purchase date for a pre-existing holding would fabricate the audit trail
+    the whole system exists to keep honest.
+    """
+
+    #: Traceable to an execution this system recorded.
+    SYSTEM_EXECUTION = "SYSTEM_EXECUTION"
+    #: Held at the broker with no execution of ours behind it. Never adopted
+    #: automatically into the internal ledger.
+    UNKNOWN = "UNKNOWN"
+
+
+@unique
+class StructureStatus(StrEnum):
+    """Whether a multi-leg structure is actually present at the broker.
+
+    ``PARTIAL`` is the member that matters. A straddle with its call filled and
+    its put missing is neither a straddle nor an absence of one — it is a naked
+    long call against limits nobody checked for one, and it must be reportable
+    as exactly that.
+    """
+
+    COMPLETE = "COMPLETE"
+    PARTIAL = "PARTIAL"
+    MISSING = "MISSING"
+    #: Broker data was unusable, so no claim is made in either direction.
+    UNKNOWN = "UNKNOWN"
+
+
+@unique
+class ReservationState(StrEnum):
+    """What has become of capital this campaign committed.
+
+    ``RESERVED`` is not ``INVESTED``: Milestone 7 authorises capital and only a
+    confirmed fill spends it. ``UNKNOWN`` is not ``RELEASED``: an execution
+    whose outcome was never learned may be a live order right now, and freeing
+    its capital is how one intention becomes two positions.
+    """
+
+    #: Capital is committed to an authorisation and nothing has consumed it.
+    RESERVED = "RESERVED"
+    #: Some of it was spent by confirmed fills; the rest is still committed.
+    PARTIALLY_CONSUMED = "PARTIALLY_CONSUMED"
+    #: Spent. The position exists, and the capital is in it.
+    CONSUMED = "CONSUMED"
+    #: Provably not spent and returned to the campaign.
+    RELEASED = "RELEASED"
+    #: The execution behind it is unresolved. The capital stays locked.
+    UNKNOWN = "UNKNOWN"
+
+
+@unique
+class ReservationEventType(StrEnum):
+    """One appended observation about a reservation.
+
+    Append-only, exactly like an execution's history: the current state is a
+    fold of these, so "when did this capital stop being available, and why" is
+    answerable after the fact.
+    """
+
+    RESERVATION_CREATED = "RESERVATION_CREATED"
+    RESERVATION_INCREASED = "RESERVATION_INCREASED"
+    RESERVATION_PARTIALLY_CONSUMED = "RESERVATION_PARTIALLY_CONSUMED"
+    RESERVATION_CONSUMED = "RESERVATION_CONSUMED"
+    RESERVATION_RELEASED = "RESERVATION_RELEASED"
+    #: The execution is UNKNOWN, so the reservation was deliberately kept.
+    #: Recorded rather than implied: a decision not to release is a decision.
+    RESERVATION_RETAINED_UNKNOWN = "RESERVATION_RETAINED_UNKNOWN"
+    #: A broker correction moved consumed capital past what was authorised.
+    RESERVATION_CORRECTED = "RESERVATION_CORRECTED"
+    #: Observed without change. Kept so an audit shows we looked.
+    RESERVATION_OBSERVED = "RESERVATION_OBSERVED"
+
+
+@unique
+class ReservationReasonCode(StrEnum):
+    """Why a reservation is in the state it is in."""
+
+    #: Authorised by Milestone 7 and not yet acted on.
+    AUTHORIZED = "AUTHORIZED"
+    #: No execution attempt exists for this authorisation at all.
+    NOT_EXECUTED = "NOT_EXECUTED"
+    #: An execution attempt provably never left the process.
+    EXECUTION_FAILED_BEFORE_SUBMISSION = "EXECUTION_FAILED_BEFORE_SUBMISSION"
+    BROKER_REJECTED = "BROKER_REJECTED"
+    CANCELLED_WITHOUT_FILL = "CANCELLED_WITHOUT_FILL"
+    CANCELLED_AFTER_PARTIAL_FILL = "CANCELLED_AFTER_PARTIAL_FILL"
+    EXPIRED_WITHOUT_FILL = "EXPIRED_WITHOUT_FILL"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    #: The order is working at the broker. Capital stays committed.
+    ORDER_WORKING = "ORDER_WORKING"
+    #: The submission's outcome is unknown. Capital stays committed — this is
+    #: the single most important reason code in the vocabulary.
+    EXECUTION_UNKNOWN = "EXECUTION_UNKNOWN"
+    #: A release was requested for an execution that may still be live.
+    RELEASE_REFUSED_UNKNOWN = "RELEASE_REFUSED_UNKNOWN"
+    #: Broker state could not be read, so nothing was resolved either way.
+    BROKER_DATA_UNAVAILABLE = "BROKER_DATA_UNAVAILABLE"
+    #: The fill economics are quoted in a currency the campaign does not hold,
+    #: and no deterministic FX mechanism exists. Milestone 7's refusal,
+    #: preserved rather than undone.
+    CURRENCY_MISMATCH = "CURRENCY_MISMATCH"
+    #: Broker evidence puts consumed capital above what was authorised.
+    BROKER_CORRECTION = "BROKER_CORRECTION"
+
+
+@unique
+class ReconciliationFindingType(StrEnum):
+    """One specific thing reconciliation found.
+
+    Deliberately finer than :class:`DiscrepancyType`, which is the Milestone 1
+    boundary vocabulary this projects onto. "Positions differ" is not an
+    actionable statement; "the broker holds four option positions no internal
+    execution accounts for" is.
+    """
+
+    # --- agreement ---------------------------------------------------------
+    #: Internal expectation and broker reality agree, exactly.
+    POSITION_MATCH = "POSITION_MATCH"
+    ORDER_MATCH = "ORDER_MATCH"
+    FILL_MATCH = "FILL_MATCH"
+    RESERVATION_MATCH = "RESERVATION_MATCH"
+
+    # --- positions ---------------------------------------------------------
+    #: We expect a position the broker does not report. Never replaced by a
+    #: compensating order: this is a finding, not an instruction.
+    EXPECTED_POSITION_MISSING = "EXPECTED_POSITION_MISSING"
+    #: The broker holds something no internal execution accounts for. Real,
+    #: and never sold, adopted or assigned to a campaign automatically.
+    ORPHAN_BROKER_POSITION = "ORPHAN_BROKER_POSITION"
+    POSITION_QUANTITY_MISMATCH = "POSITION_QUANTITY_MISMATCH"
+    #: The same instrument appears under a different broker contract id.
+    POSITION_CONTRACT_MISMATCH = "POSITION_CONTRACT_MISMATCH"
+    #: A multi-leg structure is present in part. Not complete, not absent.
+    PARTIAL_STRUCTURE = "PARTIAL_STRUCTURE"
+
+    # --- orders ------------------------------------------------------------
+    ORDER_STATE_MISMATCH = "ORDER_STATE_MISMATCH"
+    #: An order at the broker that no internal execution record names.
+    ORPHAN_BROKER_ORDER = "ORPHAN_BROKER_ORDER"
+    #: We believe an order is working and the broker does not report it.
+    EXPECTED_ORDER_MISSING = "EXPECTED_ORDER_MISSING"
+    #: A FAILED execution has an order at the broker. FAILED means the attempt
+    #: provably never left the process, so this is a serious consistency
+    #: violation and never a reason to relabel the execution.
+    FAILED_EXECUTION_HAS_BROKER_ORDER = "FAILED_EXECUTION_HAS_BROKER_ORDER"
+
+    # --- executions --------------------------------------------------------
+    #: Broker evidence settled an ambiguous submission.
+    UNKNOWN_EXECUTION_RESOLVED = "UNKNOWN_EXECUTION_RESOLVED"
+    #: It did not, and the execution stays UNKNOWN. Capital stays committed.
+    UNKNOWN_EXECUTION_UNRESOLVED = "UNKNOWN_EXECUTION_UNRESOLVED"
+
+    # --- fills -------------------------------------------------------------
+    FILL_MISMATCH = "FILL_MISMATCH"
+    #: A fill at the broker that no internal execution accounts for.
+    ORPHAN_BROKER_FILL = "ORPHAN_BROKER_FILL"
+
+    # --- reservations ------------------------------------------------------
+    RESERVATION_MISMATCH = "RESERVATION_MISMATCH"
+    RESERVATION_RELEASED = "RESERVATION_RELEASED"
+    RESERVATION_CONSUMED = "RESERVATION_CONSUMED"
+    RESERVATION_RETAINED_UNKNOWN = "RESERVATION_RETAINED_UNKNOWN"
+
+    # --- data availability -------------------------------------------------
+    #: Broker state could not be read. Distinct from "the broker holds
+    #: nothing", which is :data:`BROKER_RETURNED_EMPTY`.
+    BROKER_DATA_UNAVAILABLE = "BROKER_DATA_UNAVAILABLE"
+    #: The broker answered with nothing, and that is a valid answer.
+    BROKER_RETURNED_EMPTY = "BROKER_RETURNED_EMPTY"
+    #: An internal ledger could not be read, so nothing was compared.
+    INTERNAL_DATA_UNAVAILABLE = "INTERNAL_DATA_UNAVAILABLE"
+    #: An amount is denominated in a currency the campaign does not hold and
+    #: no FX mechanism exists. Reported, never converted at an invented rate.
+    CURRENCY_MISMATCH = "CURRENCY_MISMATCH"
+
+
+@unique
+class ReconciliationSeverity(StrEnum):
+    """How much attention a finding needs.
+
+    Every finding type's severity comes from ``config/reconciliation.yaml``,
+    not from code: how alarming a missing position is depends on how the
+    account is operated, and a severity policy invented in a module would be a
+    financial judgement nobody could see or change.
+    """
+
+    INFO = "INFO"
+    WARNING = "WARNING"
+    CRITICAL = "CRITICAL"
+
+
+@unique
+class ReconciliationRunStatus(StrEnum):
+    """Outcome of one reconciliation run.
+
+    ``MATCH`` requires that everything relevant was actually compared. A run
+    that could not read the broker is ``BROKER_DATA_UNAVAILABLE`` and never
+    ``MATCH``: agreeing with an empty set is not agreement.
+    """
+
+    MATCH = "MATCH"
+    MISMATCH = "MISMATCH"
+    BROKER_DATA_UNAVAILABLE = "BROKER_DATA_UNAVAILABLE"
+    INTERNAL_DATA_UNAVAILABLE = "INTERNAL_DATA_UNAVAILABLE"
+    CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
+
+
+@unique
+class ReconciliationEventType(StrEnum):
+    """One appended step in a reconciliation's own history."""
+
+    RECONCILIATION_STARTED = "RECONCILIATION_STARTED"
+    BROKER_SNAPSHOT_CAPTURED = "BROKER_SNAPSHOT_CAPTURED"
+    BROKER_READ_FAILED = "BROKER_READ_FAILED"
+    INTERNAL_LEDGER_READ = "INTERNAL_LEDGER_READ"
+    POSITION_MATCH = "POSITION_MATCH"
+    POSITION_MISMATCH = "POSITION_MISMATCH"
+    ORDER_MISMATCH = "ORDER_MISMATCH"
+    FILL_MISMATCH = "FILL_MISMATCH"
+    EXECUTION_RESOLVED = "EXECUTION_RESOLVED"
+    RESERVATION_CONSUMED = "RESERVATION_CONSUMED"
+    RESERVATION_RELEASED = "RESERVATION_RELEASED"
+    RESERVATION_RETAINED = "RESERVATION_RETAINED"
+    #: The same broker content was reconciled again. Recorded as an
+    #: observation rather than as a second, differently-named result.
+    SNAPSHOT_REOBSERVED = "SNAPSHOT_REOBSERVED"
+    RECONCILIATION_COMPLETED = "RECONCILIATION_COMPLETED"
+
+
+#: Finding types that describe agreement rather than disagreement.
+#:
+#: Kept as a set rather than as a naming convention because the run status is
+#: derived from it: a run whose findings are all in here is a ``MATCH``.
+AGREEMENT_FINDINGS: frozenset[ReconciliationFindingType] = frozenset(
+    {
+        ReconciliationFindingType.POSITION_MATCH,
+        ReconciliationFindingType.ORDER_MATCH,
+        ReconciliationFindingType.FILL_MATCH,
+        ReconciliationFindingType.RESERVATION_MATCH,
+        ReconciliationFindingType.BROKER_RETURNED_EMPTY,
+        ReconciliationFindingType.UNKNOWN_EXECUTION_RESOLVED,
+        ReconciliationFindingType.RESERVATION_RELEASED,
+        ReconciliationFindingType.RESERVATION_CONSUMED,
+    }
+)
+
+#: Reservation states in which the capital is still committed to the campaign.
+#:
+#: ``UNKNOWN`` is here deliberately, and it is the whole point of the set: an
+#: execution whose outcome was never learned may be a live order, so its
+#: capital is not available however much time has passed.
+COMMITTED_RESERVATION_STATES: frozenset[ReservationState] = frozenset(
+    {
+        ReservationState.RESERVED,
+        ReservationState.PARTIALLY_CONSUMED,
+        ReservationState.CONSUMED,
+        ReservationState.UNKNOWN,
+    }
+)
 
 
 #: States from which no further transition is possible.

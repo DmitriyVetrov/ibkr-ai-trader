@@ -39,6 +39,8 @@ from trading_system.domain.enums import (
     OptionRight,
     OrderType,
     PriceSource,
+    ReconciliationFindingType,
+    ReconciliationSeverity,
     SecurityType,
     SourceTier,
     StrategyType,
@@ -77,7 +79,12 @@ __all__ = [
     "MarketContextConfig",
     "OptionabilityPolicy",
     "PlausibilityConfig",
+    "PositionExpectationConfig",
+    "PositionFillConfig",
+    "PositionSnapshotConfig",
+    "PositionsConfig",
     "ProvidersConfig",
+    "ReconciliationConfig",
     "ReferencePriceField",
     "ResearchAgentConfig",
     "ResearchConfidenceConfig",
@@ -87,6 +94,7 @@ __all__ = [
     "ResearchLimitsConfig",
     "ResearchUsabilityConfig",
     "ResearchWindowConfig",
+    "ReservationPolicyConfig",
     "RiskConfig",
     "ScheduleJob",
     "SchedulesConfig",
@@ -1413,6 +1421,252 @@ class ExecutionConfig(_ConfigModel):
         return self
 
 
+class PositionSnapshotConfig(_ConfigModel):
+    """How broker position snapshots are stored (``positions.snapshot``)."""
+
+    #: An account that genuinely holds nothing is a fact worth recording. A
+    #: *failed* read is never stored as an empty snapshot — that distinction is
+    #: enforced in the service, not here.
+    store_empty_snapshots: bool = True
+    max_age_seconds: int = Field(default=900, ge=0)
+
+
+class PositionFillConfig(_ConfigModel):
+    """How broker fills are recorded (``positions.fills``)."""
+
+    deduplicate_by_broker_execution_id: bool = True
+    flag_fills_without_broker_execution_id: bool = True
+    #: Deliberately false. IBKR often reports a fill before its commission
+    #: report arrives, and an absent commission is ``None`` — never zero.
+    require_commission: bool = False
+
+    @model_validator(mode="after")
+    def _deduplication_cannot_be_switched_off(self) -> PositionFillConfig:
+        if not self.deduplicate_by_broker_execution_id:
+            raise ValueError(
+                "positions.fills.deduplicate_by_broker_execution_id=false would record the "
+                "same broker fill once per poll. Reconciliation observes the same fills "
+                "repeatedly by design; identity is what keeps that idempotent."
+            )
+        return self
+
+
+class PositionExpectationConfig(_ConfigModel):
+    """What may contribute to an internal expected position."""
+
+    from_confirmed_fills_only: bool = True
+    reflect_partial_fills: bool = True
+    report_strategy_structures: bool = True
+    report_partial_structures: bool = True
+
+    @model_validator(mode="after")
+    def _only_a_fill_makes_a_position(self) -> PositionExpectationConfig:
+        if not self.from_confirmed_fills_only:
+            raise ValueError(
+                "positions.expected_positions.from_confirmed_fills_only=false would let an "
+                "allocation, a submitted order or an UNKNOWN submission count as a position. "
+                "Only a confirmed broker fill establishes that something is held."
+            )
+        if not self.reflect_partial_fills:
+            raise ValueError(
+                "positions.expected_positions.reflect_partial_fills=false would record a "
+                "partly filled order as either its full size or nothing. Four of ten is four."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_partial_structure_stays_visible(self) -> PositionExpectationConfig:
+        if self.report_strategy_structures and not self.report_partial_structures:
+            raise ValueError(
+                "positions.expected_positions.report_partial_structures=false would round a "
+                "half-present straddle to COMPLETE or MISSING. It is neither, and the case "
+                "where it matters is a naked long call nobody authorised."
+            )
+        return self
+
+
+class PositionsConfig(_ConfigModel):
+    """Position ledger policy (``config/positions.yaml``, Milestone 9).
+
+    Governs two deliberately separate records: what the broker says it holds,
+    and what this system believes should exist. Nothing configured here can
+    place, cancel or modify an order.
+    """
+
+    account_mask_visible_characters: int = Field(default=4, ge=0, le=8)
+    prefer_broker_contract_id: bool = True
+    snapshot: PositionSnapshotConfig = Field(default_factory=PositionSnapshotConfig)
+    fills: PositionFillConfig = Field(default_factory=PositionFillConfig)
+    expected_positions: PositionExpectationConfig = Field(default_factory=PositionExpectationConfig)
+    adopt_orphan_positions: bool = False
+
+    @model_validator(mode="after")
+    def _identity_comes_from_the_broker(self) -> PositionsConfig:
+        if not self.prefer_broker_contract_id:
+            raise ValueError(
+                "positions.prefer_broker_contract_id=false would identify an option position "
+                "by symbol, strike, expiration and right alone. Adjusted contracts share those "
+                "fields, so two different instruments would eventually merge into one record."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _orphans_are_never_adopted_automatically(self) -> PositionsConfig:
+        if self.adopt_orphan_positions:
+            raise ValueError(
+                "positions.adopt_orphan_positions is set. Adopting a broker position with no "
+                "execution behind it means inventing an allocation, an execution, a strategy "
+                "and a research thesis for a holding this system knows nothing about. Report "
+                "it as ORPHAN_BROKER_POSITION; controlled onboarding is a later milestone."
+            )
+        return self
+
+
+class ReservationPolicyConfig(_ConfigModel):
+    """When committed campaign capital may move (``reconciliation.reservations``).
+
+    Every switch answers one question: *is there proof the capital was not
+    spent?* Where there is not, it stays committed.
+    """
+
+    release_on_execution_failed: bool = True
+    release_on_broker_rejected: bool = True
+    release_on_cancelled_without_fill: bool = True
+    release_on_expired_without_fill: bool = True
+    #: Never. An UNKNOWN execution may be a live order at the broker.
+    release_on_unknown: bool = False
+    release_when_never_executed: bool = False
+    consume_on_fill: bool = True
+    use_actual_fill_economics: bool = True
+    release_remainder_on_partial_fill: bool = False
+    allow_currency_conversion: bool = False
+
+    @model_validator(mode="after")
+    def _an_unknown_execution_keeps_its_capital(self) -> ReservationPolicyConfig:
+        if self.release_on_unknown:
+            raise ValueError(
+                "reconciliation.reservations.release_on_unknown is set. An UNKNOWN execution "
+                "may be a live order at the broker right now; releasing its capital and "
+                "allocating it again is exactly how one intention becomes two positions. "
+                "UNKNOWN is resolved by observation, and only a resolved outcome frees it."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _an_unexecuted_authorisation_keeps_its_capital(self) -> ReservationPolicyConfig:
+        if self.release_when_never_executed:
+            raise ValueError(
+                "reconciliation.reservations.release_when_never_executed is set. An "
+                "authorisation nobody has executed yet is not evidence that nothing will be "
+                "sent, and freeing its budget would let the same euro be authorised twice."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_partial_fill_does_not_free_the_remainder(self) -> ReservationPolicyConfig:
+        if self.release_remainder_on_partial_fill:
+            raise ValueError(
+                "reconciliation.reservations.release_remainder_on_partial_fill is set, but the "
+                "unfilled part of a partially filled order may still be working at the broker. "
+                "Only a terminal outcome releases it."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _no_invented_exchange_rate(self) -> ReservationPolicyConfig:
+        if self.allow_currency_conversion:
+            raise ValueError(
+                "reconciliation.reservations.allow_currency_conversion is set, but no "
+                "deterministic FX rate source exists. Converting committed capital at an "
+                "invented rate would misstate the campaign by an amount nobody recorded. "
+                "This is Milestone 7's refusal, preserved rather than undone."
+            )
+        return self
+
+
+class ReconciliationConfig(_ConfigModel):
+    """Reconciliation policy (``config/reconciliation.yaml``, Milestone 9).
+
+    Reconciliation reports; it does not repair. Two keys name the possibility
+    of it doing more — ``corrective_orders_permitted`` and
+    ``auto_adopt_orphan_positions`` — and both fail to load if set, so that
+    their refusal is visible in the file rather than merely absent from it.
+    """
+
+    enabled: bool = True
+
+    require_broker_account: bool = True
+    require_broker_positions: bool = True
+    require_broker_orders: bool = True
+    #: Deliberately false: IBKR's execution list is session-scoped, so absence
+    #: from it is not evidence that a fill never happened.
+    require_broker_fills: bool = False
+    treat_broker_fills_as_complete_history: bool = False
+
+    one_connection_per_read: bool = True
+    probe_connection_latency: bool = False
+    max_broker_data_age_seconds: int = Field(default=300, ge=0)
+
+    corrective_orders_permitted: bool = False
+    auto_adopt_orphan_positions: bool = False
+    resolve_unknown_executions: bool = True
+    fail_on_failed_execution_with_broker_order: bool = True
+
+    severity: dict[ReconciliationFindingType, ReconciliationSeverity] = Field(default_factory=dict)
+    reservations: ReservationPolicyConfig = Field(default_factory=ReservationPolicyConfig)
+
+    @model_validator(mode="after")
+    def _reconciliation_never_trades(self) -> ReconciliationConfig:
+        if self.corrective_orders_permitted:
+            raise ValueError(
+                "reconciliation.corrective_orders_permitted is set. Reconciliation compares "
+                "records against broker reality; deciding what to do about a discrepancy is a "
+                "separate judgement, and a comparison that could place an order would make "
+                "every stale record a trading signal."
+            )
+        if self.auto_adopt_orphan_positions:
+            raise ValueError(
+                "reconciliation.auto_adopt_orphan_positions is set. A broker holding with no "
+                "execution behind it is reported, never absorbed into the internal ledger with "
+                "invented provenance."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _every_finding_has_a_stated_severity(self) -> ReconciliationConfig:
+        """An unlisted finding type is a load failure, not a quiet default.
+
+        A severity policy is a financial judgement — how alarming is a position
+        we believe in that the broker does not hold? — and defaulting an
+        unlisted one to something reassuring would make the most dangerous
+        finding the easiest to miss.
+        """
+        missing = sorted(
+            finding.value for finding in ReconciliationFindingType if finding not in self.severity
+        )
+        if missing:
+            raise ValueError(
+                f"reconciliation.severity does not state a severity for: {', '.join(missing)}. "
+                f"Every finding type must be listed; an unlisted one would default to whatever "
+                f"code happened to choose, which is not a policy anyone can see."
+            )
+        return self
+
+    def severity_of(self, finding: ReconciliationFindingType) -> ReconciliationSeverity:
+        """The configured severity. Present for every member by construction."""
+        return self.severity[finding]
+
+    @property
+    def blocking_severities(self) -> frozenset[ReconciliationSeverity]:
+        """Severities that should stop new trading. Fixed, not configurable.
+
+        Making this a setting would let an operator switch off the consequence
+        of a discrepancy without resolving it, which is the same as not
+        reconciling at all.
+        """
+        return frozenset({ReconciliationSeverity.CRITICAL})
+
+
 class SystemConfig(_ConfigModel):
     """All YAML configuration, loaded and validated together."""
 
@@ -1421,6 +1675,8 @@ class SystemConfig(_ConfigModel):
     contract_selection: ContractSelectionConfig
     data: DataConfig
     execution: ExecutionConfig
+    positions: PositionsConfig
+    reconciliation: ReconciliationConfig
     research: ResearchConfig
     risk: RiskConfig
     schedules: SchedulesConfig
@@ -1567,6 +1823,8 @@ def load_config(config_dir: Path | str | None = None) -> SystemConfig:
         "contract_selection": _read_yaml(directory / "contract_selection.yaml"),
         "data": _read_yaml(directory / "data.yaml"),
         "execution": _read_yaml(directory / "execution.yaml"),
+        "positions": _read_yaml(directory / "positions.yaml"),
+        "reconciliation": _read_yaml(directory / "reconciliation.yaml"),
         "research": _read_yaml(directory / "research.yaml"),
         "risk": _read_yaml(directory / "risk.yaml"),
         "schedules": _read_yaml(directory / "schedules.yaml"),

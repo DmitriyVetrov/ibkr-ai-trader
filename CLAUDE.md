@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Milestones 1–8 of 12 are complete.** Built and tested: the domain layer (models, enums,
+**Milestones 1–9 of 12 are complete.** Built and tested: the domain layer (models, enums,
 events, state machine), YAML configuration, the 30 JSON workflow schemas, the CLI surface,
 structured logging, an injectable clock, the `Broker` abstraction with `SimulatedBroker` and
 `IBKRBroker`, the read-only broker diagnostics, the reconciliation foundation, the
@@ -17,21 +17,28 @@ selection**: the strategy registry, the strategy selector agent, deterministic d
 validation, and the *deterministic* contract selector with immutable decision and selection
 records — **allocation and risk**: the campaign envelope, the deterministic risk engine,
 the deterministic allocation engine, account snapshots, and an immutable allocation ledger —
-and **execution**: the purchase card factory, the deterministic order builder, the execution
+**execution**: the purchase card factory, the deterministic order builder, the execution
 state machine, idempotent submission, combo orders for multi-leg structures, fill tracking
-and an immutable execution ledger with append-only history.
-3199 passing tests; ruff, ruff format and mypy clean.
+and an immutable execution ledger with append-only history — and **positions, reservations
+and reconciliation**: the broker position ledger, deduplicated fills, expected positions
+projected from confirmed fills only, the reservation lifecycle that finally lets committed
+capital move, resolution of ambiguous submissions by observation, and a deterministic
+reconciliation engine with an immutable, content-addressed result.
+3823 passing tests; ruff, ruff format and mypy clean.
 
-**Not built, by design:** position lifecycle, autonomous trading, live trading. The CLI
+**Not built, by design:** exits, autonomous trading, live trading. A position is *observed*,
+never managed: there is no trailing stop, no take profit, no time-to-expiration policy, no
+thesis monitor and no exit engine, and nothing in this system closes a position. The CLI
 exposes those commands but they exit `3` naming the milestone that delivers them — they
 never fabricate output. Follow that pattern for anything still pending.
 
-**Milestone 9 is next: position lifecycle** — reconciliation against broker reality, the
-position state machine driven by fills, the thesis monitor, trailing stops, the DTE policy
-and the exit engine. It inherits two things Milestone 8 deliberately left open: an
-`UNKNOWN` execution is resolved by *observing* the broker, and a Milestone 7 authorisation
-that never executed still consumes campaign budget until something learns what happened to
-it. Releasing stale reservations belongs to the milestone that can tell.
+**Milestone 10 is next: automation** — the scheduler, recurring jobs (including the
+reconciliation loop over the comparison Milestone 9 built), Telegram notifications and
+health checks. It inherits one thing Milestone 9 deliberately left open: an
+`ORPHAN_BROKER_POSITION` is reported and never adopted, so a controlled onboarding workflow
+for pre-existing holdings belongs to a later milestone. Milestone 9 itself closed the two
+Milestone 8 left open — an `UNKNOWN` execution is now resolved by *observing* the broker,
+and a reservation is released on proof that its capital was never spent.
 
 [CLOUD_CODE_IMPLEMENTATION_SPEC.md](CLOUD_CODE_IMPLEMENTATION_SPEC.md) remains the source of
 truth for module layout, CLI surface, schemas, testing layers, and milestone order. Read the
@@ -145,6 +152,24 @@ full tree; the boundaries that matter:
   composition root and the only caller of `build_execution_broker`, and
   `execution/__init__.py` defers it through `__getattr__` — an eager re-export would put a
   *writable broker* in the import graph of anything that merely names an execution type.
+- `positions/` — the position ledger, and the only package here that holds a broker.
+  `models · snapshot · fills · expected · store · service · report`. It keeps **two**
+  records that are never merged: `BrokerPositionSnapshot` (what the broker says it
+  holds) and `ExpectedPosition` (what confirmed fills say should exist). Its broker
+  comes from `build_broker`, which is read-only whatever the settings say, and every
+  read asserts the broker's own submitted-order counter did not move. Specification §3
+  names this package `portfolio/`; it ships as `positions/` so the package, the CLI group
+  and the test suite share one name, exactly as `strategy_selector` does. `portfolio/`
+  remains for `pnl`, which needs Milestone 11.
+- `reservations/` — the capital ledger: `models · lifecycle · store · service · report`.
+  It holds **no broker at all** — capital moves on evidence the execution ledger already
+  recorded, and a test asserts the import graph. `lifecycle.py` is pure and answers one
+  question per reservation: *is there proof the capital was not spent?*
+- `reconciliation/` — the comparison: `models · findings · positions · orders · fills ·
+  unknown · reservations · engine · store · service · report`. `engine.py` is a pure
+  function of captured state — no broker, no repository, no clock — so a stored
+  comparison is reproducible. `service.py` is the single composition root and reaches a
+  broker only through `positions/`.
 - `monitoring/` — position monitor, thesis monitor, reconciliation loop, scheduler.
 
 **Two loops, different cadences.** The Opportunity Discovery loop (universe → research → strategy →
@@ -450,6 +475,95 @@ and what this milestone deliberately does not do — is in
 [skills/execution/README.md](skills/execution/README.md). Milestone 8 introduces **no agent**,
 so there is deliberately no `.claude/agents/` entry for it, exactly as in Milestone 7.
 
+## Positions, reservations and reconciliation (Milestone 9)
+
+> **The broker is authoritative, reconciliation reports rather than repairs, and
+> `UNKNOWN` capital stays locked.**
+
+The milestone that closes the loop. Everything before it proposes, authorises or sends;
+this one *observes*, and keeps two records that must never be merged:
+
+```
+Broker (read-only, ONE short-lived connection)
+      -> BrokerPositionSnapshot   what the broker says it holds
+      -> recorded fills           deduplicated on the broker's own execution ids
+      -> ExpectedPosition         what CONFIRMED FILLS say should exist
+      -> resolve UNKNOWN executions from broker evidence
+      -> reservation lifecycle    consume / release / hold, on proof only
+      -> ReconciliationEngine     deterministic, pure
+      -> immutable result + events
+```
+
+Eight rules govern it, each with tests that fail loudly:
+
+- **Only a confirmed broker fill makes a position.** An allocation, a submitted order, an
+  acknowledgement and an `UNKNOWN` submission all establish nothing, and a partial fill
+  establishes exactly what filled — four of ten is four, and the remainder is never
+  inferred. `positions.expected_positions.from_confirmed_fills_only: false` fails to load.
+- **"We could not look" is not "there is nothing there".** A failed broker read is
+  `BROKER_DATA_UNAVAILABLE` and produces **no comparison at all**; an empty portfolio the
+  broker actually reported is `BROKER_RETURNED_EMPTY` and is a valid answer about the
+  account. Separate `BrokerReadStatus` members, separate constructors, and a model that
+  refuses to let either wear the other's shape. `MATCH` requires that the broker was
+  genuinely read: agreeing with an absence of data is not agreement.
+- **`UNKNOWN` never releases its capital.** An execution whose outcome was never learned
+  may be a live order right now. `release_on_unknown: true` fails to load, `reservations
+  release` refuses it, and where *any* attempt against an authorisation is unresolved
+  nothing at all is released. Resolution is by *observing* the broker — absence from the
+  open-order list settles nothing, since a filled, a cancelled and a never-sent order look
+  identical from there.
+- **`FAILED` means nothing was sent.** Milestone 8's invariant, made checkable: an order at
+  the broker for a `FAILED` execution is `FAILED_EXECUTION_HAS_BROKER_ORDER`, a critical
+  consistency violation, and the execution is never quietly relabelled `SUBMITTED`.
+- **Reconciliation reports; it never repairs.** No internal record is edited into
+  agreement, no position is adopted, no order is cancelled, no compensating trade is
+  proposed. `corrective_orders_permitted: true` and `auto_adopt_orphan_positions: true`
+  both fail to load, `ReconciliationResult` refuses a non-zero `orders_submitted` or
+  `corrective_orders`, and every recommendation reads `ACTION REQUIRED` rather than naming
+  a trade. An `ORPHAN_BROKER_POSITION` is *real* and stays exactly where it is, with
+  acquisition provenance `UNKNOWN`.
+- **Identity comes from the broker.** The contract id wherever there is one; the
+  human-readable fallback only when there is not, recorded as the weaker key it is —
+  adjusted contracts share symbol, strike, expiry and right. An option *fill* with neither
+  a contract id nor contract terms is refused outright rather than merged into the wrong
+  strike.
+- **Every finding shows both sides.** Contract identity, expected value, observed value,
+  the difference, both provenances and both clocks. "Positions differ" is not something
+  anyone can act on.
+- **Running it twice changes nothing.** Ids are content-derived, fills deduplicate on the
+  broker's execution ids, reservation outcomes are *deltas* against current state, and a
+  replayed event is recognised and dropped. The second run over unchanged state releases
+  no capital, consumes none, and records a re-observation.
+
+**One connection, four reads, no health probe.** Account summary, positions, open orders
+and fills are all served from `ib_async`'s startup handshake cache, so one short-lived
+connection answers all four without a second uncached round trip — the Milestone 2
+constraint. A test asserts the exact call list; a fifth read would be a round trip that may
+never be answered.
+
+**Units, again.** `price` and `average_price` are the broker's *quoted* terms (6.05);
+`average_cost` is money for one contract with the multiplier in it (605.00); `market_value`
+and reservation amounts are money. `ExecutionRecord.executed_capital` is in quoted terms and
+must never be used as money — `reservations/lifecycle.py::executed_capital` does the
+multiplication once, explicitly. A conversion needing a multiplier nobody reported yields
+`None`, never an assumed 100.
+
+Every Milestone 9 artifact stores a **masked** account reference and a test asserts the full
+number never reaches a stored payload. The Milestone 7 `AccountSnapshot` keeps the broker's
+own id — a completed milestone's stored contract — and the CLI masks it on the way out.
+
+The Milestone 1 artifacts are **reused, not forked**: `StrategyPosition.to_position_snapshot()`
+projects onto `schemas/position_snapshot.json` and
+`ReconciliationResult.to_reconciliation_report()` onto the M1 `ReconciliationReport`. Both
+*raise* rather than lie — a structure the broker does not report has no `PositionState`, and
+a failure to read our own ledger is neither a broker failure nor a match.
+
+Development guidance — what to do when adding a finding type, a reservation outcome or a
+broker read, and what this milestone deliberately does not do — is in
+[skills/positions/README.md](skills/positions/README.md). Milestone 9 introduces **no
+agent**, so there is deliberately no `.claude/agents/` entry for it, exactly as in
+Milestones 7 and 8.
+
 **Configuration over hardcoding.** Schedules live in `config/schedules.yaml`, risk in `risk.yaml`,
 strategies in `config/strategies/*.yaml`, data policy in `data.yaml`, the candidate pool,
 eligibility filters and ranking policy in `universe.yaml`, the research horizon, data
@@ -458,7 +572,10 @@ stage's eligibility gates and agent in `strategy.yaml`, the expiration rule, str
 policy, quote requirements and liquidity policy in `contract_selection.yaml`, the campaign
 envelope, allocation policy, position limits, currency policy and ranking weights in
 `campaign.yaml`, and the execution switch, order vocabulary, validity windows, drift ceiling
-and combo policy in `execution.yaml`. Note the splits: `strategy.yaml` configures the *stage*,
+and combo policy in `execution.yaml`, the position ledger, account masking, fill
+deduplication and structure policy in `positions.yaml`, and the reconciliation policy,
+per-finding severity and the reservation lifecycle in `reconciliation.yaml`. Note the
+splits: `strategy.yaml` configures the *stage*,
 `config/strategies/*.yaml` configure the *payoffs* — one is an agent, the others are
 instruments; and `risk.yaml` states the outer boundary of the whole system while
 `campaign.yaml` states what *this* campaign permits inside it. Source trust lives in
@@ -472,6 +589,12 @@ If a requirement is ambiguous, add a documented config option rather than a hidd
 (regenerable), `historical/` (an append-only ledger per data type and key), and `snapshots/`
 (immutable point-in-time). Never mix cache with research snapshots. See
 [data/README.md](data/README.md).
+
+Milestone 9 adds four more, each following the same immutable-record plus append-only-index
+shape: `data/positions/` (broker position snapshots), `data/fills/` (recorded broker fills,
+keyed on the broker's own execution ids), `data/reservations/` (the capital ledger — base
+records plus per-reservation event streams, folded on read) and `data/reconciliation/`
+(comparison results plus their own event histories).
 
 Three rules govern everything stored there, and each has tests that fail loudly:
 
@@ -616,6 +739,39 @@ python -m trading_system.cli execution history [--allocation-id <ID>]
 python -m trading_system.cli execution explain --execution-id <ID> [--resolve]
 python -m trading_system.cli execution cancel --execution-id <ID> --confirm
 
+# Positions. Read-only with respect to the broker; submits 0 orders. Every
+# command distinguishes BROKER OBSERVED positions from INTERNAL EXPECTED ones.
+python -m trading_system.cli positions validate           # the ledger policy
+python -m trading_system.cli positions snapshot           # capture what the broker holds
+python -m trading_system.cli positions snapshot --simulated
+python -m trading_system.cli positions snapshot --dry-run # reads, stores nothing
+python -m trading_system.cli positions show               # broker observed
+python -m trading_system.cli positions show --expected    # internal expected
+python -m trading_system.cli positions show --symbol NVDA
+python -m trading_system.cli positions history [--contract-id 12345]
+python -m trading_system.cli positions explain --contract-id 12345
+
+# Reservations. Committed campaign capital. Submits 0 orders; no FX; no
+# force-release, and `release` refuses an UNKNOWN execution outright.
+python -m trading_system.cli reservations show
+python -m trading_system.cli reservations show --reservation-id <ID>
+python -m trading_system.cli reservations validate        # what would move, moving nothing
+python -m trading_system.cli reservations history [--reservation-id <ID>]
+python -m trading_system.cli reservations release --reservation-id <ID> --confirm
+
+# Reconciliation. Compares internal records against broker reality and REPORTS.
+# It cannot place, cancel or modify an order; every run prints 0 submitted and
+# 0 corrective orders, read off the broker.
+python -m trading_system.cli reconciliation validate      # the policy in force
+python -m trading_system.cli reconciliation validate --reconciliation-id <ID>
+python -m trading_system.cli reconciliation run
+python -m trading_system.cli reconciliation run --simulated
+python -m trading_system.cli reconciliation run --dry-run # writes nothing at all
+python -m trading_system.cli reconciliation show [--reconciliation-id <ID>] [--all]
+python -m trading_system.cli reconciliation history
+python -m trading_system.cli reconciliation explain [--reconciliation-id <ID>]
+python -m trading_system.cli reconcile                    # the spec's alias for `run`
+
 pytest -m "not ibkr and not llm"                # default: no gateway, no API key needed
 pytest tests/universe                           # filters, point-in-time, snapshots, CLI
 pytest tests/research                           # evidence, dedup, validation, snapshots, CLI
@@ -625,8 +781,13 @@ pytest tests/contract_selection                 # policy, point-in-time, determi
 pytest tests/risk                               # limits, engine, account snapshots, boundaries
 pytest tests/allocation                         # quantity, allocator, scorer, service, CLI
 pytest tests/execution                          # state machine, idempotency, fills, boundaries
+pytest tests/positions                          # snapshots, fills, expected positions, boundaries
+pytest tests/reservations                       # lifecycle, release, UNKNOWN, invariants
+pytest tests/reconciliation                     # engine, orders, fills, orphans, idempotency
 pytest tests/integration/test_research_to_allocation.py   # the whole chain; 0 orders
 pytest tests/integration/test_research_to_execution.py    # the chain through execution
+pytest tests/integration/test_execution_to_position.py   # execution -> fill -> position
+pytest tests/integration/test_reconciliation_workflow.py # the whole loop, id by id
 pytest tests/agents/test_universe_selector.py   # agent contract; needs no API key
 pytest tests/agents/test_research_agent.py      # agent contract; needs no API key
 pytest tests/agents/test_strategy_selector.py   # agent contract; needs no API key
@@ -673,11 +834,26 @@ identity and stores no new attempt. An `UNKNOWN` execution is resolved with
 `execution explain --resolve`, which *reads* broker state — there is no command that retries
 a submission.
 
+`positions snapshot` and `reconciliation run` open **one** short-lived read-only connection
+and read account, positions, open orders and fills from it — all startup-cache backed, so
+no second uncached round trip is needed and no health probe is issued first. A failed read
+is *stored as a failed read*: it can never be mistaken for an empty account, and no
+comparison is made against it. `reconciliation run --dry-run` reads the broker and writes
+nothing at all — no snapshot, no fill, no execution resolution, no reservation movement and
+no result. Neither command can place, cancel or modify an order, and both print the
+submitted-order count next to a corrective-order count that is always zero.
+
+`reservations release` is deliberately narrow: it refuses while any execution against the
+authorisation is `UNKNOWN` or still working, and there is no force-release anywhere. Resolve
+the execution against the broker instead — the resolved state releases the capital on its
+own, which is the point.
+
 Every other command exits `3` until its milestone lands. Command help is tagged `(read-only)` or
 `(mutates state)` — keep that up when adding commands, and note that Rich swallows
 `[square brackets]` in help strings, hence the parentheses. Makefile shortcuts mirror the test
-layout (`make test-risk`, `make ibkr-connection`). `docker-compose.yml` and `Dockerfile` build and
-run `trading-runtime`; `ib-gateway` itself has not been started against a real account.
+layout (`make test-risk`, `make test-reconciliation`, `make ibkr-connection`).
+`docker-compose.yml` and `Dockerfile` build and run `trading-runtime`; `ib-gateway` itself has
+not been started against a real account.
 
 ## Working in this repository
 
@@ -896,6 +1072,36 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   `events/<execution_id>.jsonl` and the current record is folded from them. A history that
   cannot be replayed raises rather than being skipped — a contradiction on disk is worth
   surfacing, and quietly ignoring it would leave the wrong state on screen.
+- **An empty `list` from a broker read means "the account holds nothing"; an exception means
+  "we could not look".** `positions/service.py` classifies every read into its own
+  `BrokerReadStatus` (`OK` / `EMPTY` / `UNAVAILABLE` / `TIMEOUT` / `MALFORMED`) and the
+  snapshot model refuses to let a failure carry positions or an `OK` carry none. Collapsing
+  the two is the single most damaging thing this milestone could do: it reports every real
+  holding as gone and every internal expectation as missing, with total confidence.
+- **A fill with no execution of ours behind it does not enter the internal ledger.** It is
+  real and it is recorded, but `project_expected_positions` excludes it — otherwise an
+  orphan broker position would agree with an expectation *derived from the broker*, the
+  comparison would confirm itself, and the finding a person needs (`ORPHAN_BROKER_POSITION`)
+  would never appear.
+- **`Reservation.with_event` reconstructs rather than `model_copy`s.** A copy does not
+  revalidate, so an event that broke the accounting identity would produce a record that
+  cannot be true and the error would surface later, as a wrong balance. This is a money
+  ledger; the place to find that out is at the fold.
+- **A reservation outcome is a set of deltas, never totals.** Applying one twice moves
+  nothing, which is what makes reconciliation idempotent *economically* rather than merely
+  at the record level. A duplicate record is untidy; a double release is money.
+- **`ExecutionRecord.executed_capital` is in quoted terms and is not money.** Multiply by
+  the multiplier exactly once, in `reservations/lifecycle.py::executed_capital`. Consuming
+  12.10 where 1,210.00 was meant leaves a campaign believing it has its whole budget left.
+- **The simulator reports its own working orders from `get_open_orders`.** Milestone 8 left
+  it returning only the pre-set scenery, which meant `execution explain --resolve` could
+  never find a simulated order and the UNKNOWN-resolution path was untestable offline. The
+  book's open orders are now appended to the scenery; finished orders are not open and are
+  not listed.
+- **A stray-file test asserts "this added nothing", not "this file does not exist".** From
+  Milestone 9 a developer who has actually run `risk capture-account` or `reconciliation
+  run` against their paper gateway has a legitimate `data/accounts/history.jsonl`, and a
+  test that failed because the CLI had been *used* is measuring the wrong thing.
 
 This directory is its own git repository (`git init`-ed, one commit: the specification). The
 enclosing `/home/dmytro/git/` is a separate repo full of unrelated projects; nothing here should

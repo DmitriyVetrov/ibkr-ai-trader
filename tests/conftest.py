@@ -1266,3 +1266,130 @@ def tmp_config_dir(tmp_path: Path, config_dir: Path) -> Iterator[Path]:
     destination = tmp_path / "config"
     shutil.copytree(config_dir, destination)
     yield destination
+
+
+# ---------------------------------------------------------------------------
+# Milestone 9: positions, reservations and reconciliation
+#
+# Two position records, deliberately separate: what the broker says it holds,
+# and what confirmed fills say should exist. The contract suite validates each
+# against its own schema, exactly as it does for every earlier milestone.
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def broker_position_snapshot():
+    """What the broker reported holding at one instant."""
+    from tests.positions.factories import ACCOUNT, option_position
+    from trading_system.positions.snapshot import build_position_snapshot
+
+    return build_position_snapshot(
+        [option_position()],
+        broker="SIMULATOR",
+        account_id=ACCOUNT,
+        trading_mode=TradingMode.PAPER,
+        as_of=FIXED_NOW,
+        observed_at=FIXED_NOW,
+    )
+
+
+@pytest.fixture
+def position_fill():
+    """One recorded broker fill, in the broker's own quoted terms."""
+    from tests.positions.factories import MASKED, broker_execution
+    from trading_system.positions.fills import ContractTerms, to_observed_fill
+
+    return to_observed_fill(
+        broker_execution(),
+        observed_at=FIXED_NOW,
+        account_reference=MASKED,
+        terms=ContractTerms(multiplier=100),
+        execution_id="execution-1",
+    )
+
+
+@pytest.fixture
+def expected_position(position_fill):
+    """What that fill says should exist — the internal ledger, not the broker's."""
+    from tests.positions.factories import MASKED
+    from trading_system.positions.expected import expected_from_fills
+
+    [position] = expected_from_fills([position_fill], as_of=FIXED_NOW, account_reference=MASKED)
+    return position
+
+
+@pytest.fixture
+def reservation():
+    """Capital committed to one authorisation, before anything moved."""
+    from tests.positions import factories
+
+    return factories.reservation()
+
+
+@pytest.fixture
+def reservation_event(reservation):
+    """One appended observation about that capital."""
+    from trading_system.domain.enums import (
+        ReservationEventType,
+        ReservationReasonCode,
+        ReservationState,
+    )
+    from trading_system.reservations.models import ReservationEvent
+
+    return ReservationEvent(
+        event_id="resevt-0000000000000000000",
+        reservation_id=reservation.reservation_id,
+        sequence=0,
+        event_type=ReservationEventType.RESERVATION_CONSUMED,
+        state=ReservationState.CONSUMED,
+        occurred_at=FIXED_NOW,
+        observed_at=FIXED_NOW,
+        source="reconciliation",
+        consumed_delta=reservation.authorized_amount,
+        reason_code=ReservationReasonCode.FILLED,
+        detail="the broker reported a complete fill",
+    )
+
+
+@pytest.fixture
+def reconciliation_result(broker_position_snapshot, expected_position, system_config):
+    """One comparison between the internal ledger and broker reality."""
+    from tests.positions.factories import MASKED
+    from trading_system.domain.enums import BrokerReadStatus
+    from trading_system.reconciliation.engine import (
+        ReconciliationEngine,
+        ReconciliationInputs,
+    )
+
+    return ReconciliationEngine(system_config.reconciliation).reconcile(
+        ReconciliationInputs(
+            campaign_id="campaign-001",
+            broker="SIMULATOR",
+            account_reference=MASKED,
+            trading_mode=TradingMode.PAPER,
+            as_of=FIXED_NOW,
+            observed_at=FIXED_NOW,
+            snapshot=broker_position_snapshot,
+            expected=(expected_position,),
+            account_read=BrokerReadStatus.OK,
+            orders_read=BrokerReadStatus.EMPTY,
+            fills_read=BrokerReadStatus.EMPTY,
+            config_version="test",
+        )
+    )
+
+
+@pytest.fixture
+def reconciliation_event(reconciliation_result):
+    """One appended step in that comparison's own history."""
+    from trading_system.domain.enums import ReconciliationEventType
+    from trading_system.reconciliation.models import ReconciliationEvent
+
+    return ReconciliationEvent(
+        event_id="recevt-0000000000000000000",
+        reconciliation_id=reconciliation_result.reconciliation_id,
+        sequence=0,
+        event_type=ReconciliationEventType.RECONCILIATION_STARTED,
+        occurred_at=FIXED_NOW,
+        observed_at=FIXED_NOW,
+        source="reconciliation",
+        detail="comparing against SIMULATOR",
+    )
