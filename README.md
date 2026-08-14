@@ -10,13 +10,13 @@ not reachable by configuration alone — see [Trading modes](#trading-modes).
 
 ## Status
 
-**Milestone 9 of 12 — positions, reservations and reconciliation.** What exists
+**Milestone 10 of 12 — exit management and the position lifecycle.** What exists
 today:
 
 - domain models, enums, events and the position state machine;
 - YAML configuration for campaign, risk, schedules, sources, strategies, data,
-  universe, research, execution, positions and reconciliation;
-- the 37 JSON schemas for the workflow boundaries;
+  universe, research, execution, positions, reconciliation and exits;
+- the 43 JSON schemas for the workflow boundaries;
 - structured logging and an injectable clock;
 - a `Broker` abstraction with a deterministic `SimulatedBroker` and an
   `IBKRBroker` over IB Gateway, read-only unless deliberately opened for paper
@@ -60,14 +60,24 @@ today:
 - **reconciliation**: a deterministic engine that compares the two ledgers
   against broker reality and reports every difference with both sides, the
   delta, both provenances and both clocks — and repairs nothing;
+- **exit management**: a deterministic policy engine with an explicit,
+  reviewable precedence that answers `WAIT`, `EXIT` or `BLOCK` for every open
+  position — a trailing stop whose level provably never falls and survives a
+  restart, an expiration policy counted on the exchange's own calendar, a
+  maximum-loss check that reuses the strategy's declared risk basis rather than
+  inventing a formula, a thesis check that labels what it cannot verify instead
+  of interpreting it, and a position lifecycle in which only broker reality
+  closes a position;
 - the CLI surface, with every command tagged read-only or state-mutating.
 
-What deliberately does **not** exist yet: exits, autonomous trading and any
-form of live trading. A position is *observed*, never managed — there is no
-trailing stop, no take profit, no time-to-expiration policy, no thesis monitor
-and no exit engine, and nothing in this system closes a position. Commands
-covering those exist in the CLI but exit `3` naming the milestone that delivers
-them. They never fabricate output.
+What deliberately does **not** exist yet: the scheduler, autonomous trading and
+any form of live trading. A position is now *managed* — it is evaluated, and it
+can be closed — but nothing runs that evaluation on a cadence:
+`config/schedules.yaml` still describes jobs no process executes, there is no
+notification and no health-check loop, and the specification's separate thesis
+monitor (which returns `WEAKENING`) is a later milestone. Commands covering
+those exist in the CLI but exit `3` naming the milestone that delivers them.
+They never fabricate output.
 
 **Reconciliation reports; it does not repair.** It cannot place, cancel or
 modify an order — two configuration keys that would permit it fail to load, the
@@ -715,6 +725,79 @@ reservation outcomes are deltas against current state, and the second run
 records a re-observation rather than a second history.
 
 Development guidance is in [skills/positions/README.md](skills/positions/README.md).
+
+## Exit management (Milestone 10)
+
+Three milestones, three questions, and the system keeps them apart:
+
+| milestone | answers |
+|---|---|
+| **10** | should this existing position be closed? |
+| **8** | how do we send the exit order? |
+| **9** | what actually happened at the broker? |
+
+**No model decides whether to sell.** There is no agent here, no prompt and no
+LLM client — a test walks the whole import graph to prove it. Whether to close a
+position is a safety decision, and an engine that can be replayed from stored
+artifacts is worth more than a persuasive one that cannot.
+
+**Ten policies, one reviewable precedence, one combination rule.** The first
+policy that does not say `WAIT` decides:
+
+```
+1 POSITION_CONSISTENCY   6 DATA_QUALITY
+2 BROKER_OBSERVATION     7 MAX_LOSS
+3 EXECUTION_STATE        8 THESIS
+4 CONTRACT_VALIDITY      9 TAKE_PROFIT
+5 EXPIRATION            10 TRAILING_STOP
+```
+
+That single rule gives both properties that matter. A position at its
+take-profit whose quantity the broker disputes **blocks**, because consistency
+comes first — the profit was computed from a quantity nobody confirmed. A
+position one day from expiry whose research report cannot be read **exits**,
+because expiration comes before thesis — a missing file must not be able to
+disable the most important policy in the milestone.
+
+Safety comes before profit-taking at every step, and every verdict names the
+policy that produced it and the two numbers it compared.
+
+**A trailing stop is a state machine, not a price.** `INACTIVE → ARMED → ACTIVE
+→ TRIGGERED`, with the peak, the level, when each moved and the observation that
+crossed it all recorded. The level provably never falls — enforced in the model,
+in the algorithm, and by a configuration key that fails to load if set — and the
+state is persisted, so a restart continues the trail rather than re-arming from
+wherever the price happens to be.
+
+**Nothing is fabricated.** A missing bid does not become the ask, the last print
+or the price we paid: it is `QUOTE_FIELD_UNAVAILABLE`, and field substitution
+cannot be switched on. A missing multiplier is never 100. An unquantified
+maximum loss is never a small one. An invalidation condition stated as prose is
+labelled `NOT_EVALUATED` rather than interpreted — reading a sentence as a sell
+signal would make this engine non-deterministic and would need the model it
+does not have.
+
+**Closing needs the same two switches as opening.** `execution.enabled` *and* an
+explicit `--confirm`. Evaluation constructs no writable broker at all.
+
+```bash
+python -m trading_system.cli exit validate     # the policy, and every narrowing
+python -m trading_system.cli exit evaluate     # WAIT / EXIT / BLOCK. Submits nothing
+python -m trading_system.cli positions monitor # the scheduled operation
+python -m trading_system.cli exit explain --position-id <ID>
+python -m trading_system.cli exit run --dry-run  # shows the exit; opens no broker
+python -m trading_system.cli exit run --confirm  # SUBMITS
+```
+
+**Only broker reality closes a position.** Not a submitted order, not a reported
+fill, not a decision to exit. Between submission and confirmation the position
+is `EXIT_SUBMITTED`, which is the honest state; `CLOSED` is terminal and nothing
+reopens it. And an exit whose outcome was never learned is `EXIT_UNKNOWN` — it
+blocks every later run, it is never re-sent, and no amount of elapsed time turns
+it into a failure.
+
+Development guidance is in
+[skills/exit-management/README.md](skills/exit-management/README.md).
 
 ## IBKR architecture
 

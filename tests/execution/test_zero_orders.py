@@ -99,12 +99,20 @@ def test_only_both_variables_together_unlock(
 # ---------------------------------------------------------------------------
 # No ordinary test constructs something that could submit
 # ---------------------------------------------------------------------------
+#: The files that are *supposed* to submit, and are gated to do so.
+#:
+#: Both carry the ``paper_execution`` marker and both refuse to run without
+#: ``ALLOW_LIVE_TESTS=true`` *and* ``RUN_PAPER_EXECUTION_TESTS=true``. Listed by
+#: name rather than detected by marker so that adding a third one is a
+#: deliberate edit to this line, reviewed alongside the file that needs it.
+_GATED_PAPER_TESTS = frozenset({"test_paper_execution.py", "test_paper_exit.py"})
+
+
 def _test_files(repo_root: Path) -> list[Path]:
     return [
         path
         for path in (repo_root / "tests").rglob("test_*.py")
-        # The one file that is *supposed* to submit, and is gated to do so.
-        if path.name != "test_paper_execution.py"
+        if path.name not in _GATED_PAPER_TESTS
     ]
 
 

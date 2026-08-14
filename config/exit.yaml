@@ -1,0 +1,176 @@
+# Exit management policy (Milestone 10).
+#
+# The global envelope for the one question this milestone answers about a
+# position that already exists: SHOULD IT BE CLOSED?
+#
+# Three properties of this file are load-bearing:
+#
+#   1. Every safety value here is an OUTER boundary. config/strategies/*.yaml
+#      may narrow any of them and may widen none. A widening is a load failure
+#      naming the strategy and the limit — never a silent clamp, because a
+#      clamped limit is a limit nobody can see.
+#
+#   2. Nothing here is an AI input. Milestone 10 introduces no agent, consults
+#      no model and has no prompt. Every decision below is arithmetic over
+#      stored artifacts, and identical inputs produce an identical decision.
+#
+#   3. `enabled` below permits EVALUATION, not submission. Sending an exit
+#      order still needs execution.enabled in config/execution.yaml AND an
+#      explicit --confirm, exactly as an entry does. Deciding that a position
+#      should close and closing it are two separate acts.
+#
+# Monetary values are quoted strings or integers so they parse as exact
+# decimals. An unquoted 0.01 would be a binary float and is rejected.
+
+enabled: true
+policy_version: "1.0.0"
+
+# --- expiration -------------------------------------------------------------
+#
+# An option is not a stock. It stops existing on a date, and the last week of a
+# long-premium position is where time decay takes what the thesis earned.
+#
+# Both thresholds count CALENDAR DAYS from the EXCHANGE-LOCAL date of the
+# evaluation instant to the expiration, through config/data.yaml's market
+# calendar. Counting from a UTC date would be wrong by one for most of the
+# evening, which is exactly when a force-exit threshold matters.
+#
+# DTE = 0 does NOT mean "a full trading day is still available": it means the
+# contract expires today, and whether the session is open, short or already
+# over is a calendar question the calendar answers.
+expiration:
+  # Below this, the position is near its deadline. REPORTED, never exited on
+  # its own — an operator seeing EXPIRATION_WARNING knows the clock, and the
+  # other policies keep working.
+  warning_dte: 10
+  # At or below this, an exit is REQUIRED. A strategy may force an exit earlier
+  # (a larger close_at_dte); one that would hold closer to expiry than this
+  # fails to load.
+  force_exit_dte: 5
+  # A year the market calendar has not verified answers UNKNOWN. Blocking is
+  # the honest response: an expiration nobody checked must not pass as ordinary.
+  block_on_unknown_calendar: true
+  # An expiration that has already passed is a BLOCK, not a force-exit. An
+  # expired option cannot be sold, and an order for one is not an exit.
+  block_on_expired_contract: true
+
+# --- data quality -----------------------------------------------------------
+#
+# WHICH PRICE AN EXIT IS MEASURED AGAINST, STATED RATHER THAN ASSUMED.
+#
+# Closing a long option is a SALE, so its honest value is the BID: the price a
+# seller can actually get. MID is a fair value nobody is obliged to trade at,
+# and LAST is a print that may be hours old and on the wrong side of the
+# spread. Trailing levels, take-profit targets and maximum-loss figures are all
+# derived from this one field, so it is recorded on every stored valuation.
+#
+# There is deliberately no fallback. A missing bid is QUOTE_FIELD_UNAVAILABLE;
+# substituting the ask, the last print or the price we paid would value the
+# position at something no seller could get, and every number downstream would
+# faithfully reproduce the invention.
+data_quality:
+  quote_field: BID
+  # Measured against the evaluation's own as_of, exactly as risk.yaml's window
+  # is, so a historical replay is not penalised for being run today.
+  max_quote_age_seconds: 900
+  # The data layer's own eight-dimensional verdict, consumed and never re-graded.
+  require_research_usable: true
+  # BLOCK or WAIT. BLOCK refuses to judge the position; WAIT keeps it and
+  # records that the evaluation had no price. There is no third option.
+  on_unavailable: BLOCK
+  on_stale: BLOCK
+  allow_quote_field_substitution: false
+
+# --- trailing stop ----------------------------------------------------------
+#
+# A four-state machine (INACTIVE -> ARMED -> ACTIVE -> TRIGGERED), not a
+# mutable price. Percentages are of the position's OWN economics: the gain over
+# what was paid for it, and the give-back from its peak.
+trailing:
+  enabled: true
+  # Gain over entry cost that arms the trail, as a percentage.
+  activation_return_pct: 25.0
+  # The WIDEST trail any strategy may use. A strategy trailing tighter gives
+  # back less and is narrowing; a looser one fails to load.
+  trail_distance_pct: 40.0
+  # How far the peak must improve before the level moves at all. Without it the
+  # history fills with events that changed nothing.
+  min_improvement_pct: 1.0
+  # A level never follows a position down. A stop that did is not a stop: it
+  # guarantees the position is never sold, however much of its peak it gives
+  # back. Stated here so the absence is policy rather than oversight.
+  allow_level_to_fall: false
+
+# --- take profit ------------------------------------------------------------
+#
+# Deliberately NOT a safety limit, and the narrowing rule says so: a strategy
+# may take profit earlier (a lower percentage) or not at all (null). Never
+# taking a profit risks giving a gain back — which the trailing stop and the
+# expiration policy bound — and cannot lose more than the declared maximum loss.
+take_profit:
+  enabled: true
+  # Return over entry cost, as a percentage. The highest target any strategy
+  # may hold out for.
+  return_pct: 200.0
+
+# --- maximum loss -----------------------------------------------------------
+#
+# Measured against the strategy's declared MaxLossBasis, which Milestone 7
+# owns. There is no second maximum-loss formula anywhere in this milestone, and
+# a basis this system cannot compute (NOT_DEFINED) is RISK_BASIS_UNAVAILABLE —
+# a block, never an estimate. An unquantified loss is not a small one.
+max_loss:
+  enabled: true
+  # The most of the declared maximum loss that may be given up before an exit
+  # is required, as a percentage. A strategy may set a tighter figure only.
+  loss_pct: 60.0
+  block_on_unavailable_basis: true
+
+# --- thesis -----------------------------------------------------------------
+#
+# The Milestone 5 research report is CONSUMED, never re-derived. Its
+# invalidation conditions are checked where a condition can be checked against
+# a structured fact; the rest are labelled NOT_EVALUATED and are not
+# interpreted. No model is consulted — Milestone 10 has none.
+thesis:
+  enabled: true
+  exit_on_invalidated: true
+  # A weakening thesis is not an invalidated one, and deciding where the line
+  # falls is a judgement rather than arithmetic.
+  exit_on_weakening: false
+  block_on_unavailable_thesis: true
+  allow_prose_interpretation: false
+
+# --- the exit order ---------------------------------------------------------
+#
+# Everything about SENDING it — validation, the OrderIntent, the broker call,
+# UNKNOWN handling, the broker order id, the execution record — is Milestone
+# 8's and is reused unchanged. Only what is genuinely different about a closing
+# order is stated here.
+order:
+  order_type: LIMIT
+  time_in_force: DAY
+  # NEGATIVE, and that is the point: an exit offers slightly BELOW the bid so
+  # it is likely to fill. The entry side's positive offset would do the
+  # opposite here. Rounding is always down, so an exit can only ever ask for
+  # less than the reference — never more.
+  limit_price_offset_pct: -1.0
+  price_increment: "0.01"
+  # An exit order needs its own explicit authorisation. There is no supported
+  # configuration in which deciding to exit sends one.
+  require_explicit_authorization: true
+
+# --- structures -------------------------------------------------------------
+#
+# A straddle whose call is sold and whose put is not is a naked long put: a
+# position nobody authorised, against limits nobody checked for it. That is the
+# same failure Milestone 8 refuses on the way in, and it is refused here on the
+# way out. `true` fails to load.
+allow_independent_leg_exit: false
+
+# Acting on a position whose broker state is disputed is acting on a guess.
+block_on_reconciliation_findings: true
+
+# A position the broker does not report cannot be sold, so an exit decision for
+# one is not actionable. Blocks rather than submitting an order into a void.
+require_broker_confirmation: true

@@ -43,6 +43,11 @@
 
     "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
     "strategy": { "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"] },
+    "intent": {
+      "description": "Whether this submission establishes a position or ends one. Added by Milestone 10 and defaulted to OPEN, so every record written before it keeps its meaning. The reservation ledger resolves committed capital against OPEN executions only, and the position ledger derives a logical structure from OPEN executions only; a CLOSE execution's fills still net into the expected-position arithmetic, which is how a position becomes closed.",
+      "enum": ["OPEN", "CLOSE"],
+      "default": "OPEN"
+    },
     "legs": { "type": "array", "items": { "$ref": "#/$defs/execution_leg" } },
     "quantity": {
       "description": "Units of the structure, exactly as Milestone 7 authorised. Never recomputed here.",
@@ -124,6 +129,14 @@
     "strategy_decision_id": { "type": ["string", "null"] },
     "research_report_id": { "type": ["string", "null"] },
     "account_snapshot_id": { "type": ["string", "null"] },
+
+    "position_id": {
+      "description": "Milestone 10: the position a CLOSE execution is ending. Required on a CLOSE, absent on an OPEN.",
+      "type": ["string", "null"]
+    },
+    "exit_decision_id": { "type": ["string", "null"] },
+    "exit_reason": { "type": ["string", "null"] },
+    "entry_execution_id": { "type": ["string", "null"] },
     "policy_version": { "type": "string", "minLength": 1 },
     "versions": { "$ref": "#/$defs/system_versions" }
   },
@@ -149,6 +162,23 @@
           }
         }
       }
+    },
+    {
+      "description": "A CLOSE execution names the position it is ending, and commits no new capital: an exit returns money to the account and adds no new maximum loss. A record that claimed either would let the campaign ledger count the same money twice.",
+      "if": { "properties": { "intent": { "const": "CLOSE" } }, "required": ["intent"] },
+      "then": {
+        "properties": {
+          "position_id": { "type": "string", "minLength": 1 },
+          "capital_commitment": { "const": "0" },
+          "maximum_loss": { "const": "0" }
+        },
+        "required": ["position_id"]
+      }
+    },
+    {
+      "description": "An OPEN execution carries no exit provenance. Establishing a position and ending one are different acts and must not share a record shape.",
+      "if": { "properties": { "intent": { "const": "OPEN" } }, "required": ["intent"] },
+      "then": { "properties": { "exit_decision_id": { "type": "null" } } }
     },
     {
       "description": "A refusal names a machine-readable reason.",

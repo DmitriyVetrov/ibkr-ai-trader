@@ -48,6 +48,7 @@ from trading_system.data.hashing import stable_hash
 from trading_system.domain.enums import (
     LIVE_EXECUTION_STATES,
     ExecutionEventType,
+    ExecutionIntent,
     ExecutionReasonCode,
     ExecutionRunStatus,
     ExecutionState,
@@ -81,6 +82,7 @@ __all__ = [
     "execution_identifier",
     "execution_request_identifier",
     "execution_run_identifier",
+    "exit_execution_request_identifier",
 ]
 
 #: Bumped when a stored execution artifact changes shape. Folded into every
@@ -126,6 +128,47 @@ def execution_request_identifier(
         ]
     )
     return f"exec-req-{digest[:20]}"
+
+
+def exit_execution_request_identifier(
+    *,
+    position_id: str,
+    entry_execution_id: str,
+    trading_mode: TradingMode,
+    order_type: OrderType,
+    time_in_force: TimeInForce,
+    policy_version: str,
+    schema_version: str = EXECUTION_SCHEMA_VERSION,
+) -> str:
+    """Derive the identity of *closing this position, this way* (Milestone 10).
+
+    A separate function rather than an extra term on
+    :func:`execution_request_identifier`, deliberately. Adding a discriminator
+    there would change every identity that function has ever produced, and
+    those identities are what stop a stored entry from being submitted twice.
+    The two forms cannot collide because their prefixes differ — ``exec-req-``
+    against ``exit-req-`` — which is the same technique the position ledger
+    uses to keep ``cid:`` and ``sym:`` keys apart.
+
+    Excludes the clock and the exit *reason*, for the same reason the entry
+    side excludes the clock: an exit triggered by a trailing stop and the same
+    exit triggered a minute later by the expiration policy are one order for
+    one position, and giving them different identities would let the second one
+    send a second order.
+    """
+    digest = stable_hash(
+        [
+            "EXIT_EXECUTION_REQUEST",
+            schema_version,
+            position_id,
+            entry_execution_id,
+            trading_mode.value,
+            order_type.value,
+            time_in_force.value,
+            policy_version,
+        ]
+    )
+    return f"exit-req-{digest[:20]}"
 
 
 def execution_identifier(
@@ -289,6 +332,15 @@ class ExecutionRecord(ImmutableModel):
     # --- what -------------------------------------------------------------
     underlying: Ticker
     strategy: StrategyType
+    #: Whether this submission establishes a position or ends one. Added by
+    #: Milestone 10 and defaulted to ``OPEN``, so every record written before
+    #: it keeps its meaning. Three ledgers read this record and two treat the
+    #: intents differently: the reservation ledger resolves committed capital
+    #: against ``OPEN`` executions only, and the position ledger derives a
+    #: logical strategy structure from ``OPEN`` executions only. The *fills* of
+    #: a ``CLOSE`` still net into the expected-position arithmetic, which is
+    #: precisely how a position becomes closed.
+    intent: ExecutionIntent = ExecutionIntent.OPEN
     legs: list[ExecutionLeg] = Field(default_factory=list)
     #: Units of the *structure*, exactly as authorised. Never recomputed.
     quantity: int = Field(ge=0)
@@ -369,8 +421,58 @@ class ExecutionRecord(ImmutableModel):
     strategy_decision_id: Identifier | None = None
     research_report_id: Identifier | None = None
     account_snapshot_id: Identifier | None = None
+    #: Milestone 10 provenance, set only on a ``CLOSE``. Ids, never copies:
+    #: what the exit decided and why lives in the exit ledger, and an execution
+    #: record that restated it would be a second, divergent account of one
+    #: judgement.
+    position_id: Identifier | None = None
+    exit_decision_id: Identifier | None = None
+    exit_reason: str | None = None
+    entry_execution_id: Identifier | None = None
     policy_version: Identifier
     versions: SystemVersions
+
+    @model_validator(mode="after")
+    def _a_close_names_what_it_is_closing(self) -> ExecutionRecord:
+        """An exit must say which position it ends.
+
+        Without it a closing order is indistinguishable from an opening one
+        that happens to sell, and the reservation ledger, the position ledger
+        and reconciliation would each have to guess.
+        """
+        if self.intent is ExecutionIntent.CLOSE and not self.position_id:
+            raise ValueError(
+                "a CLOSE execution must name the position_id it is closing; an exit that "
+                "cannot say what it is exiting cannot be reconciled against one"
+            )
+        if self.intent is ExecutionIntent.OPEN and self.exit_decision_id is not None:
+            raise ValueError(
+                "an OPEN execution cannot carry an exit decision; establishing a position and "
+                "ending one are different acts and must not share a record shape"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_close_commits_no_new_capital(self) -> ExecutionRecord:
+        """An exit returns capital; it never commits more.
+
+        Enforced rather than trusted, because a closing record that carried a
+        capital commitment would be counted by the campaign ledger as a second
+        authorisation against the same money.
+        """
+        if self.intent is ExecutionIntent.CLOSE:
+            if self.capital_commitment:
+                raise ValueError(
+                    f"a CLOSE execution reports a capital commitment of "
+                    f"{self.capital_commitment}. Closing a position commits no new capital, "
+                    f"and recording one would authorise the same money twice"
+                )
+            if self.maximum_loss:
+                raise ValueError(
+                    f"a CLOSE execution reports a maximum loss of {self.maximum_loss}. Ending "
+                    f"a position adds no new risk; the risk it removes is the position's own"
+                )
+        return self
 
     @model_validator(mode="after")
     def _a_fill_never_exceeds_what_was_submitted(self) -> ExecutionRecord:

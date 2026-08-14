@@ -1,0 +1,350 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/position_lifecycle_snapshot.json",
+  "title": "PositionLifecycleSnapshot",
+  "description": "What exit management knows about one already-open position, and about its attempt to end it. Deliberately NOT a second copy of Milestone 9's position reality: quantities and broker facts are referenced by id and read from Milestone 9, which stays authoritative. CLOSED is terminal and states a fact about the broker, never about our intention.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "lifecycle_id",
+    "position_id",
+    "as_of",
+    "updated_at",
+    "state",
+    "underlying",
+    "strategy",
+    "open_quantity"
+  ],
+  "properties": {
+    "lifecycle_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "position_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state": {
+      "enum": [
+        "OPEN",
+        "MONITORING",
+        "TRAILING_ACTIVE",
+        "EXIT_REQUIRED",
+        "EXIT_SUBMITTED",
+        "EXIT_UNKNOWN",
+        "CLOSED",
+        "BLOCKED"
+      ]
+    },
+    "underlying": {
+      "type": "string",
+      "pattern": "^[A-Z0-9.\\-]+$"
+    },
+    "strategy": {
+      "enum": [
+        "LONG_CALL",
+        "LONG_PUT",
+        "LONG_STRADDLE",
+        "LONG_STRANGLE"
+      ]
+    },
+    "open_quantity": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "entry_execution_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "opportunity_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "allocation_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "campaign_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "research_report_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "strategy_decision_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "exit_execution_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "exit_request_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "exit_decision_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "exit_submitted_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "closed_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "last_evaluation_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "last_decision": {
+      "enum": [
+        "WAIT",
+        "EXIT",
+        "BLOCK",
+        null
+      ]
+    },
+    "evaluations": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "blocked_reason": {
+      "enum": [
+        "POLICY_SATISFIED",
+        "TRAILING_NOT_ACTIVE",
+        "TRAILING_ABOVE_STOP",
+        "THESIS_INTACT",
+        "EXPIRATION_NOT_REACHED",
+        "EXPIRATION_WARNING",
+        "TAKE_PROFIT_NOT_REACHED",
+        "MAX_LOSS_NOT_REACHED",
+        "EXIT_ALREADY_SUBMITTED",
+        "POSITION_CLOSED",
+        "NOT_EVALUATED",
+        "TRAILING_STOP_TRIGGERED",
+        "EXPIRATION_FORCE_EXIT",
+        "MAX_LOSS_REACHED",
+        "TAKE_PROFIT_REACHED",
+        "THESIS_INVALIDATED",
+        "POSITION_NOT_FOUND",
+        "POSITION_STATE_UNKNOWN",
+        "POSITION_QUANTITY_MISMATCH",
+        "PARTIAL_STRUCTURE",
+        "LIFECYCLE_INCONSISTENT",
+        "BROKER_DATA_UNAVAILABLE",
+        "RECONCILIATION_REQUIRED",
+        "EXIT_OUTCOME_UNKNOWN",
+        "EXIT_ALREADY_UNKNOWN",
+        "MARKET_DATA_UNAVAILABLE",
+        "MARKET_DATA_STALE",
+        "MARKET_DATA_QUALITY_FAILED",
+        "QUOTE_FIELD_UNAVAILABLE",
+        "CONTRACT_METADATA_UNAVAILABLE",
+        "MULTIPLIER_UNAVAILABLE",
+        "EXPIRATION_DATA_UNAVAILABLE",
+        "EXPIRATION_CALENDAR_UNKNOWN",
+        "TRAILING_STATE_CORRUPTED",
+        "THESIS_DATA_UNAVAILABLE",
+        "RISK_BASIS_UNAVAILABLE",
+        "STRATEGY_METADATA_UNAVAILABLE",
+        "POINT_IN_TIME_ERROR",
+        "EXIT_CONFIGURATION_ERROR",
+        null
+      ]
+    },
+    "content_hash": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "detail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "description": "A block that cannot be explained cannot be resolved, and this state is left only by resolving it.",
+      "if": {
+        "properties": {
+          "state": {
+            "const": "BLOCKED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "blocked_reason": {
+            "enum": [
+              "POLICY_SATISFIED",
+              "TRAILING_NOT_ACTIVE",
+              "TRAILING_ABOVE_STOP",
+              "THESIS_INTACT",
+              "EXPIRATION_NOT_REACHED",
+              "EXPIRATION_WARNING",
+              "TAKE_PROFIT_NOT_REACHED",
+              "MAX_LOSS_NOT_REACHED",
+              "EXIT_ALREADY_SUBMITTED",
+              "POSITION_CLOSED",
+              "NOT_EVALUATED",
+              "TRAILING_STOP_TRIGGERED",
+              "EXPIRATION_FORCE_EXIT",
+              "MAX_LOSS_REACHED",
+              "TAKE_PROFIT_REACHED",
+              "THESIS_INVALIDATED",
+              "POSITION_NOT_FOUND",
+              "POSITION_STATE_UNKNOWN",
+              "POSITION_QUANTITY_MISMATCH",
+              "PARTIAL_STRUCTURE",
+              "LIFECYCLE_INCONSISTENT",
+              "BROKER_DATA_UNAVAILABLE",
+              "RECONCILIATION_REQUIRED",
+              "EXIT_OUTCOME_UNKNOWN",
+              "EXIT_ALREADY_UNKNOWN",
+              "MARKET_DATA_UNAVAILABLE",
+              "MARKET_DATA_STALE",
+              "MARKET_DATA_QUALITY_FAILED",
+              "QUOTE_FIELD_UNAVAILABLE",
+              "CONTRACT_METADATA_UNAVAILABLE",
+              "MULTIPLIER_UNAVAILABLE",
+              "EXPIRATION_DATA_UNAVAILABLE",
+              "EXPIRATION_CALENDAR_UNKNOWN",
+              "TRAILING_STATE_CORRUPTED",
+              "THESIS_DATA_UNAVAILABLE",
+              "RISK_BASIS_UNAVAILABLE",
+              "STRATEGY_METADATA_UNAVAILABLE",
+              "POINT_IN_TIME_ERROR",
+              "EXIT_CONFIGURATION_ERROR"
+            ]
+          }
+        },
+        "required": [
+          "blocked_reason"
+        ]
+      }
+    },
+    {
+      "description": "An exit we cannot name is one we cannot resolve or reconcile.",
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "EXIT_SUBMITTED",
+              "EXIT_UNKNOWN"
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "exit_execution_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "exit_execution_id"
+        ]
+      }
+    },
+    {
+      "description": "CLOSED is a statement about broker reality: the broker holds none of this structure.",
+      "if": {
+        "properties": {
+          "state": {
+            "const": "CLOSED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "open_quantity": {
+            "const": 0
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "money": {
+      "description": "Exact decimal serialised as a string. Never a JSON number: binary floats are not decimal-safe.",
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "nullable_money": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    }
+  }
+}

@@ -43,6 +43,7 @@ from decimal import Decimal
 from trading_system.domain.enums import (
     AcquisitionProvenance,
     BrokerReadStatus,
+    ExecutionIntent,
     LegAction,
     OrderSide,
     SecurityType,
@@ -342,11 +343,20 @@ def project_expected_positions(
         expected_from_fills(contributing, as_of=as_of, account_reference=account_reference),
         from_records,
     )
+    # Only an *opening* execution establishes a logical structure. A closing
+    # one ends the structure its entry established and authorises no new one,
+    # so deriving a second StrategyPosition from it would describe a straddle
+    # with two negative legs — and a partially closed structure would surface
+    # as PARTIAL_STRUCTURE, which is a finding about an authorised position
+    # that is only half held, not about one that is half sold. The exit's
+    # *fills* still net into the expected positions above, which is precisely
+    # how the structure becomes MISSING and the position becomes closed.
     strategies = tuple(
         position
         for position in (
             strategy_position_for(record, snapshot=snapshot, as_of=as_of, account=account_reference)
             for record in executions
+            if getattr(record, "intent", ExecutionIntent.OPEN).establishes_position
         )
         if position is not None
     )

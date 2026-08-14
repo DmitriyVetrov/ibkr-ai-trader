@@ -1,0 +1,979 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/exit_evaluation.json",
+  "title": "ExitEvaluation",
+  "description": "One complete, deterministic evaluation of one open position: what it is worth, how long it has left, what the thesis said, and what every policy concluded — in precedence order. 'content_hash' covers what was measured and concluded and excludes every observation clock, so re-evaluating unchanged state is recognisable as a repeat rather than as a second judgement that happens to agree. 'orders_submitted' is structurally zero: deciding whether a position should close never places an order.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "evaluation_id",
+    "position_id",
+    "as_of",
+    "evaluated_at",
+    "underlying",
+    "strategy",
+    "lifecycle_state",
+    "structure_status",
+    "open_quantity",
+    "valuation",
+    "policy",
+    "content_hash",
+    "versions"
+  ],
+  "properties": {
+    "evaluation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "position_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "evaluated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "underlying": {
+      "type": "string",
+      "pattern": "^[A-Z0-9.\\-]+$"
+    },
+    "strategy": {
+      "enum": [
+        "LONG_CALL",
+        "LONG_PUT",
+        "LONG_STRADDLE",
+        "LONG_STRANGLE"
+      ]
+    },
+    "lifecycle_state": {
+      "enum": [
+        "OPEN",
+        "MONITORING",
+        "TRAILING_ACTIVE",
+        "EXIT_REQUIRED",
+        "EXIT_SUBMITTED",
+        "EXIT_UNKNOWN",
+        "CLOSED",
+        "BLOCKED"
+      ]
+    },
+    "structure_status": {
+      "enum": [
+        "COMPLETE",
+        "PARTIAL",
+        "MISSING",
+        "UNKNOWN"
+      ]
+    },
+    "open_quantity": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "days_to_expiration": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "expiration": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date"
+    },
+    "max_loss_basis": {
+      "enum": [
+        "NET_DEBIT_PAID",
+        "NOT_DEFINED",
+        null
+      ]
+    },
+    "max_loss_total": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "valuation": {
+      "$ref": "#/$defs/position_valuation"
+    },
+    "trailing": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/trailing_state"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "thesis_checks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/thesis_condition_check"
+      }
+    },
+    "policy": {
+      "$ref": "#/$defs/exit_policy_snapshot"
+    },
+    "outcomes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/exit_policy_outcome"
+      }
+    },
+    "entry_execution_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "allocation_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "opportunity_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "campaign_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "research_report_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "strategy_decision_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "contract_selection_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "position_snapshot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "reconciliation_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "content_hash": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "versions": {
+      "$ref": "#/$defs/system_versions"
+    },
+    "orders_submitted": {
+      "const": 0
+    }
+  },
+  "$defs": {
+    "money": {
+      "description": "Exact decimal serialised as a string. Never a JSON number: binary floats are not decimal-safe.",
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "nullable_money": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "application_version",
+        "config_version"
+      ],
+      "properties": {
+        "application_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "config_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "strategy_spec_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "agent_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "model_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "trailing_state": {
+      "description": "A position's trailing stop, as a state machine rather than a mutable price. The level never falls: a stop that followed a position down would guarantee it is never sold, however much of its peak it had given back, and it would fail silently. Every figure is in the broker's QUOTED terms (6.05), not money (605.00).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trailing_state_id",
+        "position_id",
+        "activation_return_pct",
+        "distance_pct",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "trailing_state_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "position_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "schema_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "enum": [
+            "INACTIVE",
+            "ARMED",
+            "ACTIVE",
+            "TRIGGERED"
+          ]
+        },
+        "quote_field": {
+          "enum": [
+            "BID",
+            "ASK",
+            "MID",
+            "LAST"
+          ]
+        },
+        "activation_return_pct": {
+          "type": "number",
+          "minimum": 0
+        },
+        "distance_pct": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "min_improvement_pct": {
+          "type": "number",
+          "minimum": 0
+        },
+        "entry_quote": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "peak_quote": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+          "description": "Highest favourable observation. Monotone."
+        },
+        "stop_quote": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+          "description": "The exit level. Monotone: it never falls."
+        },
+        "activation_quote": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "activated_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "peak_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "level_updated_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "triggered_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "trigger_quote": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+          "description": "The observation that crossed the level — the whole explanation of the exit."
+        },
+        "observations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "description": "An INACTIVE trail carries no level: the activation threshold has not been reached, so there is nothing to trail from.",
+          "if": {
+            "properties": {
+              "state": {
+                "const": "INACTIVE"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "stop_quote": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "description": "A TRIGGERED trail records the observation that crossed the level.",
+          "if": {
+            "properties": {
+              "state": {
+                "const": "TRIGGERED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "trigger_quote": {
+                "description": "Exact decimal serialised as a string. Never a JSON number: binary floats are not decimal-safe.",
+                "type": "string",
+                "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+              }
+            },
+            "required": [
+              "trigger_quote"
+            ]
+          }
+        }
+      ]
+    },
+    "exit_leg_valuation": {
+      "description": "One leg's exit price. 'price' is the CONFIGURED quote field and nothing else; bid, ask and last are recorded separately and are never read as substitutes for it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leg_index",
+        "key",
+        "quote_field"
+      ],
+      "properties": {
+        "leg_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "contract_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "right": {
+          "enum": [
+            "CALL",
+            "PUT",
+            null
+          ]
+        },
+        "strike": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "expiration": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "ratio": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "multiplier": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "observed_quantity": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "quote_field": {
+          "enum": [
+            "BID",
+            "ASK",
+            "MID",
+            "LAST"
+          ]
+        },
+        "price": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+          "description": "The configured field's value. null means this leg has no usable exit price, and nothing substitutes one."
+        },
+        "bid": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "ask": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "last": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "quote_snapshot_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "quote_as_of": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "quote_retrieved_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "data_quality": {
+          "enum": [
+            "OK",
+            "DEGRADED",
+            "STALE",
+            "UNUSABLE",
+            null
+          ]
+        },
+        "research_usable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "quote_age_seconds": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "position_valuation": {
+      "description": "What the structure is worth now, and what it cost. Three units, named apart: *_quote is the broker's quoted terms (6.05), *_value is money for one unit with the multiplier in it (605.00), and the totals multiply by the open quantity. Every derived figure is null when any leg is unpriced — half a straddle is a directional bet, so a structure priced from the legs that happened to be quoted would be a different position.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "as_of",
+        "quote_field",
+        "open_quantity"
+      ],
+      "properties": {
+        "as_of": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "quote_field": {
+          "enum": [
+            "BID",
+            "ASK",
+            "MID",
+            "LAST"
+          ]
+        },
+        "multiplier": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "open_quantity": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "legs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/exit_leg_valuation"
+          }
+        },
+        "entry_quote": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "entry_cost": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "exit_quote": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "exit_value": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "max_quote_age_seconds": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "unpriced_legs": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "exit_policy_snapshot": {
+      "description": "The policy actually in force for one position, with the layer that supplied each value. Copied onto every evaluation so a stored decision stays explicable after the configuration has moved on. allow_independent_leg_exit is always false: a structure exits whole.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_version",
+        "strategy",
+        "expiration_warning_dte",
+        "expiration_force_exit_dte",
+        "trailing_activation_return_pct",
+        "trailing_distance_pct",
+        "trailing_min_improvement_pct",
+        "max_loss_pct",
+        "max_quote_age_seconds"
+      ],
+      "properties": {
+        "policy_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "strategy": {
+          "enum": [
+            "LONG_CALL",
+            "LONG_PUT",
+            "LONG_STRADDLE",
+            "LONG_STRANGLE"
+          ]
+        },
+        "expiration_warning_dte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expiration_force_exit_dte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "trailing_enabled": {
+          "type": "boolean"
+        },
+        "trailing_activation_return_pct": {
+          "type": "number",
+          "minimum": 0
+        },
+        "trailing_distance_pct": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "trailing_min_improvement_pct": {
+          "type": "number",
+          "minimum": 0
+        },
+        "take_profit_enabled": {
+          "type": "boolean"
+        },
+        "take_profit_return_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "max_loss_enabled": {
+          "type": "boolean"
+        },
+        "max_loss_pct": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 100
+        },
+        "thesis_enabled": {
+          "type": "boolean"
+        },
+        "quote_field": {
+          "enum": [
+            "BID",
+            "ASK",
+            "MID",
+            "LAST"
+          ]
+        },
+        "max_quote_age_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "require_research_usable": {
+          "type": "boolean"
+        },
+        "scopes": {
+          "type": "object",
+          "additionalProperties": {
+            "enum": [
+              "GLOBAL",
+              "CAMPAIGN",
+              "STRATEGY",
+              "POSITION"
+            ]
+          }
+        },
+        "allow_independent_leg_exit": {
+          "const": false
+        }
+      }
+    },
+    "exit_policy_outcome": {
+      "description": "One deterministic policy's verdict, with the two numbers an operator compares when asking how close the position was. 'evaluated' false means the policy could not be applied at all — distinct from a pass, exactly as RiskCheckOutcome.NOT_EVALUATED is.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "decision",
+        "reason_code",
+        "summary"
+      ],
+      "properties": {
+        "policy": {
+          "enum": [
+            "POSITION_CONSISTENCY",
+            "BROKER_OBSERVATION",
+            "EXECUTION_STATE",
+            "CONTRACT_VALIDITY",
+            "EXPIRATION",
+            "DATA_QUALITY",
+            "MAX_LOSS",
+            "THESIS",
+            "TAKE_PROFIT",
+            "TRAILING_STOP"
+          ]
+        },
+        "decision": {
+          "enum": [
+            "WAIT",
+            "EXIT",
+            "BLOCK"
+          ]
+        },
+        "reason_code": {
+          "enum": [
+            "POLICY_SATISFIED",
+            "TRAILING_NOT_ACTIVE",
+            "TRAILING_ABOVE_STOP",
+            "THESIS_INTACT",
+            "EXPIRATION_NOT_REACHED",
+            "EXPIRATION_WARNING",
+            "TAKE_PROFIT_NOT_REACHED",
+            "MAX_LOSS_NOT_REACHED",
+            "EXIT_ALREADY_SUBMITTED",
+            "POSITION_CLOSED",
+            "NOT_EVALUATED",
+            "TRAILING_STOP_TRIGGERED",
+            "EXPIRATION_FORCE_EXIT",
+            "MAX_LOSS_REACHED",
+            "TAKE_PROFIT_REACHED",
+            "THESIS_INVALIDATED",
+            "POSITION_NOT_FOUND",
+            "POSITION_STATE_UNKNOWN",
+            "POSITION_QUANTITY_MISMATCH",
+            "PARTIAL_STRUCTURE",
+            "LIFECYCLE_INCONSISTENT",
+            "BROKER_DATA_UNAVAILABLE",
+            "RECONCILIATION_REQUIRED",
+            "EXIT_OUTCOME_UNKNOWN",
+            "EXIT_ALREADY_UNKNOWN",
+            "MARKET_DATA_UNAVAILABLE",
+            "MARKET_DATA_STALE",
+            "MARKET_DATA_QUALITY_FAILED",
+            "QUOTE_FIELD_UNAVAILABLE",
+            "CONTRACT_METADATA_UNAVAILABLE",
+            "MULTIPLIER_UNAVAILABLE",
+            "EXPIRATION_DATA_UNAVAILABLE",
+            "EXPIRATION_CALENDAR_UNKNOWN",
+            "TRAILING_STATE_CORRUPTED",
+            "THESIS_DATA_UNAVAILABLE",
+            "RISK_BASIS_UNAVAILABLE",
+            "STRATEGY_METADATA_UNAVAILABLE",
+            "POINT_IN_TIME_ERROR",
+            "EXIT_CONFIGURATION_ERROR"
+          ]
+        },
+        "measured": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threshold": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evaluated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "thesis_condition_check": {
+      "description": "One invalidation condition and what a deterministic check concluded. NOT_EVALUATED is the expected answer for most conditions and is not a failure: research states its conditions in prose, and reading a sentence as a sell signal is a judgement this engine does not make. A verdict other than NOT_EVALUATED must name the structured fact behind it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "condition"
+      ],
+      "properties": {
+        "condition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observable": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "HOLDS",
+            "VIOLATED",
+            "NOT_EVALUATED"
+          ]
+        },
+        "evidence": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "NOT_EVALUATED"
+              }
+            },
+            "required": [
+              "outcome"
+            ]
+          },
+          "then": {
+            "properties": {
+              "evidence": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

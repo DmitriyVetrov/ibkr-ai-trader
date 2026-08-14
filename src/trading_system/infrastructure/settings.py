@@ -30,8 +30,11 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from trading_system.domain.enums import (
+    EXIT_POLICY_PRECEDENCE,
     AllocationPolicy,
     ConfidenceLevel,
+    ExitPolicyKind,
+    ExitQuoteField,
     ExpirationSelectionPolicy,
     LegAction,
     MarketHypothesis,
@@ -72,7 +75,15 @@ __all__ = [
     "DataConfig",
     "DeduplicationConfig",
     "ExecutionConfig",
+    "ExitConfig",
+    "ExitDataQualityConfig",
+    "ExitExpirationConfig",
+    "ExitMaxLossConfig",
+    "ExitOrderConfig",
     "ExitPolicyConfig",
+    "ExitTakeProfitConfig",
+    "ExitThesisConfig",
+    "ExitTrailingConfig",
     "FreshnessConfig",
     "LiquidityConfig",
     "MarketCalendarConfig",
@@ -113,6 +124,7 @@ __all__ = [
     "UniverseFilterConfig",
     "UniverseSourceConfig",
     "UnknownLiquidityPolicy",
+    "UnusableQuotePolicy",
     "default_config_dir",
     "load_config",
     "load_settings",
@@ -1667,6 +1679,284 @@ class ReconciliationConfig(_ConfigModel):
         return frozenset({ReconciliationSeverity.CRITICAL})
 
 
+class UnusableQuotePolicy(StrEnum):
+    """What to do when the price an exit rests on is not usable.
+
+    Two honest answers and no third. ``BLOCK`` refuses to judge the position at
+    all; ``WAIT`` keeps it and says the evaluation was made without a price.
+    There is deliberately no ``SUBSTITUTE``: reaching for the ask, the last
+    print or the price we paid when the bid is missing would value the position
+    at something no seller could get, and every number downstream would
+    faithfully reproduce it.
+    """
+
+    BLOCK = "BLOCK"
+    WAIT = "WAIT"
+
+
+class ExitExpirationConfig(_ConfigModel):
+    """The global expiration safety window (``exit.expiration``).
+
+    An option is not a stock: the position stops existing on a date, and the
+    last week of a long-premium position is where theta takes what the thesis
+    earned. Both thresholds are counted in calendar days from the
+    **exchange-local** date of the evaluation instant to the expiration, through
+    ``config/data.yaml``'s market calendar.
+    """
+
+    #: Below this, the position is near its deadline. Reported, not exited.
+    warning_dte: int = Field(default=10, ge=0)
+    #: At or below this, exit is required. A strategy may force an exit
+    #: *earlier* (a larger ``close_at_dte``) and may never force one later.
+    force_exit_dte: int = Field(default=5, ge=0)
+    #: A year the calendar does not cover answers UNKNOWN. True blocks; false
+    #: would let an expiration nobody verified pass as ordinary.
+    block_on_unknown_calendar: bool = True
+    #: Whether an expiration that has already passed is a block rather than a
+    #: force-exit. It is: an expired option cannot be sold, and an order for one
+    #: is not an exit.
+    block_on_expired_contract: bool = True
+
+    @model_validator(mode="after")
+    def _the_warning_precedes_the_deadline(self) -> ExitExpirationConfig:
+        if self.warning_dte < self.force_exit_dte:
+            raise ValueError(
+                f"exit.expiration.warning_dte {self.warning_dte} is below force_exit_dte "
+                f"{self.force_exit_dte}; a warning that fires after the forced exit warns "
+                f"nobody about anything"
+            )
+        return self
+
+
+class ExitDataQualityConfig(_ConfigModel):
+    """Which price an exit is measured against, and when it may not be used."""
+
+    #: The exit is a *sale*, so the honest value of a long option is the bid.
+    #: Recorded on every valuation, and never silently swapped for another
+    #: field when it is missing.
+    quote_field: ExitQuoteField = ExitQuoteField.BID
+    #: How old the quote may be at the evaluation instant. Measured against the
+    #: evaluation's own ``as_of``, exactly as ``risk.yaml``'s window is, so a
+    #: historical replay is not penalised for being run today.
+    max_quote_age_seconds: int = Field(default=900, ge=0)
+    #: The data layer's own verdict, consumed rather than re-graded.
+    require_research_usable: bool = True
+    on_unavailable: UnusableQuotePolicy = UnusableQuotePolicy.BLOCK
+    on_stale: UnusableQuotePolicy = UnusableQuotePolicy.BLOCK
+    #: Must stay false. See :class:`UnusableQuotePolicy`.
+    allow_quote_field_substitution: bool = False
+
+    @model_validator(mode="after")
+    def _no_field_is_substituted_for_another(self) -> ExitDataQualityConfig:
+        if self.allow_quote_field_substitution:
+            raise ValueError(
+                "exit.data_quality.allow_quote_field_substitution is set. Valuing a position "
+                "at the ask, the last print or the price we paid because the bid is missing "
+                "invents a price no seller could get, and every trailing level, take-profit "
+                "and maximum-loss figure derived from it would inherit the invention."
+            )
+        return self
+
+
+class ExitTrailingConfig(_ConfigModel):
+    """The global trailing-stop envelope (``exit.trailing``).
+
+    Percentages are of the position's own economics, never of an index or an
+    account: ``activation_return_pct`` is the gain over entry cost that arms
+    the trail, and ``trail_distance_pct`` is how far below the peak favourable
+    value the level sits.
+    """
+
+    enabled: bool = True
+    activation_return_pct: float = Field(default=25.0, ge=0.0)
+    #: The **widest** trail any strategy may use. A strategy trailing tighter
+    #: gives back less and is a narrowing; a looser one would widen a global
+    #: safety boundary and fails to load.
+    trail_distance_pct: float = Field(default=40.0, gt=0.0, le=100.0)
+    #: How far the peak must improve before the level is moved at all. Stops a
+    #: level from being rewritten on every tick of noise, which would fill the
+    #: history with events that changed nothing.
+    min_improvement_pct: float = Field(default=1.0, ge=0.0)
+    #: Whether a level may ever move against the position. It may not, and this
+    #: key exists so the absence is a stated policy rather than an oversight.
+    allow_level_to_fall: bool = False
+
+    @model_validator(mode="after")
+    def _a_trail_only_ratchets(self) -> ExitTrailingConfig:
+        if self.allow_level_to_fall:
+            raise ValueError(
+                "exit.trailing.allow_level_to_fall is set. A trailing stop that follows a "
+                "position down is not a stop: it guarantees the position is never sold, "
+                "however much of its peak it has given back."
+            )
+        return self
+
+
+class ExitTakeProfitConfig(_ConfigModel):
+    """The global take-profit ceiling (``exit.take_profit``).
+
+    Take profit is deliberately **not** a safety limit, and the narrowing rule
+    reflects that: a strategy may take profit earlier (a lower percentage) or
+    not at all (``take_profit_pct: null``). Never taking a profit risks giving
+    a gain back, which the trailing stop and the expiration policy exist to
+    bound; it cannot lose more than the position's declared maximum loss.
+    """
+
+    enabled: bool = True
+    #: Return over entry cost, as a percentage. The highest target any strategy
+    #: may hold out for.
+    return_pct: float = Field(default=200.0, gt=0.0)
+
+
+class ExitMaxLossConfig(_ConfigModel):
+    """The global maximum-loss boundary (``exit.max_loss``).
+
+    Measured against the strategy's declared
+    :class:`~trading_system.domain.enums.MaxLossBasis`, which Milestone 7 owns.
+    Nothing here defines a second maximum-loss formula, and a basis this system
+    cannot compute is ``RISK_BASIS_UNAVAILABLE`` — a block, never an estimate.
+    """
+
+    enabled: bool = True
+    #: The most of the position's declared maximum loss that may be given up
+    #: before an exit is required, as a percentage. A strategy may set a
+    #: tighter figure and may never set a looser one.
+    loss_pct: float = Field(default=60.0, gt=0.0, le=100.0)
+    #: Whether an unavailable risk basis blocks. It does: an unquantified loss
+    #: is not a small one.
+    block_on_unavailable_basis: bool = True
+
+
+class ExitThesisConfig(_ConfigModel):
+    """How a research thesis participates in an exit (``exit.thesis``).
+
+    The thesis is *consumed*, never re-derived. Milestone 5's report states the
+    invalidation conditions; this stage checks the ones that can be checked
+    against a structured fact and labels the rest ``NOT_EVALUATED``. No model is
+    consulted, here or anywhere in Milestone 10.
+    """
+
+    enabled: bool = True
+    exit_on_invalidated: bool = True
+    #: A weakening thesis is not an invalidated one. Shipping this false keeps
+    #: a judgement call out of a deterministic engine.
+    exit_on_weakening: bool = False
+    #: Whether a report that cannot be read blocks the evaluation.
+    block_on_unavailable_thesis: bool = True
+    #: Whether a condition nobody can check deterministically may nonetheless
+    #: trigger an exit. It may not: interpreting prose as a trading signal is
+    #: exactly the judgement this milestone refuses to make.
+    allow_prose_interpretation: bool = False
+
+    @model_validator(mode="after")
+    def _prose_is_never_a_signal(self) -> ExitThesisConfig:
+        if self.allow_prose_interpretation:
+            raise ValueError(
+                "exit.thesis.allow_prose_interpretation is set. An invalidation condition "
+                "written as prose is labelled NOT_EVALUATED; reading an arbitrary sentence as "
+                "a sell signal would make this engine non-deterministic and would need a model "
+                "to do it, which Milestone 10 has none of."
+            )
+        return self
+
+
+class ExitOrderConfig(_ConfigModel):
+    """How an exit order is priced (``exit.order``).
+
+    Everything else about sending it — validation, the order intent, the broker
+    call, ``UNKNOWN`` handling — is Milestone 8's and is reused unchanged. This
+    section states only what is genuinely different about a closing order.
+    """
+
+    order_type: OrderType = OrderType.LIMIT
+    time_in_force: TimeInForce = TimeInForce.DAY
+    #: Applied to the exit reference quote. **Negative** offers below the bid,
+    #: which is what makes an exit likely to fill; the entry side's positive
+    #: offset would do the opposite here. Rounding is always down, so an exit
+    #: can only ever ask for less than the reference and never more.
+    limit_price_offset_pct: float = Field(default=-1.0, ge=-50.0, le=50.0)
+    price_increment: Money = Field(default=Decimal("0.01"), gt=0)
+    #: An exit order needs its own explicit authorisation, exactly as an entry
+    #: does. There is no configuration in which deciding to exit sends one.
+    require_explicit_authorization: bool = True
+
+    @model_validator(mode="after")
+    def _authorisation_cannot_be_switched_off(self) -> ExitOrderConfig:
+        if not self.require_explicit_authorization:
+            raise ValueError(
+                "exit.order.require_explicit_authorization=false would let an exit evaluation "
+                "place an order. Deciding that a position should close and closing it are two "
+                "acts, and Milestone 8's confirmation boundary applies to both."
+            )
+        if self.order_type is not OrderType.LIMIT:
+            raise ValueError(
+                f"exit.order.order_type is {self.order_type.value}. A market order to close an "
+                f"option is an unbounded price in the one direction that cannot be recovered "
+                f"from; LIMIT only, exactly as on the entry side."
+            )
+        return self
+
+
+class ExitConfig(_ConfigModel):
+    """Exit management policy (``config/exit.yaml``, Milestone 10).
+
+    The global envelope. ``config/strategies/*.yaml`` may narrow every safety
+    value here and may widen none; widening is a load failure in
+    :class:`SystemConfig`, never a clamp, for the same reason a clamped risk
+    limit is a limit nobody can see.
+
+    No value here is an AI input and no field carries a model, a prompt or a
+    rationale. Exit management is arithmetic over stored artifacts.
+    """
+
+    #: Whether exit *evaluation* runs at all. Distinct from
+    #: ``execution.enabled``, which is what permits an order to be sent: a
+    #: system may evaluate exits for a long time before it is allowed to act on
+    #: one, and conflating the two would make "should we close this" impossible
+    #: to answer safely.
+    enabled: bool = True
+    policy_version: str = "1.0.0"
+
+    expiration: ExitExpirationConfig = Field(default_factory=ExitExpirationConfig)
+    data_quality: ExitDataQualityConfig = Field(default_factory=ExitDataQualityConfig)
+    trailing: ExitTrailingConfig = Field(default_factory=ExitTrailingConfig)
+    take_profit: ExitTakeProfitConfig = Field(default_factory=ExitTakeProfitConfig)
+    max_loss: ExitMaxLossConfig = Field(default_factory=ExitMaxLossConfig)
+    thesis: ExitThesisConfig = Field(default_factory=ExitThesisConfig)
+    order: ExitOrderConfig = Field(default_factory=ExitOrderConfig)
+
+    #: A multi-leg structure is exited as one combo order or not at all.
+    #: ``true`` fails to load: closing one leg of a straddle leaves a naked
+    #: long option against limits nobody checked for one, which is the same
+    #: failure Milestone 8 refuses on the way in.
+    allow_independent_leg_exit: bool = False
+    #: Whether an unresolved reconciliation blocks exit decisions. It does:
+    #: acting on a position whose broker state is disputed is acting on a guess.
+    block_on_reconciliation_findings: bool = True
+    #: Whether a position the broker does not report may still be exited. It
+    #: may not — there is nothing to sell, and an order for it is not an exit.
+    require_broker_confirmation: bool = True
+
+    @model_validator(mode="after")
+    def _a_structure_exits_whole(self) -> ExitConfig:
+        if self.allow_independent_leg_exit:
+            raise ValueError(
+                "exit.allow_independent_leg_exit is set. A straddle whose call is sold and "
+                "whose put is not is a naked long put: a position nobody authorised, sized "
+                "against limits nobody checked for it. A structure exits as one order or the "
+                "decision is refused."
+            )
+        return self
+
+    def precedence(self) -> tuple[ExitPolicyKind, ...]:
+        """The order policies are evaluated in. Fixed, and deliberately not configurable.
+
+        Making precedence a setting would let an operator move profit-taking
+        ahead of a safety check without noticing that is what they had done.
+        """
+        return EXIT_POLICY_PRECEDENCE
+
+
 class SystemConfig(_ConfigModel):
     """All YAML configuration, loaded and validated together."""
 
@@ -1675,6 +1965,7 @@ class SystemConfig(_ConfigModel):
     contract_selection: ContractSelectionConfig
     data: DataConfig
     execution: ExecutionConfig
+    exit: ExitConfig
     positions: PositionsConfig
     reconciliation: ReconciliationConfig
     research: ResearchConfig
@@ -1779,6 +2070,77 @@ class SystemConfig(_ConfigModel):
             raise ValueError("campaign.yaml widens a global risk limit: " + "; ".join(violations))
         return self
 
+    @model_validator(mode="after")
+    def _strategies_never_widen_exit_limits(self) -> SystemConfig:
+        """A strategy may narrow a global exit safety boundary; never widen one.
+
+        The same rule Milestone 6 applies to DTE, liquidity and price, applied
+        to the Milestone 10 envelope. Which direction counts as *narrowing*
+        differs per limit and is stated for each, because getting the direction
+        wrong here would enforce the inverse of the intended safety property:
+
+        ``close_at_dte``
+            Closing *earlier* is narrower, so a strategy's value must be at or
+            above the global ``force_exit_dte``. A strategy that held a
+            position closer to expiry than the global floor would overrule the
+            system's expiration safety.
+        ``trailing_stop_pct``
+            Trailing *tighter* is narrower, so a strategy's value must be at or
+            below the global ``trail_distance_pct``.
+        ``max_loss_pct``
+            Losing *less* is narrower, so a strategy's value must be at or
+            below the global ``loss_pct``.
+        ``take_profit_pct``
+            Taking profit *earlier* is narrower, so a strategy's value must be
+            at or below the global ``return_pct``. ``null`` is permitted and is
+            not a widening: take profit is not a safety limit, and a position
+            that never takes one is still bounded by the trailing stop, the
+            maximum loss and the expiration policy.
+        ``allow_independent_leg_exit``
+            Refused outright in every strategy, exactly as it is globally.
+        """
+        exit_policy = self.exit
+        for name, strategy in self.strategies.items():
+            policy = strategy.exit_policy
+            violations: list[str] = []
+
+            if policy.close_at_dte < exit_policy.expiration.force_exit_dte:
+                violations.append(
+                    f"close_at_dte {policy.close_at_dte} is below the global force-exit "
+                    f"threshold {exit_policy.expiration.force_exit_dte}; a strategy may close "
+                    f"earlier than the global policy, never later"
+                )
+            if policy.trailing_stop_pct > exit_policy.trailing.trail_distance_pct:
+                violations.append(
+                    f"trailing_stop_pct {policy.trailing_stop_pct} is above the global trail "
+                    f"distance {exit_policy.trailing.trail_distance_pct}; a wider trail gives "
+                    f"back more of the peak than the global policy permits"
+                )
+            if policy.max_loss_pct > exit_policy.max_loss.loss_pct:
+                violations.append(
+                    f"max_loss_pct {policy.max_loss_pct} is above the global ceiling "
+                    f"{exit_policy.max_loss.loss_pct}"
+                )
+            if (
+                policy.take_profit_pct is not None
+                and policy.take_profit_pct > exit_policy.take_profit.return_pct
+            ):
+                violations.append(
+                    f"take_profit_pct {policy.take_profit_pct} is above the global ceiling "
+                    f"{exit_policy.take_profit.return_pct}"
+                )
+            if policy.allow_independent_leg_exit:
+                violations.append(
+                    "allow_independent_leg_exit is set; a multi-leg structure is exited as one "
+                    "order or the decision is refused"
+                )
+
+            if violations:
+                raise ValueError(
+                    f"strategy '{name}' widens a global exit limit: " + "; ".join(violations)
+                )
+        return self
+
     def enabled_strategies(self) -> dict[str, StrategyConfig]:
         return {name: s for name, s in self.strategies.items() if s.enabled}
 
@@ -1823,6 +2185,7 @@ def load_config(config_dir: Path | str | None = None) -> SystemConfig:
         "contract_selection": _read_yaml(directory / "contract_selection.yaml"),
         "data": _read_yaml(directory / "data.yaml"),
         "execution": _read_yaml(directory / "execution.yaml"),
+        "exit": _read_yaml(directory / "exit.yaml"),
         "positions": _read_yaml(directory / "positions.yaml"),
         "reconciliation": _read_yaml(directory / "reconciliation.yaml"),
         "research": _read_yaml(directory / "research.yaml"),

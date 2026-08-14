@@ -81,6 +81,21 @@ REQUIRED_SCHEMAS = (
     "reconciliation_result",
     "reconciliation_event",
     "exit_decision",
+    # Milestone 10 adds the exit-management boundaries. `exit_decision` above
+    # stays the narrow Milestone 1 contract (HOLD/SELL); `exit_decision_record`
+    # is the wide audit artifact that projects onto it, exactly as
+    # `market_research_report` does for `research_report`. `exit_evaluation` is
+    # what every policy concluded and what it was measured against,
+    # `trailing_state` the stop's own state machine,
+    # `position_lifecycle_snapshot` what became of the position, `exit_request`
+    # the boundary handed to Milestone 8, and `exit_run` the record of one
+    # monitoring run.
+    "exit_evaluation",
+    "exit_decision_record",
+    "trailing_state",
+    "position_lifecycle_snapshot",
+    "exit_request",
+    "exit_run",
     "trade_snapshot",
 )
 

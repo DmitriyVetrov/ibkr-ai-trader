@@ -46,6 +46,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from trading_system.data.service import DataService
     from trading_system.domain.enums import DataType
     from trading_system.execution.service import ExecutionService
+    from trading_system.exit.service import ExitService
     from trading_system.positions.service import PositionService
     from trading_system.reconciliation.service import ReconciliationService
     from trading_system.research.service import ResearchService
@@ -163,6 +164,16 @@ reservations_app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+exit_app = typer.Typer(
+    help=(
+        "Decide whether an already-open position should be closed, and inspect "
+        "the decisions. Deterministic: no model is consulted anywhere in this "
+        "group. Evaluation NEVER submits an order — closing a position needs "
+        "execution.enabled AND an explicit --confirm, exactly as opening one "
+        "does. (evaluation is read-only; 'exit run --confirm' mutates broker state)"
+    ),
+    no_args_is_help=True,
+)
 reconciliation_app = typer.Typer(
     help=(
         "Compare internal records against broker reality. The broker wins every "
@@ -189,6 +200,7 @@ app.add_typer(allocation_app, name="allocation")
 app.add_typer(execution_app, name="execution")
 app.add_typer(positions_app, name="positions")
 app.add_typer(reservations_app, name="reservations")
+app.add_typer(exit_app, name="exit")
 app.add_typer(reconciliation_app, name="reconciliation")
 app.add_typer(reports_app, name="reports")
 
@@ -4149,6 +4161,446 @@ def reconciliation_explain(
         f"\nOrders submitted: [green]{result.orders_submitted}[/green]   "
         f"Corrective orders: [green]{result.corrective_orders}[/green]"
     )
+
+
+# ---------------------------------------------------------------------------
+# Exit management and position lifecycle (Milestone 10)
+#
+# One group, and it can place exactly one kind of order: an exit for a position
+# the broker already reports holding. Everything about *how* that order is sent
+# is Milestone 8's, including both of its switches, so `exit run --confirm` is
+# not a weaker confirmation path — it is the same one.
+#
+# The distinction every command here preserves:
+#
+#   EVALUATE   decide whether a position should close. Submits nothing, ever,
+#              and constructs no broker at all.
+#   EXECUTE    hand a triggered decision to Milestone 8. Needs execution.enabled
+#              AND --confirm.
+#
+# Three verdicts, and the third is why the group exists: WAIT keeps a position
+# on evidence, EXIT closes it on a named policy, and BLOCK refuses to judge it
+# because the records, the price or the broker are not in a state where any
+# judgement may be acted on.
+# ---------------------------------------------------------------------------
+def _exit_service(simulated: bool = False) -> ExitService:
+    """Build the Milestone 10 composition root, optionally against the simulator."""
+    from trading_system.exit.service import ExitService
+
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        err_console.print(f"[red]CONFIGURATION ERROR[/red]\n{exc}")
+        raise typer.Exit(code=EXIT_ERROR) from exc
+
+    factory = None
+    if simulated:
+
+        def factory(resolved: Settings, **kwargs: Any) -> Broker:
+            return build_broker(resolved, backend=BrokerBackend.SIMULATOR, **kwargs)
+
+    return ExitService(settings=settings, config=config, broker_factory=factory)
+
+
+def _print_exit_run(run: object, *, authorized: bool) -> None:
+    """Render one run and state plainly what it submitted."""
+    from trading_system.exit.report import render_run
+
+    result = run.result  # type: ignore[attr-defined]
+    console.print()
+    console.print(render_run(result))
+    submitted = result.orders_submitted
+    style = "green" if submitted == 0 else "yellow"
+    console.print(f"\nOrders submitted  : [{style}]{submitted}[/{style}]")
+    if not authorized and submitted:
+        _fail(
+            f"an unauthorised exit run reported {submitted} submitted order(s). "
+            f"Evaluating whether a position should close must never close one."
+        )
+
+
+@exit_app.command("evaluate")
+def exit_evaluate(
+    position_id: Annotated[
+        str | None,
+        typer.Option("--position-id", help="Evaluate one position instead of every open one."),
+    ] = None,
+    as_of: Annotated[
+        str | None,
+        typer.Option("--as-of", help="Evaluate as of a past instant (ISO-8601, UTC)."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Evaluate and print; write nothing at all."),
+    ] = False,
+    simulated: SimulatedOption = False,
+) -> None:
+    """Decide whether open positions should be closed. (mutates local state)
+
+    Submits nothing. This command constructs no writable broker, builds no
+    order and hands nothing to Milestone 8 — an ``EXIT`` verdict here is a
+    recorded decision, and closing the position needs ``exit run --confirm``.
+
+    ``--dry-run`` additionally writes nothing at all: no evaluation, no
+    decision, no trailing state and no lifecycle event.
+    """
+    service = _exit_service(simulated)
+    instant = _parse_instant(as_of) if as_of else None
+    run = service.monitor(
+        as_of=instant,
+        position_ids=[position_id] if position_id else None,
+        authorized=False,
+        dry_run=dry_run,
+    )
+    _print_exit_run(run, authorized=False)
+    if dry_run:
+        console.print("[yellow]DRY RUN[/yellow]  nothing was written.")
+
+
+@exit_app.command("run")
+def exit_run(
+    position_id: Annotated[
+        str | None,
+        typer.Option("--position-id", help="Act on one position instead of every open one."),
+    ] = None,
+    confirm: Annotated[
+        bool,
+        typer.Option("--confirm", help="Authorise SUBMITTING exit orders to the broker."),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show what would be submitted. Opens no broker."),
+    ] = False,
+) -> None:
+    """Evaluate open positions and SUBMIT the exits that triggered. (MUTATES BROKER STATE)
+
+    The only command in this group that can place an order, and it needs both
+    switches Milestone 8 established: ``execution.enabled`` in
+    ``config/execution.yaml`` *and* an explicit ``--confirm``. Without
+    ``--confirm`` this evaluates and submits nothing.
+
+    A position whose exit is already submitted, or whose outcome is UNKNOWN,
+    never receives a second order — the lifecycle refuses it before anything is
+    built.
+    """
+    if confirm and dry_run:
+        _fail("--confirm and --dry-run are mutually exclusive: one submits, the other cannot.")
+
+    service = _exit_service(False)
+    run = service.monitor(
+        position_ids=[position_id] if position_id else None,
+        authorized=confirm,
+        dry_run=dry_run,
+    )
+    _print_exit_run(run, authorized=confirm)
+
+    if not confirm and not dry_run:
+        console.print(
+            "\n[yellow]NOT AUTHORISED[/yellow]  no exit order was built or sent. "
+            "Pass --confirm to authorise, or --dry-run to inspect."
+        )
+    for outcome in run.outcomes:
+        submission = outcome.submission
+        if submission is None:
+            continue
+        if submission.reason_codes:
+            console.print(
+                f"[yellow]REFUSED[/yellow]  {outcome.position.position_id}: "
+                f"{', '.join(code.value for code in submission.reason_codes)}\n"
+                f"  {submission.detail or ''}"
+            )
+        elif submission.record is not None:
+            console.print(
+                f"[green]SUBMITTED[/green]  {outcome.position.position_id}: execution "
+                f"{submission.record.execution_id} is {submission.record.state.value}"
+            )
+
+
+@exit_app.command("show")
+def exit_show(
+    position_id: Annotated[
+        str | None,
+        typer.Option("--position-id", help="One position, in full."),
+    ] = None,
+    evaluation: Annotated[
+        bool,
+        typer.Option("--evaluation", help="Show every policy outcome, not only the verdict."),
+    ] = False,
+) -> None:
+    """Show the latest exit decision, or the latest run. (read-only)"""
+    from trading_system.exit.report import render_decision, render_evaluation, render_run
+
+    service = _exit_service(False)
+    if position_id is not None:
+        decision = service.repository.latest_for_position(position_id)
+        if decision is None:
+            console.print(
+                f"[yellow]UNAVAILABLE[/yellow]  no exit decision recorded for {position_id}. "
+                f"Run 'exit evaluate' first."
+            )
+            raise typer.Exit(code=EXIT_OK)
+        console.print()
+        console.print(render_decision(decision))
+        if evaluation:
+            stored = service.repository.get_evaluation(decision.evaluation_id)
+            if stored is not None:
+                console.print()
+                console.print(render_evaluation(stored))
+        return
+
+    result = service.latest_run()
+    if result is None:
+        console.print(
+            "[yellow]UNAVAILABLE[/yellow]  no exit evaluation has been run. "
+            "Run 'exit evaluate' first."
+        )
+        raise typer.Exit(code=EXIT_OK)
+    console.print()
+    console.print(render_run(result))
+
+
+@exit_app.command("history")
+def exit_history(
+    limit: Annotated[int, typer.Option("--limit", help="How many entries to show.")] = 20,
+    position_id: Annotated[
+        str | None,
+        typer.Option("--position-id", help="Only this position's judgements."),
+    ] = None,
+) -> None:
+    """List recorded exit evaluations, newest first. (read-only)"""
+    service = _exit_service(False)
+    entries = service.history(limit=limit, position_id=position_id)
+    if not entries:
+        console.print("[yellow]No exit evaluations recorded.[/yellow]")
+        raise typer.Exit(code=EXIT_OK)
+
+    table = Table(title="Exit evaluations", show_header=True, header_style="bold")
+    for column in ("evaluated", "position", "symbol", "decision", "reason", "lifecycle", "note"):
+        table.add_column(column)
+    for entry in entries:
+        table.add_row(
+            entry.evaluated_at.isoformat(),
+            entry.position_id,
+            entry.underlying,
+            entry.decision,
+            entry.reason_code,
+            entry.lifecycle_state,
+            "re-observation" if entry.reobserved else "",
+        )
+    console.print(table)
+
+
+@exit_app.command("validate")
+def exit_validate(
+    position_id: Annotated[
+        str | None,
+        typer.Option("--position-id", help="Re-check a stored decision instead."),
+    ] = None,
+) -> None:
+    """Validate the exit policy in force, or re-check a stored decision. (read-only)"""
+    from trading_system.domain.enums import EXIT_POLICY_PRECEDENCE
+    from trading_system.exit.report import render_decision
+    from trading_system.exit.validation import configuration_report
+
+    service = _exit_service(False)
+    if position_id is not None:
+        decision = service.repository.latest_for_position(position_id)
+        if decision is None:
+            console.print(f"[yellow]UNAVAILABLE[/yellow]  no exit decision for {position_id}")
+            raise typer.Exit(code=EXIT_OK)
+        console.print()
+        console.print(render_decision(decision))
+        raise typer.Exit(code=EXIT_OK)
+
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        _fail(str(exc))
+        raise AssertionError("unreachable") from exc  # pragma: no cover
+    policy = config.exit
+
+    console.print("\n[bold]EXIT MANAGEMENT POLICY[/bold]")
+    console.print("Model involved : [green]none[/green] — every exit decision is deterministic")
+    console.print(f"Policy version : {policy.policy_version}")
+    console.print(f"Evaluation     : {'enabled' if policy.enabled else 'DISABLED'}")
+    console.print(
+        f"Execution      : "
+        f"{'enabled' if config.execution.enabled else 'DISABLED'} in config/execution.yaml, "
+        f"and always additionally requires --confirm"
+    )
+
+    order = Table(title="Policy precedence (safety before profit-taking)", show_header=True)
+    order.add_column("#")
+    order.add_column("Policy")
+    for index, kind in enumerate(EXIT_POLICY_PRECEDENCE, start=1):
+        order.add_row(str(index), kind.value)
+    console.print(order)
+
+    globals_table = Table(title="Global envelope", show_header=True, header_style="bold")
+    globals_table.add_column("Setting")
+    globals_table.add_column("Value")
+    for name, value in (
+        ("expiration.warning_dte", str(policy.expiration.warning_dte)),
+        ("expiration.force_exit_dte", str(policy.expiration.force_exit_dte)),
+        ("expiration.block_on_unknown_calendar", str(policy.expiration.block_on_unknown_calendar)),
+        ("data_quality.quote_field", policy.data_quality.quote_field.value),
+        ("data_quality.max_quote_age_seconds", str(policy.data_quality.max_quote_age_seconds)),
+        ("data_quality.on_unavailable", policy.data_quality.on_unavailable.value),
+        ("data_quality.on_stale", policy.data_quality.on_stale.value),
+        (
+            "data_quality.allow_quote_field_substitution",
+            str(policy.data_quality.allow_quote_field_substitution),
+        ),
+        ("trailing.activation_return_pct", str(policy.trailing.activation_return_pct)),
+        ("trailing.trail_distance_pct", str(policy.trailing.trail_distance_pct)),
+        ("trailing.allow_level_to_fall", str(policy.trailing.allow_level_to_fall)),
+        ("take_profit.return_pct", str(policy.take_profit.return_pct)),
+        ("max_loss.loss_pct", str(policy.max_loss.loss_pct)),
+        ("max_loss.block_on_unavailable_basis", str(policy.max_loss.block_on_unavailable_basis)),
+        ("thesis.exit_on_invalidated", str(policy.thesis.exit_on_invalidated)),
+        ("thesis.allow_prose_interpretation", str(policy.thesis.allow_prose_interpretation)),
+        ("order.limit_price_offset_pct", str(policy.order.limit_price_offset_pct)),
+        ("allow_independent_leg_exit", str(policy.allow_independent_leg_exit)),
+        ("require_broker_confirmation", str(policy.require_broker_confirmation)),
+    ):
+        globals_table.add_row(name, value)
+    console.print(globals_table)
+
+    layers = Table(title="Per-strategy narrowing", show_header=True, header_style="bold")
+    for column in ("limit", "effective", "scope", "global", "strategy", "narrowing rule"):
+        layers.add_column(column)
+    for row in configuration_report(config):
+        layers.add_row(
+            row.name,
+            row.value,
+            row.scope.value,
+            row.global_value,
+            row.strategy_value or "-",
+            row.narrowing_rule,
+        )
+    console.print(layers)
+
+    console.print(
+        "\nA strategy may NARROW any global safety limit and may never widen one. Widening is a "
+        "configuration load failure naming the strategy and the limit — never a silent clamp."
+    )
+    console.print(
+        "A multi-leg structure exits as ONE combo order or the decision is refused: "
+        "allow_independent_leg_exit fails to load if set, globally or per strategy."
+    )
+    console.print(
+        "An UNKNOWN exit is never re-sent. It is resolved by observing the broker, and no "
+        "amount of elapsed time is evidence."
+    )
+    console.print("[green]PASS[/green]  Policy is valid. No orders were submitted.")
+
+
+@exit_app.command("explain")
+def exit_explain(
+    position_id: Annotated[str, typer.Option("--position-id", help="The position to explain.")],
+) -> None:
+    """Explain one position: lifecycle, trailing state and every policy. (read-only)"""
+    from trading_system.exit.report import (
+        render_evaluation,
+        render_lifecycle,
+        render_lifecycle_event,
+        render_trailing,
+    )
+
+    service = _exit_service(False)
+    lifecycle = service.lifecycle(position_id)
+    if lifecycle is None:
+        console.print(
+            f"[yellow]UNAVAILABLE[/yellow]  no lifecycle recorded for {position_id}. "
+            f"Run 'exit evaluate' first."
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    console.print()
+    console.print(render_lifecycle(lifecycle))
+
+    trailing = service.repository.trailing(position_id)
+    if trailing is not None:
+        console.print()
+        console.print(render_trailing(trailing))
+
+    decision = service.repository.latest_for_position(position_id)
+    if decision is not None:
+        stored = service.repository.get_evaluation(decision.evaluation_id)
+        if stored is not None:
+            console.print()
+            console.print(render_evaluation(stored))
+
+    events = service.repository.lifecycle_events(position_id)
+    console.print(f"\n[bold]LIFECYCLE HISTORY[/bold] (append-only, {len(events)} event(s))")
+    for event in events:
+        console.print(f"  {render_lifecycle_event(event)}")
+    if not events:
+        console.print("  (none)")
+
+
+@positions_app.command("monitor")
+def positions_monitor(
+    simulated: SimulatedOption = False,
+    capture: Annotated[
+        bool,
+        typer.Option("--capture", help="Read the broker first instead of using the last snapshot."),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Evaluate and print; write nothing at all."),
+    ] = False,
+) -> None:
+    """Evaluate every open position for exit. (mutates local state)
+
+    The scheduled operation. Safe to run repeatedly and safe to run from a
+    scheduler: nothing is held in process memory, and a re-run over unchanged
+    state re-observes rather than deciding again.
+
+    It submits nothing. A position that triggers an exit is *recorded* as
+    requiring one; closing it needs ``exit run --confirm``.
+    """
+    service = _exit_service(simulated)
+    run = service.monitor(capture=capture, authorized=False, dry_run=dry_run)
+    _print_exit_run(run, authorized=False)
+    if dry_run:
+        console.print("[yellow]DRY RUN[/yellow]  nothing was written.")
+
+
+@test_app.command("exit")
+def test_exit(simulated: SimulatedOption = True) -> None:
+    """Diagnose the exit subsystem end to end, submitting nothing. (read-only)
+
+    Loads the policy, resolves the per-strategy narrowing, lists every open
+    position, evaluates each of them and prints the verdicts — all without
+    constructing a writable broker or building a single order.
+    """
+    from trading_system.exit.report import render_run
+
+    service = _exit_service(simulated)
+    console.print("\n[bold]EXIT SUBSYSTEM DIAGNOSTIC[/bold]")
+    console.print(f"Evaluation enabled : {service.enabled}")
+    console.print(f"Policy precedence  : {len(service.engine.precedence)} policies")
+    console.print("Model involved     : [green]none[/green]")
+
+    positions = service.open_positions()
+    console.print(f"Open positions     : {len(positions)}")
+    for position in positions:
+        console.print(
+            f"  {position.position_id}  {position.underlying} {position.strategy.value}  "
+            f"held={_or_dash(position.observed_units)}  "
+            f"lifecycle={position.lifecycle.state.value}"
+        )
+
+    run = service.monitor(authorized=False, dry_run=True)
+    console.print()
+    console.print(render_run(run.result))
+    console.print(f"\nOrders submitted: [green]{run.orders_submitted}[/green]")
+    if run.orders_submitted:
+        _fail("a diagnostic submitted an order. This must never happen.")
+    console.print("[green]PASS[/green]  Exit evaluation reached no broker and sent nothing.")
 
 
 def _mask_account(account_id: str | None) -> str:

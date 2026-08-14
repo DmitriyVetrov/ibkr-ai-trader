@@ -281,6 +281,14 @@
             "LONG_STRANGLE"
           ]
         },
+        "intent": {
+          "description": "Whether this submission establishes a position or ends one (Milestone 10). Defaulted to OPEN so every record written before it keeps its meaning.",
+          "enum": [
+            "OPEN",
+            "CLOSE"
+          ],
+          "default": "OPEN"
+        },
         "legs": {
           "type": "array",
           "items": {
@@ -481,6 +489,31 @@
           ]
         },
         "account_snapshot_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position_id": {
+          "description": "Milestone 10: the position a CLOSE execution is ending.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exit_decision_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exit_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entry_execution_id": {
           "type": [
             "string",
             "null"

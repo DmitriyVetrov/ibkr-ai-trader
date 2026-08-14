@@ -37,7 +37,8 @@
         "THESIS_INVALIDATION",
         "RISK_LIMIT",
         "BROKER_SAFETY",
-        "EMERGENCY"
+        "EMERGENCY",
+        "TAKE_PROFIT"
       ]
     },
     "nullable_exit_reason": {
@@ -48,6 +49,7 @@
         "RISK_LIMIT",
         "BROKER_SAFETY",
         "EMERGENCY",
+        "TAKE_PROFIT",
         null
       ]
     },

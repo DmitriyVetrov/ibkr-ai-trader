@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/exit_request.json",
+  "title": "ExitRequest",
+  "description": "The Milestone 10 -> Milestone 8 boundary: a deliberate instruction to close one position. 'exit_authorized' is typed const true — there is no shape in which deciding that a position should close and closing it are the same call. 'quantity' is copied from what the broker holds; nothing in this milestone computes one. 'reference_quote' is in the broker's QUOTED terms, and the limit actually sent is derived from it by Milestone 8's order builder, exactly once.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "exit_request_id",
+    "position_id",
+    "decision_id",
+    "evaluation_id",
+    "created_at",
+    "exit_authorized",
+    "underlying",
+    "strategy",
+    "quantity",
+    "exit_reason",
+    "triggering_policy",
+    "reference_quote",
+    "quote_field",
+    "order_type",
+    "time_in_force",
+    "trading_mode",
+    "entry_execution_id",
+    "allocation_id",
+    "campaign_id",
+    "opportunity_id",
+    "policy_version",
+    "versions"
+  ],
+  "properties": {
+    "exit_request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "position_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "decision_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "evaluation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "exit_authorized": {
+      "const": true
+    },
+    "requested_by": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "underlying": {
+      "type": "string",
+      "pattern": "^[A-Z0-9.\\-]+$"
+    },
+    "strategy": {
+      "enum": [
+        "LONG_CALL",
+        "LONG_PUT",
+        "LONG_STRADDLE",
+        "LONG_STRANGLE"
+      ]
+    },
+    "quantity": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "close_whole_strategy": {
+      "const": true
+    },
+    "exit_reason": {
+      "enum": [
+        "TRAILING_STOP_TRIGGERED",
+        "EXPIRATION_FORCE_EXIT",
+        "MAX_LOSS_REACHED",
+        "TAKE_PROFIT_REACHED",
+        "THESIS_INVALIDATED"
+      ]
+    },
+    "triggering_policy": {
+      "enum": [
+        "POSITION_CONSISTENCY",
+        "BROKER_OBSERVATION",
+        "EXECUTION_STATE",
+        "CONTRACT_VALIDITY",
+        "EXPIRATION",
+        "DATA_QUALITY",
+        "MAX_LOSS",
+        "THESIS",
+        "TAKE_PROFIT",
+        "TRAILING_STOP"
+      ]
+    },
+    "reference_quote": {
+      "description": "Exact decimal serialised as a string. Never a JSON number: binary floats are not decimal-safe.",
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "quote_field": {
+      "enum": [
+        "BID",
+        "ASK",
+        "MID",
+        "LAST"
+      ]
+    },
+    "quote_as_of": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "currency": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "order_type": {
+      "enum": [
+        "MARKET",
+        "LIMIT"
+      ]
+    },
+    "time_in_force": {
+      "enum": [
+        "DAY",
+        "GTC"
+      ]
+    },
+    "trading_mode": {
+      "enum": [
+        "DRY_RUN",
+        "PAPER",
+        "LIVE"
+      ]
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "entry_execution_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "allocation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "campaign_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "opportunity_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "purchase_card_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "risk_decision_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "versions": {
+      "$ref": "#/$defs/system_versions"
+    }
+  },
+  "$defs": {
+    "money": {
+      "description": "Exact decimal serialised as a string. Never a JSON number: binary floats are not decimal-safe.",
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "application_version",
+        "config_version"
+      ],
+      "properties": {
+        "application_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "config_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "strategy_spec_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "agent_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "model_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

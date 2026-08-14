@@ -19,6 +19,7 @@ already proved is shared by every leg.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from decimal import ROUND_FLOOR, Decimal
 
@@ -27,16 +28,20 @@ from trading_system.domain.enums import (
     ExecutionReasonCode,
     LegAction,
     OrderType,
+    StrategyType,
     TimeInForce,
     TradingMode,
 )
 from trading_system.domain.models import OptionLeg, OrderIntent, PurchaseCard, SystemVersions
 from trading_system.execution.models import EXECUTION_SCHEMA_VERSION
-from trading_system.infrastructure.settings import ExecutionConfig
+from trading_system.infrastructure.settings import ExecutionConfig, ExitOrderConfig
 
 __all__ = [
     "OrderBuildError",
+    "build_exit_order_intent",
     "build_order_intent",
+    "exit_intent_identifier",
+    "exit_limit_price",
     "limit_price_from_reference",
     "order_intent_identifier",
     "reference_quote_of",
@@ -233,3 +238,202 @@ def _copy_leg(leg: OptionLeg) -> OptionLeg:
     different contract.
     """
     return leg.model_copy()
+
+
+# ---------------------------------------------------------------------------
+# Closing an existing position (Milestone 10)
+#
+# The same module, deliberately. This is still the only place in the system
+# where a price becomes an instruction, it still reaches no broker and reads no
+# clock, and it still produces the Milestone 1 ``OrderIntent`` that the
+# execution engine already knows how to submit. What is genuinely different
+# about a closing order is small and is all here:
+#
+#   * the legs are INVERTED — a structure we bought is closed by selling it —
+#     and the SELL that results is a closing sale rather than short premium;
+#   * the offset is applied in the opposite economic direction, because an exit
+#     that will not fill is not a safe exit;
+#   * there is no purchase card, because nothing is being purchased. The
+#     original card and risk decision are referenced by id, so the exit stays
+#     traceable to the authorisation that opened the position.
+# ---------------------------------------------------------------------------
+def exit_intent_identifier(
+    *,
+    position_id: str,
+    exit_request_id: str,
+    schema_version: str = EXECUTION_SCHEMA_VERSION,
+) -> str:
+    """Derive a closing intent's identity from the position and the request."""
+    digest = stable_hash(["EXIT_ORDER_INTENT", schema_version, position_id, exit_request_id])
+    return f"intent-exit-{digest[:20]}"
+
+
+def exit_limit_price(
+    reference_quote: Decimal,
+    *,
+    offset_pct: float,
+    increment: Decimal,
+) -> Decimal:
+    """Derive the limit price to offer, from the exit reference quote.
+
+    Two things differ from the entry side and both are about direction.
+
+    The **reference** is already a quote — the bid, or whichever field policy
+    named — rather than money for a structure, so no multiplier conversion
+    happens here. It happened once already, when the valuation was built.
+
+    The **offset** is expected to be negative: offering slightly below the bid
+    is what makes an exit fill, and an exit that does not fill is not a safe
+    exit. Rounding is still always **down**, which on this side means the order
+    can only ever ask for less than the reference and never more — so a
+    rounding error can cost a cent of proceeds and can never leave the position
+    open by bidding above the market.
+
+    Raises rather than returning zero or less. A non-positive limit on a sell
+    order is not conservative, it is an instruction to give the structure away.
+    """
+    if reference_quote <= 0:
+        raise OrderBuildError(
+            ExecutionReasonCode.INVALID_PRICE,
+            f"exit reference quote {reference_quote} is not a price anything can be sold at",
+        )
+    if increment <= 0:
+        raise OrderBuildError(
+            ExecutionReasonCode.EXECUTION_CONFIGURATION_ERROR,
+            f"exit.order.price_increment must be positive, got {increment}",
+        )
+
+    adjusted = reference_quote * (Decimal(1) + Decimal(str(offset_pct)) / Decimal(100))
+    rounded = (adjusted / increment).to_integral_value(rounding=ROUND_FLOOR) * increment
+
+    if rounded <= 0:
+        raise OrderBuildError(
+            ExecutionReasonCode.INVALID_PRICE,
+            f"the derived exit limit rounds to {rounded} at an increment of {increment}. A "
+            f"non-positive limit on a closing order is an instruction to give the position "
+            f"away, not a conservative price",
+        )
+    return rounded
+
+
+def build_exit_order_intent(
+    *,
+    position_id: str,
+    exit_request_id: str,
+    purchase_card_id: str,
+    risk_decision_id: str,
+    underlying: str,
+    strategy_type: StrategyType,
+    legs: Sequence[OptionLeg],
+    quantity: int,
+    reference_quote: Decimal,
+    config: ExitOrderConfig,
+    execution_config: ExecutionConfig,
+    trading_mode: TradingMode,
+    created_at: datetime,
+    versions: SystemVersions,
+) -> OrderIntent:
+    """Build the Milestone 1 ``OrderIntent`` that closes an existing position.
+
+    The legs, their contract ids and the quantity are **copied** from what the
+    position ledger says is held; the only thing inverted is each leg's action,
+    and the only number computed is the limit price.
+
+    Every structural guard the entry side applies is applied here, on the legs
+    as they were *bought*:
+
+    * a leg without a broker contract id is refused, because re-deriving one
+      would send an order for a contract nobody holds;
+    * a structure whose legs carry different multipliers is refused, because a
+      combo's net price is only defined when they share one;
+    * a multi-leg structure goes as one combo or not at all — closing one leg
+      of a straddle leaves a naked long option, which is the same failure
+      Milestone 8 refuses on the way in;
+    * a position that was *short* a leg is refused as ``SHORT_LEG_NOT_SUPPORTED``,
+      because no strategy this system can select is short premium and a
+      structure that somehow is one is not something to unwind automatically.
+    """
+    if config.order_type is not OrderType.LIMIT:
+        raise OrderBuildError(
+            ExecutionReasonCode.ORDER_TYPE_NOT_PERMITTED,
+            f"exit.order.order_type is {config.order_type.value}. A market order to close an "
+            f"option is an unbounded price in the one direction that cannot be recovered from",
+        )
+    if quantity < 1:
+        raise OrderBuildError(
+            ExecutionReasonCode.INVALID_QUANTITY,
+            f"an exit for {quantity} contract(s) is not an exit; the broker holds nothing to sell",
+        )
+    held = list(legs)
+    if not held:
+        raise OrderBuildError(
+            ExecutionReasonCode.CONTRACT_INVALID,
+            f"position {position_id} reports no legs to close",
+        )
+
+    multipliers = {leg.multiplier for leg in held}
+    if len(multipliers) != 1:
+        raise OrderBuildError(
+            ExecutionReasonCode.CONTRACT_INVALID,
+            f"the structure's legs carry different multipliers {sorted(multipliers)}; the net "
+            f"price of a combo is only defined when they share one",
+        )
+
+    for index, leg in enumerate(held):
+        if leg.broker_contract_id is None or leg.broker_contract_id <= 0:
+            raise OrderBuildError(
+                ExecutionReasonCode.CONTRACT_ID_MISSING,
+                f"leg {index} has no broker contract id. Rebuilding one from symbol, strike "
+                f"and expiration would send a closing order for a contract nobody holds",
+            )
+        if leg.action is LegAction.SELL:
+            raise OrderBuildError(
+                ExecutionReasonCode.SHORT_LEG_NOT_SUPPORTED,
+                f"leg {index} was opened SELL, so closing it would buy back a short option. "
+                f"No strategy this system can select is short premium, and a structure that "
+                f"somehow is one is not something to unwind automatically",
+            )
+    if len(held) > 1 and not execution_config.multi_leg_as_combo:
+        raise OrderBuildError(
+            ExecutionReasonCode.MULTI_LEG_UNSUPPORTED,
+            f"{strategy_type.value} has {len(held)} legs and combo submission is disabled. "
+            f"Closing the legs independently could leave a naked long option where a complete "
+            f"structure was held",
+        )
+
+    limit_price = exit_limit_price(
+        reference_quote,
+        offset_pct=config.limit_price_offset_pct,
+        increment=config.price_increment,
+    )
+
+    return OrderIntent(
+        intent_id=exit_intent_identifier(position_id=position_id, exit_request_id=exit_request_id),
+        purchase_card_id=purchase_card_id,
+        risk_decision_id=risk_decision_id,
+        created_at=created_at,
+        underlying=underlying,
+        strategy_type=strategy_type,
+        legs=[_closing_leg(leg) for leg in held],
+        quantity=quantity,
+        order_type=OrderType.LIMIT,
+        limit_price=limit_price,
+        time_in_force=config.time_in_force,
+        # Zero, exactly as on the entry side: the limit price *is* the slippage
+        # control, and a tolerance here would accept less than the limit says.
+        max_slippage_bps=0,
+        trading_mode=trading_mode,
+        versions=versions,
+    )
+
+
+def _closing_leg(leg: OptionLeg) -> OptionLeg:
+    """The same contract, in the opposite direction.
+
+    Only ``action`` changes. The contract id, the strike, the expiration, the
+    ratio and the multiplier are all copied unchanged — a "normalised" copy
+    would be a closing order for a different contract, which is the one
+    mistake here that produces a *new* position instead of ending one.
+    """
+    closing = LegAction.SELL if leg.action is LegAction.BUY else LegAction.BUY
+    return leg.model_copy(update={"action": closing})

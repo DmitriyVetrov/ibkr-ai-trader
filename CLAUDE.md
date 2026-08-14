@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Milestones 1–9 of 12 are complete.** Built and tested: the domain layer (models, enums,
+**Milestones 1–10 of 12 are complete.** Built and tested: the domain layer (models, enums,
 events, state machine), YAML configuration, the 30 JSON workflow schemas, the CLI surface,
 structured logging, an injectable clock, the `Broker` abstraction with `SimulatedBroker` and
 `IBKRBroker`, the read-only broker diagnostics, the reconciliation foundation, the
@@ -23,22 +23,33 @@ and an immutable execution ledger with append-only history — and **positions, 
 and reconciliation**: the broker position ledger, deduplicated fills, expected positions
 projected from confirmed fills only, the reservation lifecycle that finally lets committed
 capital move, resolution of ambiguous submissions by observation, and a deterministic
-reconciliation engine with an immutable, content-addressed result.
-3823 passing tests; ruff, ruff format and mypy clean.
+reconciliation engine with an immutable, content-addressed result — and **exit management
+and the position lifecycle**: the deterministic exit policy engine with an explicit
+precedence, the trailing-stop state machine, the exchange-local expiration policy, the
+deterministic thesis check, the position lifecycle, and exit orders that go out through
+Milestone 8 and are confirmed by Milestone 9.
+4378 passing tests; ruff, ruff format and mypy clean.
 
-**Not built, by design:** exits, autonomous trading, live trading. A position is *observed*,
-never managed: there is no trailing stop, no take profit, no time-to-expiration policy, no
-thesis monitor and no exit engine, and nothing in this system closes a position. The CLI
-exposes those commands but they exit `3` naming the milestone that delivers them — they
-never fabricate output. Follow that pattern for anything still pending.
+**Not built, by design:** the scheduler, autonomous trading, live trading. A position is now
+*managed* — it is evaluated, and it can be closed — but nothing runs that evaluation on a
+cadence: `config/schedules.yaml` still describes jobs no process executes. There is no
+Telegram notification, no health-check loop and no separate thesis monitor. The CLI exposes
+those commands but they exit `3` naming the milestone that delivers them — they never
+fabricate output. Follow that pattern for anything still pending.
 
-**Milestone 10 is next: automation** — the scheduler, recurring jobs (including the
-reconciliation loop over the comparison Milestone 9 built), Telegram notifications and
-health checks. It inherits one thing Milestone 9 deliberately left open: an
-`ORPHAN_BROKER_POSITION` is reported and never adopted, so a controlled onboarding workflow
-for pre-existing holdings belongs to a later milestone. Milestone 9 itself closed the two
-Milestone 8 left open — an `UNKNOWN` execution is now resolved by *observing* the broker,
-and a reservation is released on proof that its capital was never spent.
+**Milestone 11 is next: production observability** — OpenTelemetry, Tempo, Prometheus, Loki
+and Grafana. Milestone 10 left the seams for it: five named business operations
+(`position.monitor`, `exit.evaluate`, `exit.decision`, `exit.execute`, `exit.confirm`), each
+a service method logged under a stable event name, with no telemetry vendor anywhere in the
+dependency tree. Milestone 11 must be able to attach `trading.position.id`,
+`trading.exit.id`, `trading.reason_code` and the rest without changing a trading decision,
+and telemetry must never influence one.
+
+Two things earlier milestones left open remain open, and one is now closable. An
+`ORPHAN_BROKER_POSITION` is still reported and never adopted, so a controlled onboarding
+workflow for pre-existing holdings belongs to a later milestone. Realised profit and loss is
+still untracked, which is why an exit's proceeds never move a reservation — Milestone 11
+owns that figure, and the `DAILY_LOSS_NOT_TRACKED` risk code with it.
 
 [CLOUD_CODE_IMPLEMENTATION_SPEC.md](CLOUD_CODE_IMPLEMENTATION_SPEC.md) remains the source of
 truth for module layout, CLI surface, schemas, testing layers, and milestone order. Read the
@@ -170,7 +181,21 @@ full tree; the boundaries that matter:
   function of captured state — no broker, no repository, no clock — so a stored
   comparison is reproducible. `service.py` is the single composition root and reaches a
   broker only through `positions/`.
-- `monitoring/` — position monitor, thesis monitor, reconciliation loop, scheduler.
+- `exit/` — the only stage that decides a position should end: `models · lifecycle ·
+  expiration · trailing · thesis · valuation · policies · engine · validation · store ·
+  service · report`. `engine.py` is a pure function of captured state — no clock, no
+  broker, no repository, no model — so a stored judgement is reproducible. It holds **no
+  broker at all**: an exit order exists only because `execution/service.py::submit_exit`
+  made one, and a test walks the transitive import graph to prove there is no other path.
+  `exit/__init__.py` defers everything that touches a repository through `__getattr__`,
+  for the same reason `execution/__init__.py` does — an eager re-export would put a
+  *writable broker* in the import graph of anything that merely names an exit type,
+  including the execution service that type-checks against `ExitRequest`.
+  Specification §3 has no package for this; it ships as `exit/` so the package, the CLI
+  group and the test suite share one name, exactly as `positions/` does.
+- `monitoring/` — the scheduler, and the specification's separate thesis monitor. Still
+  a docstring: Milestone 10 built the callable operation (`ExitService.monitor`) and
+  deliberately not the loop that calls it.
 
 **Two loops, different cadences.** The Opportunity Discovery loop (universe → research → strategy →
 contract → rank → allocate → risk → execute) is slow. The Position Management loop (reconcile →
@@ -564,6 +589,114 @@ broker read, and what this milestone deliberately does not do — is in
 agent**, so there is deliberately no `.claude/agents/` entry for it, exactly as in
 Milestones 7 and 8.
 
+## Exit management and the position lifecycle (Milestone 10)
+
+> **M10 answers *should this position be closed?*, M8 answers *how do we send the
+> exit order?*, and M9 answers *what actually happened at the broker?*** Collapsing
+> any two of those is the failure this milestone is shaped to prevent.
+
+The milestone that finally closes a position. Everything before it opens one; this one
+decides an open one should end, and hands that decision to the stage that already knows how
+to send an order:
+
+```
+Milestone 9 position reality   -> what the broker actually holds
+      -> open strategy positions          from CONFIRMED FILLS only
+      -> stored point-in-time quotes      repository only; no live request
+      -> ExitPolicyEngine                 pure, deterministic, NO MODEL
+      -> WAIT / EXIT / BLOCK              immutable evaluation + decision
+      -> ExitRequest -> Milestone 8       the ONLY path to an exit order
+      -> Milestone 9 reconciliation       CLOSED / STILL OPEN / UNKNOWN
+```
+
+Eight rules govern it, each with tests that fail loudly:
+
+- **Precedence decides, and it is answered once.** The first policy in
+  `EXIT_POLICY_PRECEDENCE` that does not say `WAIT` governs. A position at its take-profit
+  whose quantity the broker disputes *blocks*, because consistency is first and take-profit
+  ninth — the profit was computed from a quantity nobody confirmed. A position one day from
+  expiry whose research report cannot be read *exits*, because expiration is fifth and
+  thesis eighth — a missing file must not be able to disable the most important policy in
+  the milestone. Both follow from the ordering; neither is special-cased.
+- **There is no AI here, and no broker either.** No agent, no prompt, no LLM client, no
+  connection, no writable factory, and no import reaching any of them — a boundary test
+  walks the whole transitive closure. Whether to sell an option is a safety decision, and a
+  deterministic engine that can be replayed is worth more than a persuasive one that cannot.
+- **`UNKNOWN` is never `FAILED`, and never re-sent.** An exit whose outcome was never
+  learned may be a live order right now. It blocks, the block is derived from the
+  *execution ledger* as well as the lifecycle so a later unrelated block cannot erase it,
+  and the lifecycle graph has no edge from `EXIT_UNKNOWN` to anything that sends. No
+  elapsed time turns it into a failure; resolution is by observing the broker.
+- **Only broker reality closes a position.** Not a submitted order, not a reported fill, not
+  a decision to exit. Between submission and confirmation the lifecycle is `EXIT_SUBMITTED`,
+  which is the honest state. `CLOSED` is terminal and nothing reopens it.
+- **A block is a current verdict, not a memory.** It is re-derived from the conditions on
+  every evaluation, so `BLOCKED` is deliberately *not* in `EXIT_SUBMISSION_BLOCKED_STATES`:
+  a position blocked once because a research file was unreadable must still be force-exited
+  at its expiration deadline.
+- **Nothing is fabricated.** A missing bid is not the ask, the last print or the price we
+  paid — `allow_quote_field_substitution: true` fails to load. A missing multiplier is not
+  100. An unquantified maximum loss is not a small one. Each is a named block.
+- **A structure exits whole.** There is no independent-leg exit path in code or in
+  configuration; `allow_independent_leg_exit: true` fails to load globally *and* per
+  strategy, and a half-held straddle blocks as `PARTIAL_STRUCTURE` rather than reading as
+  closed.
+- **It decides no money.** No budget, no allocation, no position size. The quantity an exit
+  closes is what the broker says is held, taken from the weakest leg.
+
+**The two short circuits.** `POSITION_CLOSED` and `EXIT_ALREADY_SUBMITTED` settle an
+evaluation before the later policies run. Both are `WAIT` reasons meaning *there is nothing
+here to decide*: judging further would compute a return and a trailing level for a position
+that no longer exists or is already being sold, and record a verdict that never governed
+anything.
+
+**Maximum loss reuses Milestone 7's basis rather than defining a second formula.**
+`MaxLossBasis` is declared on each `StrategyStructure` in code; `NET_DEBIT_PAID` means the
+loss is `entry cost − current value` and the percentage is of the entry cost, which is
+Milestone 7's own arithmetic applied to what actually filled. `NOT_DEFINED` is
+`RISK_BASIS_UNAVAILABLE` — a block, never an estimate.
+
+**Units, once more.** `*_quote` is the broker's quoted terms (6.05), `*_value` is money for
+one unit with the multiplier in it (605.00), `*_total` multiplies by the open quantity. The
+trailing stop works entirely in quoted terms, because that is what a market observation and
+a limit price are in and converting on every comparison would be a factor of 100 waiting to
+be forgotten.
+
+**Two switches for an exit, exactly as for an entry.** `execution.enabled` in
+`config/execution.yaml` *and* an explicit `--confirm`. `exit evaluate`, `positions monitor`
+and `test exit` construct no writable broker at all. `exit.order.require_explicit_authorization:
+false` fails to load, and `ExitRequest` cannot be built with `exit_authorized=False`.
+
+**Three small, backward-compatible extensions to earlier milestones**, each with regression
+tests:
+
+- `ExecutionRecord.intent` (`ExecutionIntent.OPEN` / `CLOSE`, defaulted to `OPEN`). A
+  `CLOSE` names the position it ends, carries zero capital commitment and zero maximum loss,
+  and stores the legs **as sent** — inverted — so the position ledger nets an exit fill as a
+  subtraction rather than adding to the holding.
+- `reservations/service.py` resolves committed capital against `OPEN` executions only. An
+  exit's fills are *proceeds*: consuming the reservation again would double-count the money,
+  and releasing it would return capital with no realised profit and loss behind the figure.
+- `positions/expected.py` derives a logical `StrategyPosition` from `OPEN` executions only.
+  A structure from a closing record would surface a partly-closed position as
+  `PARTIAL_STRUCTURE` — a finding about an authorised position that is only half *held*, not
+  about one that is half *sold*.
+
+`schemas/exit_decision.json` remains the **narrow Milestone 1 boundary** (`HOLD`/`SELL`);
+`schemas/exit_decision_record.json` is the Milestone 10 audit record, and
+`ExitDecisionRecord.to_exit_decision()` projects one onto the other. It *raises* for
+`BLOCK`: `ExitAction` has two members and neither is honest about a refusal — `HOLD` would
+claim a considered decision to keep a position when what happened is that no decision could
+be made. `ExitReason` gained `TAKE_PROFIT` for the same reason `RiskReasonCode` was
+extended rather than forked: the closest existing member was `RISK_LIMIT`, which would
+record every successful trade as a limit breach.
+
+Development guidance — what to do when adding an exit policy, a configuration value or a
+lifecycle state, and what this milestone deliberately does not do — is in
+[skills/exit-management/README.md](skills/exit-management/README.md). Milestone 10
+introduces **no agent**, so there is deliberately no `.claude/agents/` entry for it, exactly
+as in Milestones 7, 8 and 9.
+
 **Configuration over hardcoding.** Schedules live in `config/schedules.yaml`, risk in `risk.yaml`,
 strategies in `config/strategies/*.yaml`, data policy in `data.yaml`, the candidate pool,
 eligibility filters and ranking policy in `universe.yaml`, the research horizon, data
@@ -574,7 +707,10 @@ envelope, allocation policy, position limits, currency policy and ranking weight
 `campaign.yaml`, and the execution switch, order vocabulary, validity windows, drift ceiling
 and combo policy in `execution.yaml`, the position ledger, account masking, fill
 deduplication and structure policy in `positions.yaml`, and the reconciliation policy,
-per-finding severity and the reservation lifecycle in `reconciliation.yaml`. Note the
+per-finding severity and the reservation lifecycle in `reconciliation.yaml`, and the exit
+policy precedence envelope — expiration thresholds, the quote field, trailing, take profit,
+maximum loss, thesis and the exit order — in `exit.yaml`, whose safety values every
+`config/strategies/*.yaml` may narrow and none may widen. Note the
 splits: `strategy.yaml` configures the *stage*,
 `config/strategies/*.yaml` configure the *payoffs* — one is an agent, the others are
 instruments; and `risk.yaml` states the outer boundary of the whole system while
@@ -595,6 +731,15 @@ shape: `data/positions/` (broker position snapshots), `data/fills/` (recorded br
 keyed on the broker's own execution ids), `data/reservations/` (the capital ledger — base
 records plus per-reservation event streams, folded on read) and `data/reconciliation/`
 (comparison results plus their own event histories).
+
+Milestone 10 adds `data/exit/`: immutable `evaluations/` and `decisions/`, an append-only
+`history.jsonl` and `runs.jsonl`, per-position `events/<position_id>.jsonl` that a
+`lifecycle/` base record is folded from, and `trailing/<position_id>.json`. That last one is
+the **only deliberately mutable record in the system**, and the exception is worth stating: a
+trailing stop is one continuously-updated fact, and an immutable file per observation would
+produce thousands of near-identical records for a level that moved three times. What stays
+immutable is the *history* — every arming, every raise and the trigger are lifecycle events
+carrying the peak, the level and the observation, so the explanation of an exit survives.
 
 Three rules govern everything stored there, and each has tests that fail loudly:
 
@@ -772,6 +917,24 @@ python -m trading_system.cli reconciliation history
 python -m trading_system.cli reconciliation explain [--reconciliation-id <ID>]
 python -m trading_system.cli reconcile                    # the spec's alias for `run`
 
+# Exit management. Deterministic: no model is consulted anywhere in this group.
+# EVALUATION never submits and constructs no writable broker; only `exit run
+# --confirm` can place an order, and it needs execution.enabled as well.
+python -m trading_system.cli exit validate               # policy + per-strategy narrowing
+python -m trading_system.cli exit validate --position-id <ID>
+python -m trading_system.cli exit evaluate               # WAIT / EXIT / BLOCK. Submits nothing
+python -m trading_system.cli exit evaluate --position-id <ID>
+python -m trading_system.cli exit evaluate --as-of 2026-08-10T14:30:00+00:00
+python -m trading_system.cli exit evaluate --dry-run     # writes nothing at all
+python -m trading_system.cli exit run --dry-run          # shows the exit, opens no broker
+python -m trading_system.cli exit run --confirm          # SUBMITS
+python -m trading_system.cli exit show [--position-id <ID>] [--evaluation]
+python -m trading_system.cli exit history [--position-id <ID>]
+python -m trading_system.cli exit explain --position-id <ID>
+python -m trading_system.cli positions monitor           # the scheduled operation
+python -m trading_system.cli positions monitor --capture # read the broker first
+python -m trading_system.cli test exit                   # diagnostic; submits nothing
+
 pytest -m "not ibkr and not llm"                # default: no gateway, no API key needed
 pytest tests/universe                           # filters, point-in-time, snapshots, CLI
 pytest tests/research                           # evidence, dedup, validation, snapshots, CLI
@@ -784,10 +947,12 @@ pytest tests/execution                          # state machine, idempotency, fi
 pytest tests/positions                          # snapshots, fills, expected positions, boundaries
 pytest tests/reservations                       # lifecycle, release, UNKNOWN, invariants
 pytest tests/reconciliation                     # engine, orders, fills, orphans, idempotency
+pytest tests/exit                               # precedence, trailing, expiration, thesis, CLI
 pytest tests/integration/test_research_to_allocation.py   # the whole chain; 0 orders
 pytest tests/integration/test_research_to_execution.py    # the chain through execution
 pytest tests/integration/test_execution_to_position.py   # execution -> fill -> position
 pytest tests/integration/test_reconciliation_workflow.py # the whole loop, id by id
+pytest tests/integration/test_exit_to_execution_to_reconciliation.py  # M10 -> M8 -> M9
 pytest tests/agents/test_universe_selector.py   # agent contract; needs no API key
 pytest tests/agents/test_research_agent.py      # agent contract; needs no API key
 pytest tests/agents/test_strategy_selector.py   # agent contract; needs no API key
@@ -799,6 +964,12 @@ ALLOW_LIVE_TESTS=true ANTHROPIC_API_KEY=... pytest -m llm   # one real model cal
 # for a read-only diagnostic must not also authorise an order.
 ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true IBKR_READ_ONLY=false \
   pytest -m paper_execution -s                  # or: make test-paper-execution
+
+# CAN SUBMIT A REAL PAPER SELL ORDER, behind the same two variables. It sells a
+# contract the account ALREADY HOLDS, priced not to fill, then cancels it; it
+# skips rather than opening a position to have something to close.
+ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true IBKR_READ_ONLY=false \
+  pytest tests/integration/test_paper_exit.py -m paper_execution -s   # make test-paper-exit
 ```
 
 `universe run` reads stored data only — it never collects and never opens a broker connection,
@@ -1102,6 +1273,37 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   Milestone 9 a developer who has actually run `risk capture-account` or `reconciliation
   run` against their paper gateway has a legitimate `data/accounts/history.jsonl`, and a
   test that failed because the CLI had been *used* is measuring the wrong thing.
+- **A closing execution stores the legs it *sent*, not the legs it closed.** The position
+  ledger reads each leg's `action` to decide whether a fill adds or subtracts, so a `CLOSE`
+  record carrying the entry's `BUY` legs would net an exit fill onto the position as though
+  it had bought more — doubling the holding at the exact moment it should reach zero. The
+  inversion happens in two places for one reason: `order_builder._closing_leg` builds the
+  intent, `execution/service._closing_execution_leg` builds the record, and the two must
+  agree about what was sent. Found by an integration test, not by review.
+- **A "block" that is remembered rather than re-derived becomes a deadlock.** Milestone 10's
+  first shape treated a `BLOCKED` lifecycle as itself blocking, which meant a position
+  blocked once — because a research file was unreadable — could never afterwards be
+  force-exited at its expiration deadline. The fix is that a block is a *current verdict*:
+  derived from the conditions on every evaluation, never sticky. What must never be retried
+  is a submission whose outcome is unknown, and `EXIT_UNKNOWN` is what expresses that — a
+  fact read from the *execution ledger* as well as the lifecycle, so a later unrelated block
+  cannot erase it.
+- **"Any block wins" is the wrong combination rule for a precedence list.** It lets a
+  low-priority policy veto a high-priority one: a missing research report would suppress an
+  expiration force-exit. The rule is *the first policy in precedence order that does not say
+  WAIT decides*, which gives both desired properties from one line — an earlier block still
+  beats a later exit, and a later block cannot veto an earlier one.
+- **An artifact that ticks a counter on every look is not idempotent.** The trailing record
+  originally stamped `updated_at` and incremented `observations` on every observation,
+  including ones that moved nothing. Two evaluations of identical state then produced
+  different artifacts under the same content-derived id, and the immutable store refused the
+  second. `observe` now returns the record *unchanged* when nothing moved; that we looked is
+  recorded in the lifecycle history, where it belongs.
+- **A half-held structure is not a closed position, and the check order decides which it
+  looks like.** A straddle with its call held and its put gone has zero *complete* units, so
+  a `observed_quantity == 0` test placed before the `PARTIAL` test files a naked long option
+  as a finished trade. `position_consistency` checks `UNKNOWN` and `PARTIAL` first,
+  deliberately.
 
 This directory is its own git repository (`git init`-ed, one commit: the specification). The
 enclosing `/home/dmytro/git/` is a separate repo full of unrelated projects; nothing here should

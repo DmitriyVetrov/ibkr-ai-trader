@@ -233,6 +233,16 @@ class ReservationService:
         records = list(executions if executions is not None else self._execution_records())
         by_allocation: dict[str, list[ExecutionRecord]] = {}
         for record in records:
+            if not record.intent.establishes_position:
+                # A Milestone 10 exit carries the same allocation id as the
+                # entry it closes, and it must not resolve that authorisation's
+                # reservation. A reservation answers "how much of the campaign
+                # is committed", and an exit's fills are *proceeds*: consuming
+                # the reservation a second time would double-count the money,
+                # and releasing it would return capital to the campaign without
+                # any realised profit and loss behind the figure — which is
+                # Milestone 11's, not this one's.
+                continue
             by_allocation.setdefault(record.allocation_id, []).append(record)
 
         updates: list[ReservationUpdate] = []
@@ -310,6 +320,7 @@ class ReservationService:
                 record
                 for record in self._execution_records()
                 if record.allocation_id == reservation.allocation_id
+                and record.intent.establishes_position
             ]
         )
         blocking = [record for record in records if record.state is ExecutionState.UNKNOWN]

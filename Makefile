@@ -8,6 +8,8 @@ CLI := $(PYTHON) -m trading_system.cli
         test-allocation test-allocation-unit test-allocation-integration test-risk \
         test-execution test-execution-unit test-execution-integration test-paper-execution \
         test-positions test-reservations test-reconciliation test-position-integration \
+        test-exit test-exit-unit test-exit-integration test-exit-safety test-exit-cli \
+        test-paper-exit \
         test-broker test-data test-integration \
         test-e2e universe-validate universe-run universe-show research-validate \
         research-run research-show strategy-validate strategy-run strategy-show \
@@ -18,6 +20,7 @@ CLI := $(PYTHON) -m trading_system.cli
         positions-validate positions-snapshot positions-show \
         reservations-show reservations-validate \
         reconciliation-validate reconciliation-run reconciliation-show \
+        exit-validate exit-evaluate exit-show exit-history positions-monitor \
         lint format typecheck check health config ibkr-connection ibkr-portfolio clean
 
 help:  ## Show this help
@@ -97,6 +100,32 @@ test-reconciliation:  ## Reconciliation tests (Milestone 9). Submits no orders.
 test-position-integration:  ## Execution to fill to position to reconciliation, simulated
 	$(PYTEST) tests/integration/test_execution_to_position.py \
 		tests/integration/test_reconciliation_workflow.py
+
+test-exit:  ## Exit management tests (Milestone 10). Submits no orders.
+	$(PYTEST) tests/exit
+
+test-exit-unit:  ## Exit units: lifecycle, trailing, expiration, thesis, policies
+	$(PYTEST) tests/exit -m unit
+
+test-exit-integration:  ## Exit to execution to reconciliation, simulated broker
+	$(PYTEST) tests/exit -m integration \
+		tests/integration/test_exit_to_execution_to_reconciliation.py
+
+test-exit-safety:  ## The structural claims: no broker, no model, no leg-by-leg exit
+	$(PYTEST) tests/exit/test_boundaries.py tests/exit/test_idempotency.py \
+		tests/exit/test_point_in_time.py tests/exit/test_multi_leg.py
+
+test-exit-cli:  ## The exit command group, positions monitor and test exit
+	$(PYTEST) tests/exit/test_cli.py
+
+test-paper-exit:  ## CAN SUBMIT A REAL PAPER SELL ORDER. Needs a running IB Gateway.
+	@echo "This can submit a REAL exit order to your IBKR PAPER account."
+	@echo "It needs: ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true IBKR_READ_ONLY=false"
+	@echo "It sells a contract the account already holds, priced not to fill."
+	@echo "Press Ctrl-C within 5 seconds to abort."
+	@sleep 5
+	ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true \
+		$(PYTEST) tests/integration/test_paper_exit.py -m paper_execution -s
 
 test-broker:  ## Broker adapter and simulator tests (Milestone 2)
 	$(PYTEST) tests/broker
@@ -219,9 +248,24 @@ reconciliation-run:  ## Compare records against broker reality. Places no orders
 reconciliation-show:  ## Show the latest reconciliation (Milestone 9)
 	$(CLI) reconciliation show
 
-# Deliberately no `execution-run` target. Submitting requires `--confirm` on the
-# command line, and a make target that wrapped it would be a way to place an
-# order by typing four characters.
+exit-validate:  ## Print the exit policy and per-strategy narrowing (Milestone 10)
+	$(CLI) exit validate
+
+exit-evaluate:  ## Decide whether open positions should close. Submits no orders
+	$(CLI) exit evaluate
+
+exit-show:  ## Show the latest exit run or decision (Milestone 10)
+	$(CLI) exit show
+
+exit-history:  ## List recorded exit evaluations (Milestone 10)
+	$(CLI) exit history
+
+positions-monitor:  ## Evaluate every open position for exit. Submits no orders
+	$(CLI) positions monitor
+
+# Deliberately no `execution-run` or `exit-run` target. Submitting requires
+# `--confirm` on the command line, and a make target that wrapped either would
+# be a way to open — or close — a position by typing four characters.
 
 ibkr-connection:  ## Read-only IBKR connection test (Milestone 2)
 	$(CLI) test ibkr-connection

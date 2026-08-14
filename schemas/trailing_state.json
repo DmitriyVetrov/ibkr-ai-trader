@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/trailing_state.json",
+  "title": "TrailingStopRecord",
+  "description": "A position's trailing stop, as a state machine rather than a mutable price. The level never falls: a stop that followed a position down would guarantee it is never sold, however much of its peak it had given back, and it would fail silently. Every figure is in the broker's QUOTED terms (6.05), not money (605.00).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "trailing_state_id",
+    "position_id",
+    "activation_return_pct",
+    "distance_pct",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "trailing_state_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "position_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state": {
+      "enum": [
+        "INACTIVE",
+        "ARMED",
+        "ACTIVE",
+        "TRIGGERED"
+      ]
+    },
+    "quote_field": {
+      "enum": [
+        "BID",
+        "ASK",
+        "MID",
+        "LAST"
+      ]
+    },
+    "activation_return_pct": {
+      "type": "number",
+      "minimum": 0
+    },
+    "distance_pct": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "min_improvement_pct": {
+      "type": "number",
+      "minimum": 0
+    },
+    "entry_quote": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "peak_quote": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+      "description": "Highest favourable observation. Monotone."
+    },
+    "stop_quote": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+      "description": "The exit level. Monotone: it never falls."
+    },
+    "activation_quote": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "activated_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "peak_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "level_updated_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "triggered_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "trigger_quote": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+      "description": "The observation that crossed the level — the whole explanation of the exit."
+    },
+    "observations": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "detail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "description": "An INACTIVE trail carries no level: the activation threshold has not been reached, so there is nothing to trail from.",
+      "if": {
+        "properties": {
+          "state": {
+            "const": "INACTIVE"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "stop_quote": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "description": "A TRIGGERED trail records the observation that crossed the level.",
+      "if": {
+        "properties": {
+          "state": {
+            "const": "TRIGGERED"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "trigger_quote": {
+            "description": "Exact decimal serialised as a string. Never a JSON number: binary floats are not decimal-safe.",
+            "type": "string",
+            "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+          }
+        },
+        "required": [
+          "trigger_quote"
+        ]
+      }
+    }
+  ]
+}

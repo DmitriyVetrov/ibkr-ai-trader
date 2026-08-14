@@ -65,10 +65,12 @@ from trading_system.domain.enums import (
     ExecutionReasonCode,
     ExecutionRunStatus,
     ExecutionState,
+    LegAction,
     OrderType,
     TimeInForce,
 )
 from trading_system.domain.models import (
+    OptionLeg,
     OrderIntent,
     PurchaseCard,
     ResearchReport,
@@ -89,6 +91,7 @@ from trading_system.execution.models import (
 )
 from trading_system.execution.order_builder import (
     OrderBuildError,
+    build_exit_order_intent,
     build_order_intent,
     reference_quote_of,
 )
@@ -116,8 +119,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Iterator
 
     from trading_system.broker.base import Broker
+    from trading_system.execution.models import ExecutionLeg
+    from trading_system.exit.models import ExitRequest
 
-__all__ = ["ExecutionPlan", "ExecutionRun", "ExecutionService"]
+__all__ = ["ExecutionPlan", "ExecutionRun", "ExecutionService", "ExitSubmission"]
 
 _logger = get_logger(__name__)
 
@@ -145,6 +150,70 @@ class ExecutionPlan:
     @property
     def submittable(self) -> bool:
         return self.validation.ok and self.intent is not None and not self.reason_codes
+
+
+@dataclass(frozen=True, slots=True)
+class ExitSubmission:
+    """What one exit submission attempt produced.
+
+    ``record`` is ``None`` only when nothing was built at all — the request was
+    unauthorised, execution is disabled, the market is closed, or an existing
+    attempt may already be live. In every other case there is a record, and it
+    says what happened whether or not an order left the process.
+    """
+
+    request: ExitRequest
+    record: ExecutionRecord | None = None
+    intent: OrderIntent | None = None
+    reason_codes: tuple[ExecutionReasonCode, ...] = ()
+    detail: str | None = None
+    #: An attempt already on file that blocked this one. Named so the caller
+    #: can report *which* order may be live rather than only that one may be.
+    existing: ExecutionRecord | None = None
+    orders_submitted: int = 0
+    dry_run: bool = False
+
+    @property
+    def submitted(self) -> bool:
+        """Whether an order may exist at the broker because of this attempt."""
+        return self.record is not None and self.record.submitted and not self.dry_run
+
+    @property
+    def refused(self) -> bool:
+        return self.record is None or bool(self.reason_codes)
+
+
+def _closing_execution_leg(leg: ExecutionLeg) -> ExecutionLeg:
+    """The same contract, in the opposite direction.
+
+    Only ``action`` changes; the contract id, strike, expiration, ratio and
+    multiplier are the ones the entry order actually used. The mirror of
+    ``order_builder._closing_leg``, applied to the stored record rather than to
+    the intent, so the ledger and the order agree about what was sent.
+    """
+    closing = LegAction.SELL if leg.action is LegAction.BUY else LegAction.BUY
+    return leg.model_copy(update={"action": closing})
+
+
+def _option_leg_of(leg: ExecutionLeg) -> OptionLeg:
+    """Translate a stored execution leg back into the Milestone 1 leg shape.
+
+    Nothing is normalised, derived or defaulted: the contract id, strike,
+    expiration, ratio and multiplier are the ones the entry order actually
+    used, because a closing order for anything else would open a new position
+    rather than end this one.
+    """
+    return OptionLeg(
+        underlying=leg.underlying,
+        right=leg.right,
+        strike=leg.strike,
+        expiration=leg.expiration,
+        action=leg.action,
+        ratio=leg.ratio,
+        multiplier=leg.multiplier,
+        occ_symbol=leg.local_symbol,
+        broker_contract_id=leg.contract_id,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,6 +581,218 @@ class ExecutionService:
             f"{record.execution_request_id}:{record.execution_id}:{record.state.value}"
             for plan in plans
             for record in self._repository.for_request(plan.request.execution_request_id)
+        )
+
+    # --- closing an existing position (Milestone 10) ------------------------
+    def submit_exit(
+        self,
+        request: ExitRequest,
+        *,
+        entry: ExecutionRecord,
+        authorized: bool = False,
+        dry_run: bool = False,
+        broker: Broker | None = None,
+        at: datetime | None = None,
+    ) -> ExitSubmission:
+        """Submit an exit Milestone 10 decided on, or say why nothing was sent.
+
+        The **only** way an exit order reaches a broker. Milestone 10 has no
+        broker, no writable factory and no import that reaches one; it produces
+        an :class:`~trading_system.exit.models.ExitRequest` and hands it here,
+        and everything about *how* to send an order — validation, the order
+        intent, the connection, ``UNKNOWN`` handling, the broker order id, the
+        immutable record — stays Milestone 8's and is reused unchanged.
+
+        Every safeguard the entry side has applies here in the same shape:
+
+        * two switches, and neither implies the other. ``execution.enabled``
+          *and* an explicit ``authorized=True``. A decision to exit is not
+          permission to send an order any more than an allocation id is;
+        * a dry run never constructs a broker at all, so "a dry run cannot
+          place an order" stays structural;
+        * one trade, one order. The exit request's identity is checked against
+          the ledger, and an attempt in *any* state where an order may exist —
+          including ``SUBMISSION_PENDING`` and ``UNKNOWN`` — refuses a second;
+        * the record is written before the send, so a process that dies
+          mid-submission leaves evidence that an exit may be in flight.
+
+        The record it writes carries ``intent=CLOSE``, which is what keeps the
+        reservation ledger from resolving campaign capital against it and the
+        position ledger from deriving a second logical structure from it.
+        """
+        from trading_system.domain.enums import ExecutionIntent
+
+        now = at or self._clock.now()
+        policy = self._config.execution
+
+        if not dry_run and not authorized:
+            return ExitSubmission(
+                request=request,
+                reason_codes=(ExecutionReasonCode.EXECUTION_NOT_AUTHORIZED,),
+                detail=(
+                    "no exit execution authorisation was given. Deciding that a position "
+                    "should close is not permission to close it: pass --confirm to authorise, "
+                    "or --dry-run to inspect what would be sent"
+                ),
+            )
+        if not dry_run and not policy.enabled:
+            return ExitSubmission(
+                request=request,
+                reason_codes=(ExecutionReasonCode.EXECUTION_DISABLED,),
+                detail=(
+                    "execution.enabled is false in config/execution.yaml. Submission is "
+                    "switched off at the system level, for exits exactly as for entries, and "
+                    "no exit decision overrides that"
+                ),
+            )
+
+        existing = self._repository.for_request(request.exit_request_id)
+        live = has_live_attempt(existing)
+        if live is not None:
+            return ExitSubmission(
+                request=request,
+                reason_codes=(ExecutionReasonCode.ALREADY_SUBMITTED,),
+                detail=(
+                    f"exit execution {live.execution_id} for this position is already in "
+                    f"{live.state.value}. An order may exist at the broker; a second "
+                    f"submission would close this position twice — once at a price that was "
+                    f"decided on and once at whatever the market does next"
+                ),
+                existing=live,
+            )
+
+        session_refusal = self._session_refusal(now)
+        if session_refusal is not None and not dry_run:
+            return ExitSubmission(
+                request=request,
+                reason_codes=(ExecutionReasonCode.MARKET_CLOSED,),
+                detail=session_refusal,
+            )
+
+        try:
+            intent = build_exit_order_intent(
+                position_id=request.position_id,
+                exit_request_id=request.exit_request_id,
+                purchase_card_id=request.purchase_card_id or entry.purchase_card_id,
+                risk_decision_id=request.risk_decision_id or entry.risk_decision_id,
+                underlying=request.underlying,
+                strategy_type=request.strategy,
+                legs=[_option_leg_of(leg) for leg in entry.legs],
+                quantity=request.quantity,
+                reference_quote=request.reference_quote,
+                config=self._config.exit.order,
+                execution_config=policy,
+                trading_mode=self._settings.trading_mode,
+                created_at=now,
+                versions=self.versions(),
+            )
+        except OrderBuildError as exc:
+            return ExitSubmission(request=request, reason_codes=(exc.reason_code,), detail=str(exc))
+
+        record = ExecutionRecord(
+            execution_id=execution_identifier(
+                execution_request_id=request.exit_request_id, attempt=len(existing)
+            ),
+            execution_request_id=request.exit_request_id,
+            allocation_id=request.allocation_id,
+            purchase_card_id=intent.purchase_card_id,
+            risk_decision_id=intent.risk_decision_id,
+            order_intent_id=intent.intent_id,
+            campaign_id=request.campaign_id,
+            opportunity_id=request.opportunity_id,
+            created_at=now,
+            updated_at=now,
+            underlying=request.underlying,
+            strategy=request.strategy,
+            intent=ExecutionIntent.CLOSE,
+            # The legs as *sent*, which for a close means every action
+            # inverted. This is not cosmetic: the position ledger reads a
+            # leg's action to decide whether a fill adds or subtracts, so a
+            # closing record carrying the entry's BUY legs would net an exit
+            # fill onto the position as though it had bought more.
+            legs=[_closing_execution_leg(leg) for leg in entry.legs],
+            quantity=request.quantity,
+            multiplier=entry.multiplier,
+            order_type=intent.order_type,
+            time_in_force=intent.time_in_force,
+            # The exit reference is already a quote; there is no structure cost
+            # to convert here, and inventing one would restate the entry's
+            # money as though it were this order's.
+            reference_quote=request.reference_quote,
+            submitted_price=intent.limit_price,
+            # Zero, and validated as zero on the record: closing a position
+            # commits no new capital and adds no new maximum loss.
+            capital_commitment=Decimal("0"),
+            maximum_loss=Decimal("0"),
+            currency=request.currency,
+            trading_mode=request.trading_mode,
+            dry_run=dry_run,
+            broker="NONE",
+            state=ExecutionState.VALIDATED if dry_run else ExecutionState.SUBMISSION_PENDING,
+            reason_codes=[ExecutionReasonCode.DRY_RUN] if dry_run else [],
+            position_id=request.position_id,
+            exit_decision_id=request.decision_id,
+            exit_reason=request.exit_reason.value,
+            entry_execution_id=request.entry_execution_id,
+            allocation_run_id=entry.allocation_run_id,
+            contract_selection_id=entry.contract_selection_id,
+            strategy_decision_id=entry.strategy_decision_id,
+            research_report_id=entry.research_report_id,
+            policy_version=request.policy_version,
+            versions=self.versions(),
+        )
+
+        if dry_run:
+            return ExitSubmission(request=request, record=record, intent=intent, dry_run=True)
+
+        with self._execution_broker(broker) as (connection, broker_failure):
+            if connection is None:
+                return ExitSubmission(
+                    request=request,
+                    reason_codes=(ExecutionReasonCode.BROKER_DISCONNECTED,),
+                    detail=broker_failure or "no broker could be opened for this exit",
+                )
+            self._verify_account(connection)
+            engine = ExecutionEngine(
+                broker=connection, repository=self._repository, clock=self._clock
+            )
+            before = connection.orders_submitted
+            outcome = engine.submit(record.model_copy(update={"broker": connection.name}), intent)
+            submitted = connection.orders_submitted - before
+
+        return ExitSubmission(
+            request=request,
+            record=outcome.record,
+            intent=intent,
+            orders_submitted=submitted,
+        )
+
+    def _session_refusal(self, at: datetime) -> str | None:
+        """Refuse before opening a connection when the market is closed.
+
+        Uses the same calendar and the same policy keys the entry side does, so
+        an exit and an entry cannot disagree about whether the exchange is
+        trading.
+        """
+        policy = self._config.execution
+        if not policy.require_market_open:
+            return None
+        from trading_system.data.market_calendar import MarketCalendarError
+
+        try:
+            if self._calendar.is_open(at):
+                return None
+        except MarketCalendarError as exc:
+            if not policy.block_on_unknown_session:
+                return None
+            return (
+                f"the exchange calendar cannot say whether the market is open at "
+                f"{at.isoformat()}: {exc}"
+            )
+        return (
+            f"the {self._calendar.exchange} calendar says regular trading is not in progress "
+            f"at {at.isoformat()}, so no exit order is sent. The session is determined from "
+            f"the transcribed calendar, never invented"
         )
 
     # --- after the fact ----------------------------------------------------

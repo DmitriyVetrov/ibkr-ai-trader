@@ -38,11 +38,17 @@ __all__ = [
     "EvidenceKind",
     "EvidenceStance",
     "ExecutionEventType",
+    "ExecutionIntent",
     "ExecutionReasonCode",
     "ExecutionRunStatus",
     "ExecutionState",
     "ExitAction",
+    "ExitDecisionType",
+    "ExitPolicyKind",
+    "ExitQuoteField",
     "ExitReason",
+    "ExitReasonCode",
+    "ExitRunStatus",
     "ExpectedMagnitude",
     "ExpirationSelectionPolicy",
     "LegAction",
@@ -56,6 +62,8 @@ __all__ = [
     "OrderSide",
     "OrderStatus",
     "OrderType",
+    "PositionLifecycleEventType",
+    "PositionLifecycleState",
     "PositionState",
     "PriceSource",
     "ReconciliationEventType",
@@ -84,9 +92,11 @@ __all__ = [
     "StrategyType",
     "StrikeSelectionPolicy",
     "StructureStatus",
+    "ThesisConditionOutcome",
     "ThesisStatus",
     "TimeInForce",
     "TradingMode",
+    "TrailingStopState",
     "UniverseEligibility",
     "UniverseRejectionReason",
     "UniverseSelectionReason",
@@ -370,7 +380,13 @@ class ExitAction(StrEnum):
 
 @unique
 class ExitReason(StrEnum):
-    """Why an exit was triggered (specification section 19)."""
+    """Why an exit was triggered (specification section 19).
+
+    The **narrow** Milestone 1 boundary vocabulary.
+    :class:`ExitReasonCode` is Milestone 10's wide audit vocabulary and
+    projects onto this one, exactly as research, strategy, execution and
+    reconciliation project onto their Milestone 1 shapes.
+    """
 
     TRAILING_STOP = "TRAILING_STOP"
     EXPIRATION_POLICY = "EXPIRATION_POLICY"
@@ -378,6 +394,16 @@ class ExitReason(StrEnum):
     RISK_LIMIT = "RISK_LIMIT"
     BROKER_SAFETY = "BROKER_SAFETY"
     EMERGENCY = "EMERGENCY"
+
+    # --- Milestone 10 ------------------------------------------------------
+    #
+    # Added rather than forced onto an existing member. Milestone 10 exits a
+    # position that reached its profit target, and the closest existing member
+    # is ``RISK_LIMIT`` — which would record every successful trade as having
+    # breached a risk limit. Adding a member is additive and keeps *one*
+    # authoritative list evaluation can aggregate across milestones;
+    # ``schemas/exit_decision.json`` enumerates the same set.
+    TAKE_PROFIT = "TAKE_PROFIT"
 
 
 @unique
@@ -1419,6 +1445,37 @@ class AllocationReason(StrEnum):
 #   is safe to act on.
 # ---------------------------------------------------------------------------
 @unique
+class ExecutionIntent(StrEnum):
+    """What one submission is *for*: establishing a position, or ending one.
+
+    Added by Milestone 10 and defaulted to ``OPEN``, so every execution written
+    before it keeps its meaning unchanged. It is not decoration: three ledgers
+    read an execution record and two of them must treat the two intents
+    differently.
+
+    ``OPEN``
+        Milestone 7 authorised capital and Milestone 8 spent it. This is the
+        execution a reservation is resolved against, and the one that
+        establishes a logical strategy position.
+    ``CLOSE``
+        Milestone 10 decided an existing position should end. It commits no new
+        capital, carries no new maximum loss, authorises no new structure, and
+        is deliberately excluded from reservation accounting — a reservation
+        answers "how much of the campaign is committed", and returning the
+        proceeds of a sale to a campaign budget requires realised profit and
+        loss, which is Milestone 11's. Its *fills* still net into the expected
+        position ledger, which is precisely how a position becomes closed.
+    """
+
+    OPEN = "OPEN"
+    CLOSE = "CLOSE"
+
+    @property
+    def establishes_position(self) -> bool:
+        return self is ExecutionIntent.OPEN
+
+
+@unique
 class ExecutionState(StrEnum):
     """Lifecycle of one execution request.
 
@@ -1904,6 +1961,430 @@ class ReconciliationEventType(StrEnum):
     #: observation rather than as a second, differently-named result.
     SNAPSHOT_REOBSERVED = "SNAPSHOT_REOBSERVED"
     RECONCILIATION_COMPLETED = "RECONCILIATION_COMPLETED"
+
+
+# ---------------------------------------------------------------------------
+# Exit management and position lifecycle (Milestone 10)
+#
+# The milestone that asks one question about a position that already exists:
+# *should this be closed?* Three vocabularies, and the distinctions between
+# them are what keep the answer honest:
+#
+#   PositionLifecycleState  what has become of this position, and of our
+#                           attempt to end it;
+#   ExitDecisionType        the closed answer: WAIT, EXIT or BLOCK;
+#   ExitReasonCode          which policy said so, and on what evidence.
+#
+# Deliberately separate from :class:`ExitAction` and :class:`ExitReason`, which
+# are the *narrow Milestone 1 boundary* (HOLD/SELL and six coarse reasons).
+# These are the wide audit vocabulary and they project onto that boundary,
+# exactly as research, strategy, execution and reconciliation project onto
+# theirs. Merging them would either coarsen what an operator can act on or
+# rewrite a completed milestone's contract.
+#
+# The rule that governs all three, carried forward from Milestone 8: *not
+# knowing is not the same as knowing nothing happened*. An exit whose outcome
+# was never learned is never re-sent, and no elapsed time turns it into a
+# failure.
+# ---------------------------------------------------------------------------
+@unique
+class PositionLifecycleState(StrEnum):
+    """What has become of one already-open strategy position.
+
+    Distinct from :class:`PositionState`, which spans the *whole* workflow from
+    discovery to closure and is the Milestone 1 boundary vocabulary. This one
+    starts where a position already exists and describes only what exit
+    management knows about it — including two states the Milestone 1 vocabulary
+    has no member for, and could not honestly be given one:
+
+    ``EXIT_UNKNOWN``
+        An exit was sent and its outcome was never learned. It is not
+        ``CLOSING`` (that claims an order is working), not ``OPEN`` (that
+        claims none is), and not ``CLOSED``.
+    ``BLOCKED``
+        Something is inconsistent or unreadable and no exit decision may be
+        acted on until a person or a reconciliation resolves it.
+
+    The legal transitions live in :mod:`trading_system.exit.lifecycle`.
+    """
+
+    #: Confirmed fills established it and exit management has not looked yet.
+    OPEN = "OPEN"
+    #: Under evaluation, with no exit policy currently triggered.
+    MONITORING = "MONITORING"
+    #: A trailing stop is armed or active. Still monitoring, but the level
+    #: moves — kept distinct so "why did this exit" is answerable afterwards.
+    TRAILING_ACTIVE = "TRAILING_ACTIVE"
+    #: A policy triggered. Nothing has been sent.
+    EXIT_REQUIRED = "EXIT_REQUIRED"
+    #: An exit order reached, or may have reached, the broker.
+    EXIT_SUBMITTED = "EXIT_SUBMITTED"
+    #: The exit submission's outcome is unknown. Never re-sent.
+    EXIT_UNKNOWN = "EXIT_UNKNOWN"
+    #: Broker reality confirms the position is gone. Terminal.
+    CLOSED = "CLOSED"
+    #: Evaluation refused to proceed. Leaves only on explicit resolution.
+    BLOCKED = "BLOCKED"
+
+
+@unique
+class PositionLifecycleEventType(StrEnum):
+    """One appended observation about a position's lifecycle.
+
+    Append-only, exactly like an execution's or a reservation's history: the
+    current state is a fold of these, so "when did this position start
+    trailing, from what price, and what observation triggered the exit" stays
+    answerable after the position is closed and the configuration has moved on.
+    """
+
+    LIFECYCLE_OPENED = "LIFECYCLE_OPENED"
+    LIFECYCLE_MONITORED = "LIFECYCLE_MONITORED"
+    TRAILING_ARMED = "TRAILING_ARMED"
+    TRAILING_ACTIVATED = "TRAILING_ACTIVATED"
+    TRAILING_LEVEL_RAISED = "TRAILING_LEVEL_RAISED"
+    TRAILING_TRIGGERED = "TRAILING_TRIGGERED"
+    EXIT_REQUIRED = "EXIT_REQUIRED"
+    EXIT_SUBMITTED = "EXIT_SUBMITTED"
+    EXIT_STATE_UNKNOWN = "EXIT_STATE_UNKNOWN"
+    EXIT_CONFIRMED_CLOSED = "EXIT_CONFIRMED_CLOSED"
+    LIFECYCLE_BLOCKED = "LIFECYCLE_BLOCKED"
+    #: A block was resolved by observation or by an operator. Recorded rather
+    #: than implied: leaving a blocked state is a decision.
+    LIFECYCLE_UNBLOCKED = "LIFECYCLE_UNBLOCKED"
+    #: Looked at, nothing changed. Kept so an audit shows the monitor ran.
+    LIFECYCLE_OBSERVED = "LIFECYCLE_OBSERVED"
+
+
+@unique
+class ExitDecisionType(StrEnum):
+    """The closed vocabulary of exit verdicts.
+
+    Three members, and the third is the one that matters. ``BLOCK`` is not a
+    kind of ``WAIT``: waiting is a judgement about a market made from data we
+    actually have, and blocking says the data, the records or the broker are
+    not in a state where any judgement may be acted on. Collapsing them would
+    let "we could not read the quote" look exactly like "the thesis still
+    holds".
+    """
+
+    #: Keep the position. The ordinary answer.
+    WAIT = "WAIT"
+    #: Close the whole structure. Always names a policy and a reason.
+    EXIT = "EXIT"
+    #: Refuse to act. Never resolved by retrying the evaluation.
+    BLOCK = "BLOCK"
+
+    @property
+    def requests_order(self) -> bool:
+        """Whether this verdict may cause an exit order to be built."""
+        return self is ExitDecisionType.EXIT
+
+
+@unique
+class ExitPolicyKind(StrEnum):
+    """Which deterministic policy produced an outcome.
+
+    The precedence between them is :data:`EXIT_POLICY_PRECEDENCE`, and it is
+    explicit rather than emergent: safety conditions are evaluated before
+    profit-taking, so a position that is both in profit and structurally
+    unreadable blocks rather than sells.
+    """
+
+    #: Does this position exist, and does our lifecycle agree with M9?
+    POSITION_CONSISTENCY = "POSITION_CONSISTENCY"
+    #: Was the broker actually read, and is what it says usable?
+    BROKER_OBSERVATION = "BROKER_OBSERVATION"
+    #: Is an exit already submitted, working, or unresolved?
+    EXECUTION_STATE = "EXECUTION_STATE"
+    #: Do we have the contract metadata an exit order would need?
+    CONTRACT_VALIDITY = "CONTRACT_VALIDITY"
+    #: How long is left, on the exchange's own calendar?
+    EXPIRATION = "EXPIRATION"
+    #: Is the price this evaluation would rest on usable at all?
+    DATA_QUALITY = "DATA_QUALITY"
+    #: Has the position lost more than policy permits?
+    MAX_LOSS = "MAX_LOSS"
+    #: Has the research thesis been invalidated?
+    THESIS = "THESIS"
+    #: Has it made enough?
+    TAKE_PROFIT = "TAKE_PROFIT"
+    #: Has it given back enough of its peak?
+    TRAILING_STOP = "TRAILING_STOP"
+
+
+@unique
+class ExitReasonCode(StrEnum):
+    """Why an exit evaluation reached the verdict it did.
+
+    A closed vocabulary, and deliberately fine-grained: an operator asking "why
+    is this position still open" is owed the specific policy and the specific
+    missing fact, not ``ERROR``. Every member belongs to exactly one verdict —
+    :data:`EXIT_WAIT_REASONS`, :data:`EXIT_TRIGGER_REASONS` and
+    :data:`EXIT_BLOCK_REASONS` partition this enum, and a test asserts it.
+    """
+
+    # --- WAIT: nothing triggered, and that is a real answer ----------------
+    #: Every applicable policy was evaluated and none triggered.
+    POLICY_SATISFIED = "POLICY_SATISFIED"
+    #: Position is in profit but below the trailing activation threshold.
+    TRAILING_NOT_ACTIVE = "TRAILING_NOT_ACTIVE"
+    #: The activation threshold was crossed; the trail is set and holding.
+    TRAILING_ABOVE_STOP = "TRAILING_ABOVE_STOP"
+    THESIS_INTACT = "THESIS_INTACT"
+    #: Inside the horizon, above the warning threshold.
+    EXPIRATION_NOT_REACHED = "EXPIRATION_NOT_REACHED"
+    #: Below the warning threshold, above the force-exit threshold. Not a
+    #: trigger — a statement that this position is now near its deadline.
+    EXPIRATION_WARNING = "EXPIRATION_WARNING"
+    TAKE_PROFIT_NOT_REACHED = "TAKE_PROFIT_NOT_REACHED"
+    MAX_LOSS_NOT_REACHED = "MAX_LOSS_NOT_REACHED"
+    #: An exit order is working at the broker. Waiting for it is the whole
+    #: correct behaviour; sending another would close the position twice.
+    EXIT_ALREADY_SUBMITTED = "EXIT_ALREADY_SUBMITTED"
+    #: Broker reality says this position is gone. Terminal, and a no-op.
+    POSITION_CLOSED = "POSITION_CLOSED"
+    #: The policy could not be evaluated but does not block on its own.
+    #: Distinct from a pass, for the same reason ``NOT_EVALUATED`` is distinct
+    #: from ``PASS`` in the risk engine.
+    NOT_EVALUATED = "NOT_EVALUATED"
+
+    # --- EXIT: a policy triggered ------------------------------------------
+    TRAILING_STOP_TRIGGERED = "TRAILING_STOP_TRIGGERED"
+    EXPIRATION_FORCE_EXIT = "EXPIRATION_FORCE_EXIT"
+    MAX_LOSS_REACHED = "MAX_LOSS_REACHED"
+    TAKE_PROFIT_REACHED = "TAKE_PROFIT_REACHED"
+    THESIS_INVALIDATED = "THESIS_INVALIDATED"
+
+    # --- BLOCK: no judgement may be acted on -------------------------------
+    #: No position with this id is known to the ledger.
+    POSITION_NOT_FOUND = "POSITION_NOT_FOUND"
+    #: The broker's view of this position could not be established.
+    POSITION_STATE_UNKNOWN = "POSITION_STATE_UNKNOWN"
+    #: The broker holds a different quantity than confirmed fills imply.
+    POSITION_QUANTITY_MISMATCH = "POSITION_QUANTITY_MISMATCH"
+    #: A multi-leg structure is present in part. The risk of what is held is
+    #: not the risk that was authorised, and no exit policy was written for it.
+    PARTIAL_STRUCTURE = "PARTIAL_STRUCTURE"
+    #: Our lifecycle record and broker reality contradict each other.
+    LIFECYCLE_INCONSISTENT = "LIFECYCLE_INCONSISTENT"
+    #: The broker could not be read at all. Not an empty account.
+    BROKER_DATA_UNAVAILABLE = "BROKER_DATA_UNAVAILABLE"
+    #: A reconciliation must run, or its findings be resolved, first.
+    RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
+    #: An exit was sent and never confirmed. The single most important block
+    #: in this vocabulary: it may be a live order right now.
+    EXIT_OUTCOME_UNKNOWN = "EXIT_OUTCOME_UNKNOWN"
+    #: A *prior* exit attempt is unresolved, so this evaluation may not act.
+    EXIT_ALREADY_UNKNOWN = "EXIT_ALREADY_UNKNOWN"
+    #: No quote at all for a leg. Never replaced by a last price, a close, or
+    #: the price we paid.
+    MARKET_DATA_UNAVAILABLE = "MARKET_DATA_UNAVAILABLE"
+    #: A quote exists and is older than the configured window.
+    MARKET_DATA_STALE = "MARKET_DATA_STALE"
+    #: The data layer judged the quote unusable. Never re-graded here.
+    MARKET_DATA_QUALITY_FAILED = "MARKET_DATA_QUALITY_FAILED"
+    #: The configured quote field is absent on an otherwise valid quote. No
+    #: other field is substituted for it.
+    QUOTE_FIELD_UNAVAILABLE = "QUOTE_FIELD_UNAVAILABLE"
+    #: The contract terms an exit order needs are missing or contradictory.
+    CONTRACT_METADATA_UNAVAILABLE = "CONTRACT_METADATA_UNAVAILABLE"
+    #: No multiplier. Never assumed to be 100.
+    MULTIPLIER_UNAVAILABLE = "MULTIPLIER_UNAVAILABLE"
+    #: No expiration on a leg, so no DTE can be computed for it.
+    EXPIRATION_DATA_UNAVAILABLE = "EXPIRATION_DATA_UNAVAILABLE"
+    #: The expiration falls in a year the market calendar does not cover.
+    EXPIRATION_CALENDAR_UNKNOWN = "EXPIRATION_CALENDAR_UNKNOWN"
+    #: The stored trailing state cannot be replayed or contradicts itself.
+    TRAILING_STATE_CORRUPTED = "TRAILING_STATE_CORRUPTED"
+    #: The research report this position rests on could not be read.
+    THESIS_DATA_UNAVAILABLE = "THESIS_DATA_UNAVAILABLE"
+    #: The strategy's declared maximum-loss basis is unavailable or is
+    #: ``NOT_DEFINED``. Milestone 7's refusal, preserved rather than estimated.
+    RISK_BASIS_UNAVAILABLE = "RISK_BASIS_UNAVAILABLE"
+    #: The strategy metadata this position was opened under is unavailable.
+    STRATEGY_METADATA_UNAVAILABLE = "STRATEGY_METADATA_UNAVAILABLE"
+    #: A record that was not knowable at the evaluation instant reached the
+    #: engine. A correctness bug, never a market outcome.
+    POINT_IN_TIME_ERROR = "POINT_IN_TIME_ERROR"
+    EXIT_CONFIGURATION_ERROR = "EXIT_CONFIGURATION_ERROR"
+
+
+@unique
+class ExitQuoteField(StrEnum):
+    """Which quoted price an exit is valued against, stated rather than assumed.
+
+    A long option is closed by *selling*, so the honest exit value is the
+    **bid**: it is the price a seller can actually get. ``MID`` is a fair-value
+    estimate that nobody is obliged to trade at, and ``LAST`` is a print that
+    may be hours old and on the other side of the spread. The shipped default
+    is ``BID`` and the field is recorded on every valuation, so a stored
+    decision says what it was measured against.
+
+    There is deliberately no ``AUTO``: substituting one field for another when
+    the configured one is missing is exactly the fabrication this milestone
+    refuses. A missing bid is ``QUOTE_FIELD_UNAVAILABLE``.
+    """
+
+    BID = "BID"
+    ASK = "ASK"
+    MID = "MID"
+    LAST = "LAST"
+
+
+@unique
+class ThesisConditionOutcome(StrEnum):
+    """What a deterministic check of one invalidation condition concluded.
+
+    ``NOT_EVALUATED`` is the expected answer for most conditions and is not a
+    failure. Research states invalidation conditions in prose; a condition that
+    cannot be checked against a structured fact is *labelled* as unevaluated
+    rather than interpreted, because reading an arbitrary sentence as a trading
+    signal is precisely what a deterministic exit engine must not do.
+    """
+
+    #: Checked, and the thesis survives it.
+    HOLDS = "HOLDS"
+    #: Checked against a structured fact, and violated.
+    VIOLATED = "VIOLATED"
+    #: Prose only. No deterministic check exists, and none is invented.
+    NOT_EVALUATED = "NOT_EVALUATED"
+
+
+@unique
+class TrailingStopState(StrEnum):
+    """The trailing stop's own state machine.
+
+    Four states rather than a mutable price, because "the trailing level is
+    2.10" answers none of the questions an operator asks after an exit: when it
+    became active, what activated it, what the peak was, and which observation
+    crossed it. Each transition is an event, and the level only ever moves in
+    the favourable direction.
+    """
+
+    #: Below the activation threshold. No level exists.
+    INACTIVE = "INACTIVE"
+    #: The threshold was reached in this evaluation; the first level is set.
+    ARMED = "ARMED"
+    #: Established, with a level that has been carried across evaluations.
+    ACTIVE = "ACTIVE"
+    #: The observed price fell to or below the level. Terminal.
+    TRIGGERED = "TRIGGERED"
+
+
+@unique
+class ExitRunStatus(StrEnum):
+    """Outcome of one ``exit evaluate`` or ``positions monitor`` invocation.
+
+    A run that decided to keep every position is ``SUCCESS`` — exit management
+    that exits nothing is exit management working. ``NO_POSITIONS`` and
+    ``BROKER_DATA_UNAVAILABLE`` are distinct because "there is nothing to
+    manage" and "we could not look" are different facts about the account.
+    """
+
+    SUCCESS = "SUCCESS"
+    #: Evaluated, and at least one position could not be judged.
+    PARTIAL = "PARTIAL"
+    #: There is no open position to evaluate. The ordinary answer.
+    NO_POSITIONS = "NO_POSITIONS"
+    #: Broker position state could not be read. Nothing was compared.
+    BROKER_DATA_UNAVAILABLE = "BROKER_DATA_UNAVAILABLE"
+    #: An internal ledger could not be read.
+    INTERNAL_DATA_UNAVAILABLE = "INTERNAL_DATA_UNAVAILABLE"
+    CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
+
+
+#: The deterministic order in which exit policies are evaluated.
+#:
+#: Encoded here rather than emerging from the order of ``if`` statements, so it
+#: is one reviewable list, printable by ``exit validate`` and assertable by a
+#: test. Read it as: *does this position exist and can we see it* before *how
+#: long is left* before *has it lost too much* before *has it made enough*.
+#: Safety precedes profit-taking at every step — a position that is both at its
+#: take-profit and structurally unreadable blocks rather than sells, because
+#: the second fact says the first was measured against something untrustworthy.
+EXIT_POLICY_PRECEDENCE: tuple[ExitPolicyKind, ...] = (
+    ExitPolicyKind.POSITION_CONSISTENCY,
+    ExitPolicyKind.BROKER_OBSERVATION,
+    ExitPolicyKind.EXECUTION_STATE,
+    ExitPolicyKind.CONTRACT_VALIDITY,
+    ExitPolicyKind.EXPIRATION,
+    ExitPolicyKind.DATA_QUALITY,
+    ExitPolicyKind.MAX_LOSS,
+    ExitPolicyKind.THESIS,
+    ExitPolicyKind.TAKE_PROFIT,
+    ExitPolicyKind.TRAILING_STOP,
+)
+
+#: Reason codes that accompany a ``WAIT``.
+EXIT_WAIT_REASONS: frozenset[ExitReasonCode] = frozenset(
+    {
+        ExitReasonCode.POLICY_SATISFIED,
+        ExitReasonCode.TRAILING_NOT_ACTIVE,
+        ExitReasonCode.TRAILING_ABOVE_STOP,
+        ExitReasonCode.THESIS_INTACT,
+        ExitReasonCode.EXPIRATION_NOT_REACHED,
+        ExitReasonCode.EXPIRATION_WARNING,
+        ExitReasonCode.TAKE_PROFIT_NOT_REACHED,
+        ExitReasonCode.MAX_LOSS_NOT_REACHED,
+        ExitReasonCode.EXIT_ALREADY_SUBMITTED,
+        ExitReasonCode.POSITION_CLOSED,
+        ExitReasonCode.NOT_EVALUATED,
+    }
+)
+
+#: Reason codes that accompany an ``EXIT``. Every one names a policy that
+#: actually triggered; there is no generic "exit because".
+EXIT_TRIGGER_REASONS: frozenset[ExitReasonCode] = frozenset(
+    {
+        ExitReasonCode.TRAILING_STOP_TRIGGERED,
+        ExitReasonCode.EXPIRATION_FORCE_EXIT,
+        ExitReasonCode.MAX_LOSS_REACHED,
+        ExitReasonCode.TAKE_PROFIT_REACHED,
+        ExitReasonCode.THESIS_INVALIDATED,
+    }
+)
+
+#: Reason codes that accompany a ``BLOCK``. Everything left over, and that is
+#: checked: a member added to :class:`ExitReasonCode` without being classified
+#: fails ``tests/exit/test_models.py`` rather than silently becoming a block.
+EXIT_BLOCK_REASONS: frozenset[ExitReasonCode] = frozenset(
+    set(ExitReasonCode) - EXIT_WAIT_REASONS - EXIT_TRIGGER_REASONS
+)
+
+#: Lifecycle states from which no further transition is possible.
+#:
+#: ``EXIT_UNKNOWN`` is deliberately **not** here, for the same reason
+#: ``ExecutionState.UNKNOWN`` is not in :data:`TERMINAL_EXECUTION_STATES`: an
+#: unresolved exit is a question, and a question that could never be answered
+#: would leave a position nobody can account for.
+TERMINAL_LIFECYCLE_STATES: frozenset[PositionLifecycleState] = frozenset(
+    {PositionLifecycleState.CLOSED}
+)
+
+#: Lifecycle states in which no new exit order may be built, whatever a policy
+#: concludes.
+#:
+#: The set idempotency is judged against. ``EXIT_SUBMITTED`` and
+#: ``EXIT_UNKNOWN`` are both here because both mean *an exit order may be live*,
+#: and re-submitting over either is how a position is closed twice — once at a
+#: price that was decided on and once at whatever the market does next.
+#: ``CLOSED`` is here because there is nothing left to sell.
+#:
+#: ``BLOCKED`` is deliberately **not** here, and the reason is a safety property
+#: rather than a convenience. A block is *re-derived on every evaluation* from
+#: the conditions that caused it; it is not a memory. Including it would mean a
+#: position blocked once — because a research file was unreadable, say — could
+#: never afterwards be force-exited at its expiration deadline, since the stale
+#: block would suppress the current judgement. What must never be retried is a
+#: *submission whose outcome is unknown*, and that is exactly what the two
+#: states above express.
+EXIT_SUBMISSION_BLOCKED_STATES: frozenset[PositionLifecycleState] = frozenset(
+    {
+        PositionLifecycleState.EXIT_SUBMITTED,
+        PositionLifecycleState.EXIT_UNKNOWN,
+        PositionLifecycleState.CLOSED,
+    }
+)
 
 
 #: Finding types that describe agreement rather than disagreement.

@@ -1,0 +1,462 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/exit_decision_record.json",
+  "title": "ExitDecisionRecord",
+  "description": "The Milestone 10 verdict for one position: WAIT, EXIT or BLOCK, with the reason codes and the figures it rested on. The WIDE audit artifact; schemas/exit_decision.json is the narrow Milestone 1 boundary this projects onto. An EXIT names exactly one triggering policy — precedence decides which policy exits a position, and recording several would hide which one did. close_whole_strategy is always true: there is no independent-leg exit path in this milestone.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "decision_id",
+    "evaluation_id",
+    "position_id",
+    "as_of",
+    "decided_at",
+    "decision",
+    "reason_codes",
+    "underlying",
+    "strategy",
+    "lifecycle_state",
+    "quantity",
+    "summary",
+    "policy_version",
+    "trading_mode",
+    "versions"
+  ],
+  "properties": {
+    "decision_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "evaluation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "position_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "decided_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decision": {
+      "enum": [
+        "WAIT",
+        "EXIT",
+        "BLOCK"
+      ]
+    },
+    "reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "POLICY_SATISFIED",
+          "TRAILING_NOT_ACTIVE",
+          "TRAILING_ABOVE_STOP",
+          "THESIS_INTACT",
+          "EXPIRATION_NOT_REACHED",
+          "EXPIRATION_WARNING",
+          "TAKE_PROFIT_NOT_REACHED",
+          "MAX_LOSS_NOT_REACHED",
+          "EXIT_ALREADY_SUBMITTED",
+          "POSITION_CLOSED",
+          "NOT_EVALUATED",
+          "TRAILING_STOP_TRIGGERED",
+          "EXPIRATION_FORCE_EXIT",
+          "MAX_LOSS_REACHED",
+          "TAKE_PROFIT_REACHED",
+          "THESIS_INVALIDATED",
+          "POSITION_NOT_FOUND",
+          "POSITION_STATE_UNKNOWN",
+          "POSITION_QUANTITY_MISMATCH",
+          "PARTIAL_STRUCTURE",
+          "LIFECYCLE_INCONSISTENT",
+          "BROKER_DATA_UNAVAILABLE",
+          "RECONCILIATION_REQUIRED",
+          "EXIT_OUTCOME_UNKNOWN",
+          "EXIT_ALREADY_UNKNOWN",
+          "MARKET_DATA_UNAVAILABLE",
+          "MARKET_DATA_STALE",
+          "MARKET_DATA_QUALITY_FAILED",
+          "QUOTE_FIELD_UNAVAILABLE",
+          "CONTRACT_METADATA_UNAVAILABLE",
+          "MULTIPLIER_UNAVAILABLE",
+          "EXPIRATION_DATA_UNAVAILABLE",
+          "EXPIRATION_CALENDAR_UNKNOWN",
+          "TRAILING_STATE_CORRUPTED",
+          "THESIS_DATA_UNAVAILABLE",
+          "RISK_BASIS_UNAVAILABLE",
+          "STRATEGY_METADATA_UNAVAILABLE",
+          "POINT_IN_TIME_ERROR",
+          "EXIT_CONFIGURATION_ERROR"
+        ]
+      }
+    },
+    "triggering_policy": {
+      "enum": [
+        "POSITION_CONSISTENCY",
+        "BROKER_OBSERVATION",
+        "EXECUTION_STATE",
+        "CONTRACT_VALIDITY",
+        "EXPIRATION",
+        "DATA_QUALITY",
+        "MAX_LOSS",
+        "THESIS",
+        "TAKE_PROFIT",
+        "TRAILING_STOP",
+        null
+      ]
+    },
+    "underlying": {
+      "type": "string",
+      "pattern": "^[A-Z0-9.\\-]+$"
+    },
+    "strategy": {
+      "enum": [
+        "LONG_CALL",
+        "LONG_PUT",
+        "LONG_STRADDLE",
+        "LONG_STRANGLE"
+      ]
+    },
+    "lifecycle_state": {
+      "enum": [
+        "OPEN",
+        "MONITORING",
+        "TRAILING_ACTIVE",
+        "EXIT_REQUIRED",
+        "EXIT_SUBMITTED",
+        "EXIT_UNKNOWN",
+        "CLOSED",
+        "BLOCKED"
+      ]
+    },
+    "quantity": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "close_whole_strategy": {
+      "const": true
+    },
+    "exit_quote": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "exit_value": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "entry_cost": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "unrealized_pnl": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "return_pct": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "days_to_expiration": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "quote_field": {
+      "enum": [
+        "BID",
+        "ASK",
+        "MID",
+        "LAST"
+      ]
+    },
+    "data_quality": {
+      "enum": [
+        "OK",
+        "DEGRADED",
+        "STALE",
+        "UNUSABLE",
+        null
+      ]
+    },
+    "currency": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "detail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "recommended_action": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "entry_execution_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "opportunity_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "campaign_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "trading_mode": {
+      "enum": [
+        "DRY_RUN",
+        "PAPER",
+        "LIVE"
+      ]
+    },
+    "versions": {
+      "$ref": "#/$defs/system_versions"
+    }
+  },
+  "allOf": [
+    {
+      "description": "An EXIT names exactly one triggering reason and one triggering policy, and closes contracts that exist.",
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "EXIT"
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reason_codes": {
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "enum": [
+                "TRAILING_STOP_TRIGGERED",
+                "EXPIRATION_FORCE_EXIT",
+                "MAX_LOSS_REACHED",
+                "TAKE_PROFIT_REACHED",
+                "THESIS_INVALIDATED"
+              ]
+            }
+          },
+          "triggering_policy": {
+            "enum": [
+              "POSITION_CONSISTENCY",
+              "BROKER_OBSERVATION",
+              "EXECUTION_STATE",
+              "CONTRACT_VALIDITY",
+              "EXPIRATION",
+              "DATA_QUALITY",
+              "MAX_LOSS",
+              "THESIS",
+              "TAKE_PROFIT",
+              "TRAILING_STOP"
+            ]
+          },
+          "quantity": {
+            "minimum": 1
+          }
+        },
+        "required": [
+          "triggering_policy"
+        ]
+      }
+    },
+    {
+      "description": "A BLOCK carries only block reasons; the three vocabularies partition ExitReasonCode.",
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "BLOCK"
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reason_codes": {
+            "items": {
+              "enum": [
+                "BROKER_DATA_UNAVAILABLE",
+                "CONTRACT_METADATA_UNAVAILABLE",
+                "EXIT_ALREADY_UNKNOWN",
+                "EXIT_CONFIGURATION_ERROR",
+                "EXIT_OUTCOME_UNKNOWN",
+                "EXPIRATION_CALENDAR_UNKNOWN",
+                "EXPIRATION_DATA_UNAVAILABLE",
+                "LIFECYCLE_INCONSISTENT",
+                "MARKET_DATA_QUALITY_FAILED",
+                "MARKET_DATA_STALE",
+                "MARKET_DATA_UNAVAILABLE",
+                "MULTIPLIER_UNAVAILABLE",
+                "PARTIAL_STRUCTURE",
+                "POINT_IN_TIME_ERROR",
+                "POSITION_NOT_FOUND",
+                "POSITION_QUANTITY_MISMATCH",
+                "POSITION_STATE_UNKNOWN",
+                "QUOTE_FIELD_UNAVAILABLE",
+                "RECONCILIATION_REQUIRED",
+                "RISK_BASIS_UNAVAILABLE",
+                "STRATEGY_METADATA_UNAVAILABLE",
+                "THESIS_DATA_UNAVAILABLE",
+                "TRAILING_STATE_CORRUPTED"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "A WAIT carries only wait reasons.",
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "WAIT"
+          }
+        },
+        "required": [
+          "decision"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reason_codes": {
+            "items": {
+              "enum": [
+                "POLICY_SATISFIED",
+                "TRAILING_NOT_ACTIVE",
+                "TRAILING_ABOVE_STOP",
+                "THESIS_INTACT",
+                "EXPIRATION_NOT_REACHED",
+                "EXPIRATION_WARNING",
+                "TAKE_PROFIT_NOT_REACHED",
+                "MAX_LOSS_NOT_REACHED",
+                "EXIT_ALREADY_SUBMITTED",
+                "POSITION_CLOSED",
+                "NOT_EVALUATED"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "money": {
+      "description": "Exact decimal serialised as a string. Never a JSON number: binary floats are not decimal-safe.",
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "nullable_money": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "application_version",
+        "config_version"
+      ],
+      "properties": {
+        "application_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "config_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "strategy_spec_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "agent_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "model_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

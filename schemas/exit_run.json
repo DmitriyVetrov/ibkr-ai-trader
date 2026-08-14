@@ -1,0 +1,245 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/exit_run.json",
+  "title": "ExitRunResult",
+  "description": "The immutable record of one monitoring or exit-evaluation run. 'execution_authorized' false means the run was only permitted to evaluate, and such a run may report no submitted order and no exit execution: evaluating whether a position should close never closes one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "campaign_id",
+    "as_of",
+    "generated_at",
+    "status",
+    "trading_mode",
+    "policy_version",
+    "versions"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "campaign_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "enum": [
+        "SUCCESS",
+        "PARTIAL",
+        "NO_POSITIONS",
+        "BROKER_DATA_UNAVAILABLE",
+        "INTERNAL_DATA_UNAVAILABLE",
+        "CONFIGURATION_ERROR"
+      ]
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "trading_mode": {
+      "enum": [
+        "DRY_RUN",
+        "PAPER",
+        "LIVE"
+      ]
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "execution_authorized": {
+      "type": "boolean"
+    },
+    "evaluations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "evaluated": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "waiting": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exiting": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "blocked": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "closed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exits_submitted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exits_refused": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "exit_execution_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "position_snapshot_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "reconciliation_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200
+    },
+    "orders_submitted": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "versions": {
+      "$ref": "#/$defs/system_versions"
+    },
+    "status_detail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "description": "A dry run reached no broker.",
+      "if": {
+        "properties": {
+          "dry_run": {
+            "const": true
+          }
+        },
+        "required": [
+          "dry_run"
+        ]
+      },
+      "then": {
+        "properties": {
+          "orders_submitted": {
+            "const": 0
+          }
+        }
+      }
+    },
+    {
+      "description": "An unauthorised run submitted nothing and created no exit execution.",
+      "if": {
+        "properties": {
+          "execution_authorized": {
+            "const": false
+          }
+        },
+        "required": [
+          "execution_authorized"
+        ]
+      },
+      "then": {
+        "properties": {
+          "orders_submitted": {
+            "const": 0
+          },
+          "exit_execution_ids": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "system_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "application_version",
+        "config_version"
+      ],
+      "properties": {
+        "application_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "config_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "strategy_spec_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "agent_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "model_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "data_source_versions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
