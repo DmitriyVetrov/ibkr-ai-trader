@@ -78,7 +78,7 @@ def paper_settings() -> Settings:
 @pytest.fixture
 def build_exit_service(
     paper_settings: Settings,
-    system_config: SystemConfig,
+    execution_disabled_config: SystemConfig,
     exit_clock: FixedClock,
     data_root: Path,
     exit_repo: FilesystemExitRepository,
@@ -91,6 +91,10 @@ def build_exit_service(
     Returned as a factory rather than a value so a test can rebuild it — which
     is how the restart guarantee is checked: the second service shares only the
     *filesystem* with the first, so anything it remembers came off disk.
+
+    The default configuration has ``execution.enabled`` pinned OFF, which is
+    how the system ships and what the exit suite's safety assertions are about.
+    A test that needs the switch on passes its own ``config``.
     """
 
     def _make(
@@ -99,7 +103,7 @@ def build_exit_service(
         snapshot: object | None = None,
         config: SystemConfig | None = None,
     ) -> ExitService:
-        resolved = config or system_config
+        resolved = config or execution_disabled_config
         for record in executions:
             execution_repo.save(record)
         if snapshot is not None:

@@ -60,14 +60,22 @@ def wired(tmp_path: Path, system_config, stub_repositories, monkeypatch, fake_br
 
 
 @pytest.fixture
-def wired_disabled(tmp_path: Path, system_config, stub_repositories, monkeypatch, fake_broker):
-    """The shipped configuration, which ships execution OFF."""
+def wired_disabled(
+    tmp_path: Path, execution_disabled_config, stub_repositories, monkeypatch, fake_broker
+):
+    """Execution switched OFF, which is how the system ships.
+
+    Pinned rather than inherited from the shipped file: what is under test here
+    is the behaviour of the master switch, not the value it happens to hold in
+    the checkout. The shipped value is asserted once, in
+    ``tests/execution/test_zero_orders.py``.
+    """
     broker = fake_broker()
 
     def _service() -> ExecutionService:
         return ExecutionService(
             settings=Settings(_env_file=None, trading_mode="PAPER"),
-            config=system_config,
+            config=execution_disabled_config,
             clock=FixedClock(NOW),
             root=tmp_path,
             broker_factory=lambda *args, **kwargs: broker,

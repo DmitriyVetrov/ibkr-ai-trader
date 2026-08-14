@@ -6,7 +6,8 @@ CLI := $(PYTHON) -m trading_system.cli
 .PHONY: help install test test-unit test-contract test-agents test-universe \
         test-research test-strategy test-strategies test-contract-selection \
         test-allocation test-allocation-unit test-allocation-integration test-risk \
-        test-execution test-execution-unit test-execution-integration test-paper-execution \
+        test-safety test-execution test-execution-unit test-execution-integration \
+        test-paper-execution \
         test-positions test-reservations test-reconciliation test-position-integration \
         test-exit test-exit-unit test-exit-integration test-exit-safety test-exit-cli \
         test-paper-exit \
@@ -75,6 +76,18 @@ test-allocation-integration:  ## Research to allocation, end to end, simulated b
 
 test-risk:  ## Risk engine tests (Milestone 7)
 	$(PYTEST) tests/risk
+
+test-safety:  ## The order-submission safety gates. Fast, and needs no gateway.
+	@echo "The gates, in order: live guards -> mode -> execution.enabled ->"
+	@echo "authorisation -> IBKR_READ_ONLY -> broker. Nothing here opens a"
+	@echo "connection, and nothing here needs TWS or IB Gateway running."
+	$(PYTEST) tests/execution/test_execution_safety.py \
+		tests/execution/test_zero_orders.py \
+		tests/execution/test_boundaries.py \
+		tests/execution/test_dry_run.py \
+		tests/exit/test_boundaries.py \
+		tests/operations/test_boundaries.py \
+		tests/unit/test_settings.py
 
 test-execution:  ## Execution tests (Milestone 8). Submits no orders.
 	$(PYTEST) tests/execution

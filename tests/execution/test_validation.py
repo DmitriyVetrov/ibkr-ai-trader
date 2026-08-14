@@ -35,11 +35,12 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def validator(system_config) -> ExecutionValidator:
+def validator(execution_disabled_config) -> ExecutionValidator:
+    """Validation with execution switched OFF, which is how the system ships."""
     return ExecutionValidator(
-        config=system_config.execution,
-        campaign=system_config.campaign,
-        calendar=MarketCalendar(system_config.data.market_calendar),
+        config=execution_disabled_config.execution,
+        campaign=execution_disabled_config.campaign,
+        calendar=MarketCalendar(execution_disabled_config.data.market_calendar),
     )
 
 
@@ -50,10 +51,10 @@ def check(validator):
             "execution_now": NOW,
             "trading_mode": TradingMode.PAPER,
             "order_type": OrderType.LIMIT,
-            # The shipped config has execution.enabled=false, so a validation
-            # of a submission would always fail on that alone. Most tests here
-            # are about the *other* checks, so they validate as a dry run and
-            # the enablement switch gets its own test below.
+            # The validator under test has execution.enabled=false, so a
+            # validation of a submission would always fail on that alone. Most
+            # tests here are about the *other* checks, so they validate as a dry
+            # run and the enablement switch gets its own test below.
             "dry_run": True,
         }
         kwargs.update(overrides)

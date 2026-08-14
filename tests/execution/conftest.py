@@ -525,3 +525,53 @@ def fake_broker() -> Callable[..., FakeBroker]:
         )
 
     return _make
+
+
+@pytest.fixture
+def exit_request_and_entry():
+    """A Milestone 10 exit request and the entry it closes.
+
+    Built from the exit suite's own factories rather than restated here: an
+    ``ExitRequest`` this suite invented could drift from the one Milestone 10
+    actually produces, and the point of these tests is that the *real* boundary
+    refuses. Milestone 8 never constructs an exit request — it only receives
+    one — so a fixture is the honest way to obtain it.
+    """
+    from tests.exit import factories
+    from trading_system.domain.enums import (
+        ExitPolicyKind,
+        ExitQuoteField,
+        ExitReasonCode,
+    )
+    from trading_system.exit.models import ExitRequest
+
+    entry = factories.entry_execution()
+    request = ExitRequest(
+        exit_request_id="exit-request-safety-1",
+        position_id="position-safety-1",
+        decision_id="exit-decision-safety-1",
+        evaluation_id="exit-evaluation-safety-1",
+        created_at=NOW,
+        exit_authorized=True,
+        underlying=entry.underlying,
+        strategy=entry.strategy,
+        quantity=entry.quantity,
+        exit_reason=ExitReasonCode.TAKE_PROFIT_REACHED,
+        triggering_policy=ExitPolicyKind.TAKE_PROFIT,
+        reference_quote=Decimal("9.00"),
+        quote_field=ExitQuoteField.BID,
+        quote_as_of=NOW,
+        currency=entry.currency,
+        order_type=OrderType.LIMIT,
+        time_in_force=TimeInForce.DAY,
+        trading_mode=TradingMode.PAPER,
+        entry_execution_id=entry.execution_id,
+        allocation_id=entry.allocation_id,
+        campaign_id=entry.campaign_id,
+        opportunity_id=entry.opportunity_id,
+        purchase_card_id=entry.purchase_card_id,
+        risk_decision_id=entry.risk_decision_id,
+        policy_version="test",
+        versions=factories.versions(),
+    )
+    return request, entry

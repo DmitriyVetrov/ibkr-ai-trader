@@ -21,10 +21,11 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def service(settings_paper, system_config, clock, tmp_path, stub_repositories):
+def service(settings_paper, execution_disabled_config, clock, tmp_path, stub_repositories):
+    """Execution switched off, so a dry run is exercised against the switch."""
     return ExecutionService(
         settings=settings_paper,
-        config=system_config,
+        config=execution_disabled_config,
         clock=clock,
         root=tmp_path,
         **stub_repositories,
@@ -73,10 +74,10 @@ def test_a_dry_run_still_builds_the_whole_order(service, approved_allocation) ->
 
 
 def test_a_dry_run_works_while_execution_is_disabled(
-    service, approved_allocation, system_config
+    service, approved_allocation, execution_disabled_config
 ) -> None:
     """Which is what makes the master switch reviewable rather than opaque."""
-    assert system_config.execution.enabled is False
+    assert execution_disabled_config.execution.enabled is False
 
     run = service.run(allocation_ids=[approved_allocation.allocation_id], dry_run=True)
 

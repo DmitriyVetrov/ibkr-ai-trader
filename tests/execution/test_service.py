@@ -30,11 +30,11 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
-def service(settings_paper, system_config, clock, tmp_path, stub_repositories):
-    """A service over the shipped configuration, which ships execution OFF."""
+def service(settings_paper, execution_disabled_config, clock, tmp_path, stub_repositories):
+    """A service with execution switched OFF, which is how the system ships."""
     return ExecutionService(
         settings=settings_paper,
-        config=system_config,
+        config=execution_disabled_config,
         clock=clock,
         root=tmp_path,
         **stub_repositories,

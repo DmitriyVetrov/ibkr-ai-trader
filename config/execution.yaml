@@ -18,7 +18,13 @@
 # Master switch. Ships OFF. With this false, `execution run` still validates,
 # still builds the purchase card and still shows the order it would send — it
 # simply never reaches a broker.
-enabled: true
+#
+# This was committed as `true` in the Milestone 11 commit (1f52c7d), which is
+# how a checkout came to be one `--confirm` away from a live paper order. It is
+# `false` again, and `tests/execution/test_zero_orders.py` asserts the shipped
+# value so the same edit cannot be committed unnoticed a second time. Flip it
+# locally to run a paper submission; do not commit the flip.
+enabled: false
 
 # LIVE is refused outright here, on top of the Milestone 1 environment guards
 # (LIVE_TRADING_CONFIRMED and LIVE_READINESS_CHECKLIST_SIGNED_OFF) and on top

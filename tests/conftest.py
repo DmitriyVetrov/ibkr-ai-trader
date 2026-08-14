@@ -2,13 +2,24 @@
 
 Two things happen here that matter more than convenience:
 
-* **Hermetic safety settings.** Every test runs with ``TRADING_MODE=PAPER`` and
-  ``ALLOW_LIVE_TESTS=false`` forced into the environment. Environment variables
-  outrank ``.env``, so a developer's local ``.env`` cannot drag the suite into
-  a mode it was not written for.
+* **Hermetic safety settings.** Every test runs with ``TRADING_MODE=PAPER``,
+  ``ALLOW_LIVE_TESTS=false``, both live guards off and ``IBKR_READ_ONLY=true``
+  forced into the environment. Environment variables outrank ``.env`` in
+  pydantic-settings, so a developer's local ``.env`` cannot drag the suite into
+  a mode it was not written for. The ``.env`` file itself is untouched: the
+  application still reads it for real Paper operation, and the clamp exists only
+  for the duration of a test.
 * **Live tests are skipped by default.** Anything marked ``live``, ``ibkr`` or
   ``llm`` is skipped unless ``ALLOW_LIVE_TESTS=true`` is set deliberately
   (specification section 35).
+
+The ``IBKR_READ_ONLY`` clamp was added after a developer ``.env`` carrying
+``IBKR_READ_ONLY=false`` let an ordinary unit test construct a *writable* IBKR
+broker and attempt a connection to a live gateway. That is the one setting in
+the file that decides whether the broker adapter can place an order at all, so
+it is pinned like the mode and the live guards — and lifted only for the
+``paper_execution`` tests, which are the only ones allowed to submit and are
+themselves behind two separate unlock variables.
 """
 
 from __future__ import annotations
@@ -75,18 +86,46 @@ FIXED_NOW = datetime(2026, 8, 10, 14, 30, tzinfo=UTC)
 # ---------------------------------------------------------------------------
 # Safety
 # ---------------------------------------------------------------------------
+#: Environment settings a developer's ``.env`` must not be able to change under
+#: an ordinary ``pytest`` run, and the value each is pinned to.
+#:
+#: Every one of them is a safety gate rather than a convenience: the mode, the
+#: two live guards, the live-test unlock, and the flag that decides whether the
+#: IBKR adapter may place an order at all. Host, port, client id and credentials
+#: are deliberately *not* pinned — they are needed by the gated tests and
+#: clamping them would add no safety, because no ordinary test may construct a
+#: broker that would use them.
+SAFETY_CRITICAL_ENVIRONMENT: dict[str, str] = {
+    "TRADING_MODE": "PAPER",
+    "ALLOW_LIVE_TESTS": "false",
+    "LIVE_TRADING_CONFIRMED": "false",
+    "LIVE_READINESS_CHECKLIST_SIGNED_OFF": "false",
+    "IBKR_READ_ONLY": "true",
+}
+
+
 @pytest.fixture(autouse=True)
-def _force_safe_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+def _force_safe_mode(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
     """Pin the safety-critical environment for every test.
 
     Explicit values rather than deletion: environment variables take priority
     over ``.env`` in pydantic-settings, so this neutralises whatever the
     developer has configured locally.
+
+    ``IBKR_READ_ONLY`` is lifted for the ``paper_execution`` tests and for
+    nothing else. Those are the only tests in the suite permitted to obtain a
+    writable broker, they carry a marker that is skipped unless *both*
+    ``ALLOW_LIVE_TESTS=true`` and ``RUN_PAPER_EXECUTION_TESTS=true`` are set,
+    and submitting is the whole point of them — so clamping the flag there
+    would break the one workflow that legitimately needs it. Every other test
+    in the suite runs against a broker setting that refuses to place an order,
+    whatever the developer's ``.env`` says.
     """
-    monkeypatch.setenv("TRADING_MODE", "PAPER")
-    monkeypatch.setenv("ALLOW_LIVE_TESTS", "false")
-    monkeypatch.setenv("LIVE_TRADING_CONFIRMED", "false")
-    monkeypatch.setenv("LIVE_READINESS_CHECKLIST_SIGNED_OFF", "false")
+    submits = request.node.get_closest_marker("paper_execution") is not None
+    for name, value in SAFETY_CRITICAL_ENVIRONMENT.items():
+        if submits and name == "IBKR_READ_ONLY":
+            continue
+        monkeypatch.setenv(name, value)
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -141,7 +180,34 @@ def config_dir() -> Path:
 
 @pytest.fixture(scope="session")
 def system_config(config_dir: Path) -> SystemConfig:
+    """The configuration as it actually ships, loaded verbatim.
+
+    Deliberately not clamped. ``tests/execution/test_zero_orders.py`` asserts
+    the shipped ``execution.enabled`` off this object, and a fixture that
+    quietly forced it false would make that assertion — the tripwire for a
+    checkout that could trade without an edit — vacuous.
+    """
     return load_config(config_dir)
+
+
+@pytest.fixture(scope="session")
+def execution_disabled_config(system_config: SystemConfig) -> SystemConfig:
+    """The shipped configuration with the execution master switch pinned OFF.
+
+    For tests whose subject is *what happens while execution is disabled*.
+    Those tests used to read the switch off the shipped configuration and hope
+    it was false, which made six of them fail at once when the Milestone 11
+    commit shipped ``enabled: true`` — one real defect reported as six, and
+    each of the six describing a behaviour that was not in fact broken.
+
+    Saying which configuration a behaviour test is about is the opposite of
+    weakening it: the shipped default is still asserted, once, where that is
+    the fact under test, and a developer who has legitimately flipped the
+    switch to run a paper submission still gets a meaningful suite.
+    """
+    return system_config.model_copy(
+        update={"execution": system_config.execution.model_copy(update={"enabled": False})}
+    )
 
 
 @pytest.fixture(scope="session")

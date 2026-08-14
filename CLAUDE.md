@@ -1137,6 +1137,8 @@ python -m trading_system.cli pnl settle --dry-run        # what would move, movi
 python -m trading_system.cli pnl settle                  # returns capital on confirmed closure
 
 pytest -m "not ibkr and not llm"                # default: no gateway, no API key needed
+make test-safety                                # the order-submission gates; no gateway
+pytest tests/execution/test_execution_safety.py # the gate hierarchy, gate by gate
 pytest tests/universe                           # filters, point-in-time, snapshots, CLI
 pytest tests/research                           # evidence, dedup, validation, snapshots, CLI
 pytest tests/strategy                           # registry, boundaries, validation, service, CLI
@@ -1571,6 +1573,33 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   a `observed_quantity == 0` test placed before the `PARTIAL` test files a naked long option
   as a finished trade. `position_consistency` checks `UNKNOWN` and `PARTIAL` first,
   deliberately.
+
+- **`config/execution.yaml` ships `enabled: false`, and the flip must never be committed.**
+  The Milestone 11 commit shipped it as `true` — flipped locally to run a paper submission
+  and swept up by `git add` — which left a checkout one `--confirm` away from a real paper
+  order. Six tests failed at once, which read like six defects and was one line.
+  `tests/execution/test_zero_orders.py::test_execution_submission_is_disabled_in_the_shipped_configuration`
+  is the single tripwire for it; every *other* test about the switch now pins its own
+  configuration through the `execution_disabled_config` fixture, so one bad line reports as
+  one failure and a developer legitimately running a paper submission still gets a
+  meaningful suite.
+- **A developer's `.env` is clamped during pytest, per variable, in `tests/conftest.py`.**
+  Environment variables outrank `.env` in pydantic-settings, so `SAFETY_CRITICAL_ENVIRONMENT`
+  pins the mode, both live guards, the live-test unlock and `IBKR_READ_ONLY` for every test.
+  `IBKR_READ_ONLY` was the one missing before: a local `IBKR_READ_ONLY=false` let an
+  ordinary unit test reach `build_execution_broker`, obtain a *writable* IBKR broker and
+  attempt a connection to the developer's gateway — the gateway happened to be closed, so
+  the symptom was a wrong status rather than an order. The clamp is lifted for exactly one
+  marker, `paper_execution`, which is itself behind two unlock variables. Do not clamp
+  host, port or credentials: they add no safety, because no ordinary test may construct a
+  broker that would use them, and the gated tests need them.
+- **Prove a safety gate by what was *not* called.** A test asserting `BROKER_UNAVAILABLE`
+  proves the broker was *unsuccessful*, which is a far weaker claim than the one the
+  contract makes — it passes just as well with the gate placed *after* the connection
+  attempt. `tests/execution/test_execution_safety.py::NeverCalledBrokerFactory` replaces
+  both broker constructors, records every request and raises an `AssertionError`
+  (deliberately not a `BrokerError`, which the execution service would catch and turn into
+  a tidy status line). The claim is `never_called`, not "returned a refusal".
 
 This directory is its own git repository (`git init`-ed, one commit: the specification). The
 enclosing `/home/dmytro/git/` is a separate repo full of unrelated projects; nothing here should

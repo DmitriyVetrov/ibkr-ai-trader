@@ -1099,6 +1099,7 @@ runs it.
 
 ```bash
 make test              # whole suite
+make test-safety       # the order-submission gates; fast, and needs no gateway
 make test-unit         # deterministic unit tests
 make test-broker       # broker abstraction, simulator, IBKR adapter
 make test-data         # providers, quality, point-in-time, storage

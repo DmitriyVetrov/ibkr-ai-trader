@@ -38,7 +38,7 @@ runner = CliRunner()
 def wired(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    system_config: SystemConfig,
+    execution_disabled_config: SystemConfig,
     market_research_run,
 ) -> Callable[..., ExitService]:
     """Point the CLI's exit service at a temporary store.
@@ -46,6 +46,9 @@ def wired(
     Monkeypatched rather than configured, exactly as the universe and
     reconciliation CLI suites do it: the alternative is a test that writes into
     the repository's own ``data/`` and leaves a trail behind.
+
+    ``execution.enabled`` is pinned OFF — how the system ships, and what this
+    suite's ``exit run --confirm`` assertions are about.
     """
     from trading_system import cli
     from trading_system.research.store import FilesystemResearchRepository
@@ -57,7 +60,7 @@ def wired(
         bid: Decimal = Decimal("6.50"),
         config: SystemConfig | None = None,
     ) -> ExitService:
-        resolved = config or system_config
+        resolved = config or execution_disabled_config
         clock = FixedClock(NOW)
         data_root = tmp_path / "data"
 
@@ -229,6 +232,34 @@ def test_a_confirmed_run_is_still_refused_while_execution_is_disabled(
     assert result.exit_code == 0
     assert "EXECUTION_DISABLED" in result.stdout
     assert "Orders submitted  : 0" in result.stdout
+
+
+def test_a_confirmed_run_while_disabled_never_asks_for_a_broker(
+    wired, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal happens before construction, not after a failed connection.
+
+    Milestone 11 shipped ``execution.enabled: true``, which is how ``exit run
+    --confirm`` came to reach a broker from a unit test. Reporting the right
+    status is not the property that matters here — never asking is.
+    """
+    from trading_system.broker import factory
+
+    requested: list[str] = []
+
+    def never(*args: object, **kwargs: object) -> object:
+        requested.append("broker")
+        raise AssertionError("an exit run requested a broker while execution.enabled is false")
+
+    monkeypatch.setattr(factory, "build_execution_broker", never)
+    monkeypatch.setattr(factory, "build_broker", never)
+
+    wired(bid=Decimal("2.00"))
+    result = _invoke("exit", "run", "--confirm")
+
+    assert result.exit_code == 0
+    assert "EXECUTION_DISABLED" in result.stdout
+    assert requested == [], "the exit path must not construct a broker while disabled"
 
 
 # ---------------------------------------------------------------------------
