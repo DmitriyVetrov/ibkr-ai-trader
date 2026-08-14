@@ -48,11 +48,19 @@ services:
     depends_on:
       ib-gateway:
         condition: service_healthy
+    # Shares ib-gateway's network namespace rather than reaching it over the
+    # bridge network. The gateway image trusts only 127.0.0.1 for API access
+    # (jts.ini's TrustedIPs, not configurable via env in this image) — a
+    # container-to-container connection arrives from a different IP, gets
+    # accepted at the TCP level and then never answered, which looks exactly
+    # like a hang rather than a refusal. Sharing the namespace makes the
+    # runtime appear as 127.0.0.1 to the gateway, satisfying the trust rule
+    # structurally instead of fighting it.
+    network_mode: "service:ib-gateway"
     environment:
       TRADING_MODE: ${TRADING_MODE:-PAPER}
-      # Container-to-container: the service name, and the gateway's internal
-      # port, never the host port.
-      IBKR_HOST: ib-gateway
+      # Loopback: see network_mode above. Not the service name/host port.
+      IBKR_HOST: 127.0.0.1
       IBKR_PORT: 4002
       IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
       IBKR_ACCOUNT: ${IBKR_ACCOUNT}
