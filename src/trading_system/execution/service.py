@@ -112,6 +112,13 @@ from trading_system.execution.validation import ExecutionValidation, ExecutionVa
 from trading_system.infrastructure.clock import Clock, SystemClock
 from trading_system.infrastructure.logging import get_logger
 from trading_system.infrastructure.settings import Settings, SystemConfig, project_root
+from trading_system.observability import metrics as _metrics
+from trading_system.observability.attributes import (
+    TRADING_EXECUTION_ID,
+    TRADING_POSITION_ID,
+    TRADING_STATUS,
+)
+from trading_system.observability.instrument import traced
 from trading_system.research.store import FilesystemResearchRepository, ResearchRepository
 from trading_system.strategies.store import FilesystemStrategyRepository, StrategyRepository
 
@@ -442,6 +449,18 @@ class ExecutionService:
         )
 
     # --- the run -----------------------------------------------------------
+    @traced(
+        "execution.open",
+        count=_metrics.EXECUTION_SUBMISSIONS_TOTAL,
+        duration=_metrics.EXECUTION_DURATION,
+        failure_count=_metrics.EXECUTION_REJECTIONS_TOTAL,
+        result_attributes=lambda run: {TRADING_STATUS: run.result.status.value},
+        labels=lambda run: {
+            "status": run.result.status.value,
+            "execution_type": "OPEN",
+            "trading_mode": run.result.trading_mode.value,
+        },
+    )
     def run(
         self,
         *,
@@ -584,6 +603,25 @@ class ExecutionService:
         )
 
     # --- closing an existing position (Milestone 10) ------------------------
+    @traced(
+        "execution.close",
+        attributes=lambda self, request, **kwargs: {
+            TRADING_POSITION_ID: request.position_id,
+        },
+        count=_metrics.EXECUTION_SUBMISSIONS_TOTAL,
+        duration=_metrics.BROKER_SUBMISSION_DURATION,
+        result_attributes=lambda submission: (
+            {TRADING_EXECUTION_ID: submission.record.execution_id}
+            if submission.record is not None
+            else {}
+        ),
+        labels=lambda submission: {
+            "execution_type": "CLOSE",
+            "status": (
+                submission.record.state.value if submission.record is not None else "NOT_SUBMITTED"
+            ),
+        },
+    )
     def submit_exit(
         self,
         request: ExitRequest,

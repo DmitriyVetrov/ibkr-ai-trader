@@ -31,6 +31,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from trading_system.domain.enums import (
     EXIT_POLICY_PRECEDENCE,
+    AlertCode,
+    AlertSeverity,
     AllocationPolicy,
     ConfidenceLevel,
     ExitPolicyKind,
@@ -56,6 +58,8 @@ from trading_system.domain.models import Money
 
 __all__ = [
     "AiRankingConfig",
+    "AlertThresholdConfig",
+    "AlertsConfig",
     "ApplicationConfig",
     "BrokerBackend",
     "CacheConfig",
@@ -88,8 +92,18 @@ __all__ = [
     "LiquidityConfig",
     "MarketCalendarConfig",
     "MarketContextConfig",
+    "NotificationChannelConfig",
+    "ObservabilityConfig",
+    "ObservabilityExporterConfig",
+    "ObservabilityLoggingConfig",
+    "ObservabilityMetricsConfig",
+    "ObservabilityPrivacyConfig",
+    "ObservabilitySamplingConfig",
     "OptionabilityPolicy",
     "PlausibilityConfig",
+    "PnLConfig",
+    "PnLCurrencyConfig",
+    "PnLSettlementConfig",
     "PositionExpectationConfig",
     "PositionFillConfig",
     "PositionSnapshotConfig",
@@ -242,6 +256,49 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr | None = None
     telegram_chat_id: str | None = None
 
+    # --- telemetry (Milestone 11) -----------------------------------------
+    #
+    # Deployment switches, not policy. What telemetry *does* — sampling,
+    # privacy, the cardinality guard, which metrics exist — lives in
+    # config/observability.yaml, where it is reviewable in a diff. What lives
+    # here is where this particular process should send it, which genuinely
+    # differs between a laptop and a container and cannot be committed.
+    #
+    # All three are None by default, meaning "use the YAML". None of them can
+    # turn a trading policy on or off; a telemetry setting has no path to a
+    # risk, execution or exit value, and a test asserts it.
+
+    #: Overrides ``observability.enabled``. Set false in a deployment that must
+    #: emit nothing at all; set true in one where the collector is reachable.
+    observability_enabled: bool | None = None
+    #: Overrides the OTLP endpoint. In a container the collector is a service
+    #: name, on a laptop it is localhost, and neither belongs in the file the
+    #: policy lives in.
+    otel_exporter_otlp_endpoint: str | None = None
+    #: Overrides ``observability.environment``, so one committed configuration
+    #: serves several deployments.
+    deployment_environment: str | None = None
+
+    def resolved_observability(self, config: ObservabilityConfig) -> ObservabilityConfig:
+        """The telemetry configuration with this deployment's overrides applied.
+
+        Returns the YAML configuration unchanged when no override is set, which
+        is the ordinary case. The overrides deliberately cover only *where*
+        telemetry goes and *whether* it is emitted — never sampling, never the
+        privacy rules, never the cardinality guard. Those are safety-adjacent
+        and belong in a file somebody reviews.
+        """
+        updates: dict[str, Any] = {}
+        if self.observability_enabled is not None:
+            updates["enabled"] = self.observability_enabled
+        if self.deployment_environment:
+            updates["environment"] = self.deployment_environment
+        if self.otel_exporter_otlp_endpoint:
+            updates["exporter"] = config.exporter.model_copy(
+                update={"endpoint": self.otel_exporter_otlp_endpoint}
+            )
+        return config.model_copy(update=updates) if updates else config
+
     # --- campaign override -------------------------------------------------
     campaign_budget_eur: Money | None = None
 
@@ -345,9 +402,18 @@ class CampaignAccountConfig(_ConfigModel):
     require_account_snapshot: bool = True
     max_snapshot_age_seconds: int = Field(default=86_400, ge=0)
     #: Whether the daily-loss limit must be evaluable before capital is
-    #: authorised. False until Milestone 9 tracks realised profit and loss; the
-    #: check is then recorded as ``NOT_EVALUATED``, never as passed.
+    #: authorised. Milestone 11 built the ledger that makes it evaluable; this
+    #: stays false so a deployment that has never closed a position is not
+    #: blocked by a limit it has no data for. The check is then recorded as
+    #: ``NOT_EVALUATED``, never as passed.
     require_daily_loss_tracking: bool = False
+    #: Whether an *unknown* daily figure blocks new capital (Milestone 11).
+    #: Deliberately separate from ``require_daily_loss_tracking`` and
+    #: defaulting to true: "we have never tracked this" and "we tracked it,
+    #: positions closed today, and the number is not trustworthy" are different
+    #: facts, and only the second is evidence that something is wrong. An
+    #: unknown loss is never read as no loss either way.
+    block_on_unknown_daily_loss: bool = True
 
 
 class CampaignCurrencyConfig(_ConfigModel):
@@ -659,9 +725,38 @@ class RiskConfig(_ConfigModel):
 
 
 class ScheduleJob(_ConfigModel):
+    """One scheduled job's cadence and its safety envelope.
+
+    Every field beyond ``cron``/``enabled``/``description`` was added by
+    Milestone 11, which is the milestone that actually runs these. They all
+    default to the conservative reading, so a job description written before
+    the scheduler existed keeps working and gains no new permission.
+    """
+
     cron: str
     enabled: bool = True
     description: str = ""
+
+    #: Only run while the exchange is open. ``False`` means the cadence alone
+    #: decides — correct for reconciliation, which is most valuable exactly
+    #: when nobody is watching.
+    market_hours_only: bool = False
+    #: Bound on one run. A job that hangs must not stop every other job, and
+    #: the scheduler records an over-running job as ``UNKNOWN`` rather than
+    #: ``FAILED``: the work may still be in flight.
+    timeout_seconds: float = Field(default=300.0, gt=0)
+    #: How late a missed firing may still run. A process that was down for an
+    #: hour must not fire twelve backlogged monitoring cycles on restart; it
+    #: runs the most recent one, once.
+    misfire_grace_seconds: int = Field(default=300, ge=0)
+    #: Whether missed firings are replayed at all. False everywhere by design:
+    #: replaying a monitoring cycle for an instant that has passed would
+    #: evaluate an exit against prices nobody can act on any more.
+    catch_up: bool = False
+    #: The second switch on the one job that can close a position. The first
+    #: is ``execution.enabled``; neither implies the other, exactly as an entry
+    #: needs both ``execution.enabled`` and ``--confirm``.
+    authorize_exits: bool = False
 
 
 class SchedulesConfig(_ConfigModel):
@@ -670,6 +765,22 @@ class SchedulesConfig(_ConfigModel):
     config_version: str
     timezone: str = "UTC"
     jobs: dict[str, ScheduleJob]
+
+    #: Master switch for the whole scheduler (Milestone 11). With this false
+    #: every job is still described, still individually runnable from the CLI,
+    #: and nothing fires on a cadence.
+    enabled: bool = True
+    #: How often the scheduler asks "what is due?". Cron expressions have
+    #: one-minute resolution, so anything above 60 would silently miss firings.
+    tick_seconds: int = Field(default=30, ge=1, le=60)
+    #: Bound on one whole tick. Jobs are run one at a time, deliberately: two
+    #: monitoring cycles overlapping would read the same ledger concurrently.
+    tick_timeout_seconds: float = Field(default=900.0, gt=0)
+    #: Whether a job whose completion was never recorded may be re-run.
+    #: Milestone 11's jobs are all idempotent against persisted state, which is
+    #: what makes this safe; the flag exists so a job that ever stops being
+    #: idempotent can be excluded without editing code.
+    rerun_unknown_jobs: bool = True
 
     #: Jobs the specification requires to exist. ClassVar, not a config field.
     REQUIRED_JOBS: ClassVar[tuple[str, ...]] = (
@@ -687,6 +798,438 @@ class SchedulesConfig(_ConfigModel):
         missing = [job for job in self.REQUIRED_JOBS if job not in self.jobs]
         if missing:
             raise ValueError(f"schedules.yaml missing required jobs: {', '.join(missing)}")
+        return self
+
+    @model_validator(mode="after")
+    def _no_job_replays_a_missed_firing(self) -> SchedulesConfig:
+        """``catch_up`` is refused everywhere, and that is not a stub.
+
+        A monitoring cycle evaluates an exit against the prices visible at its
+        instant. Replaying yesterday's missed firing would produce a decision
+        about a market that no longer exists — and, if the job is the one
+        permitted to submit, act on it. The scheduler runs the *current*
+        cycle, once.
+        """
+        replaying = sorted(name for name, job in self.jobs.items() if job.catch_up)
+        if replaying:
+            raise ValueError(
+                f"schedules.yaml sets catch_up on {', '.join(replaying)}. A missed firing is "
+                f"not replayed: a monitoring cycle judged against prices that have already "
+                f"moved would act on a market that no longer exists."
+            )
+        return self
+
+
+class ObservabilityExporterConfig(_ConfigModel):
+    """Where telemetry goes, and how hard it tries to get there.
+
+    Every value here is about the *side channel*. None of it may change a
+    trading decision, and a failure to reach any of it is not a trading
+    failure — which is why the timeouts are short and the queue is bounded:
+    telemetry that backed up would be telemetry slowing down a monitoring
+    cycle, and an operational nicety must never do that.
+    """
+
+    #: OTLP endpoint of the collector. The application talks to a collector and
+    #: never to Tempo, Prometheus, Loki or Grafana directly.
+    endpoint: str = "http://localhost:4318"
+    protocol: str = "http/protobuf"
+    #: Bound on one export attempt. Deliberately short.
+    timeout_seconds: float = Field(default=5.0, gt=0, le=30.0)
+    #: How often batched spans and metrics are flushed.
+    export_interval_seconds: float = Field(default=15.0, gt=0)
+    max_queue_size: int = Field(default=2048, ge=1)
+    max_export_batch_size: int = Field(default=512, ge=1)
+    #: Never true. A blocking exporter would let a dead collector stall a
+    #: trading operation, which is the one thing telemetry must not do.
+    block_on_full_queue: bool = False
+    #: Print spans and metrics to stderr instead of exporting. For local
+    #: development and for tests that want to see what would be emitted.
+    console: bool = False
+
+    @model_validator(mode="after")
+    def _the_exporter_never_blocks_a_trading_operation(self) -> ObservabilityExporterConfig:
+        if self.block_on_full_queue:
+            raise ValueError(
+                "observability.exporter.block_on_full_queue is set. A telemetry queue that "
+                "applies back-pressure would let an unreachable collector stall a monitoring "
+                "cycle or an exit submission. Telemetry is a side channel; it drops."
+            )
+        if self.protocol not in ("http/protobuf", "grpc"):
+            raise ValueError(
+                f"observability.exporter.protocol {self.protocol!r} is not one of "
+                f"'http/protobuf' or 'grpc'"
+            )
+        return self
+
+
+class ObservabilitySamplingConfig(_ConfigModel):
+    """How much is recorded. Sampling changes what is *seen*, never what is done."""
+
+    ratio: float = Field(default=1.0, ge=0.0, le=1.0)
+    #: Errors are always recorded whatever the ratio says. A sampled-away
+    #: failure is the one trace an operator actually needed.
+    always_sample_errors: bool = True
+
+
+class ObservabilityMetricsConfig(_ConfigModel):
+    """Metric emission policy, including the cardinality guard."""
+
+    enabled: bool = True
+    export_interval_seconds: float = Field(default=15.0, gt=0)
+    #: Attribute names that must never become metric labels. A domain id in a
+    #: label is an unbounded time series per trade, and the guard is enforced
+    #: in code as well as stated here — ``observability/metrics.py`` refuses
+    #: them, and a test asserts the refusal.
+    forbidden_labels: list[str] = Field(
+        default_factory=lambda: [
+            "trace_id",
+            "span_id",
+            "campaign_id",
+            "universe_selection_id",
+            "research_run_id",
+            "strategy_decision_id",
+            "contract_selection_id",
+            "risk_evaluation_id",
+            "allocation_id",
+            "execution_id",
+            "position_id",
+            "exit_id",
+            "broker_order_id",
+            "account",
+            "account_id",
+            "symbol",
+        ]
+    )
+
+    @model_validator(mode="after")
+    def _the_guard_is_not_empty(self) -> ObservabilityMetricsConfig:
+        if self.enabled and not self.forbidden_labels:
+            raise ValueError(
+                "observability.metrics.forbidden_labels is empty, which switches off the "
+                "cardinality guard entirely. One time series per execution id is how a "
+                "metrics backend falls over."
+            )
+        return self
+
+
+class ObservabilityLoggingConfig(_ConfigModel):
+    """How logs and traces are correlated."""
+
+    #: Inject ``trace_id``/``span_id`` into every structured log emitted inside
+    #: a span. This is what makes trace-to-log navigation work in Grafana, and
+    #: it costs nothing when telemetry is off — there is no span, so there is
+    #: nothing to inject.
+    correlate_traces: bool = True
+    #: Bind ``service`` and ``trading_mode`` onto every record.
+    include_service_context: bool = True
+
+
+class ObservabilityPrivacyConfig(_ConfigModel):
+    """What telemetry may never carry.
+
+    Telemetry is not an audit archive. The audit archive is the immutable
+    domain artifact; a span carries the *id* of one, never its contents.
+    """
+
+    #: Refuse any attribute whose name matches one of these, at any depth.
+    #: Enforced in :mod:`trading_system.observability.privacy`, with tests.
+    forbidden_attribute_substrings: list[str] = Field(
+        default_factory=lambda: [
+            "password",
+            "secret",
+            "token",
+            "api_key",
+            "apikey",
+            "credential",
+            "prompt",
+            "completion",
+            "response_text",
+            "portfolio",
+            "balance",
+            "account_number",
+        ]
+    )
+    #: Never emit a full account number. The masked form is what reaches a span.
+    mask_account_identifiers: bool = True
+    #: Truncate any string attribute at this length. A long value in a span is
+    #: a payload trying to become an archive.
+    max_attribute_length: int = Field(default=256, ge=16, le=4096)
+    #: Emit monetary values as attributes at all. Off by default: counts,
+    #: durations, statuses and references answer operational questions, and a
+    #: money figure in a trace is financial truth in the wrong place.
+    allow_monetary_attributes: bool = False
+
+    @model_validator(mode="after")
+    def _the_account_is_always_masked(self) -> ObservabilityPrivacyConfig:
+        if not self.mask_account_identifiers:
+            raise ValueError(
+                "observability.privacy.mask_account_identifiers=false would put a real IBKR "
+                "account number into a telemetry backend. There is no configuration that "
+                "permits it."
+            )
+        if not self.forbidden_attribute_substrings:
+            raise ValueError(
+                "observability.privacy.forbidden_attribute_substrings is empty, which removes "
+                "the redaction guard entirely."
+            )
+        return self
+
+
+class ObservabilityConfig(_ConfigModel):
+    """Telemetry configuration (``config/observability.yaml``, Milestone 11).
+
+    Ships **enabled: false**. Telemetry is an operational side channel: the
+    system must run identically without it, and the honest default for a
+    machine with no collector on it is off. Turning it on changes what is
+    *observed* and nothing that is *decided* — a claim
+    ``tests/observability/`` asserts by running the same operations with
+    telemetry on and off and comparing the artifacts.
+    """
+
+    config_version: str = "2026.08.14-1"
+    enabled: bool = False
+    service_name: str = "trading-system"
+    #: Left unset to inherit the application version, so a deploy cannot
+    #: report telemetry under a version it is not running.
+    service_version: str | None = None
+    environment: str = "local"
+
+    exporter: ObservabilityExporterConfig = Field(default_factory=ObservabilityExporterConfig)
+    sampling: ObservabilitySamplingConfig = Field(default_factory=ObservabilitySamplingConfig)
+    metrics: ObservabilityMetricsConfig = Field(default_factory=ObservabilityMetricsConfig)
+    logging: ObservabilityLoggingConfig = Field(default_factory=ObservabilityLoggingConfig)
+    privacy: ObservabilityPrivacyConfig = Field(default_factory=ObservabilityPrivacyConfig)
+
+    #: Whether a telemetry failure may ever propagate into the caller. False,
+    #: always: the whole point of this package is that an unreachable collector
+    #: cannot change what the trading system does.
+    fail_open: bool = True
+
+    @model_validator(mode="after")
+    def _telemetry_never_fails_a_trading_operation(self) -> ObservabilityConfig:
+        if not self.fail_open:
+            raise ValueError(
+                "observability.fail_open=false would let an exporter error propagate into a "
+                "trading operation. A collector that is down must never be able to reject a "
+                "trade, approve one, or stop an exit from being evaluated."
+            )
+        return self
+
+
+class PnLCurrencyConfig(_ConfigModel):
+    """Currency policy for realised profit and loss. No rate is ever invented."""
+
+    #: Refused, exactly as ``campaign.currency_policy.allow_conversion`` is.
+    #: A profit and loss figure converted at a guessed rate is a made-up
+    #: number in the one place the system must be exact.
+    allow_conversion: bool = False
+    #: Decimal places money is quantised to when a proration is unavoidable.
+    precision: int = Field(default=2, ge=0, le=8)
+
+    @model_validator(mode="after")
+    def _no_invented_exchange_rate(self) -> PnLCurrencyConfig:
+        if self.allow_conversion:
+            raise ValueError(
+                "pnl.currency.allow_conversion is set, but no deterministic FX rate source "
+                "exists. A cross-currency result is NOT_AVAILABLE; it is never a guess."
+            )
+        return self
+
+
+class PnLSettlementConfig(_ConfigModel):
+    """When committed capital may return to the campaign (Milestone 11).
+
+    The whole file exists for the three switches that fail to load. Each one
+    would, if permitted, let capital come back on something weaker than
+    broker-confirmed closure — which is the single failure this milestone is
+    shaped to prevent.
+    """
+
+    enabled: bool = True
+    #: Only broker-confirmed closure settles. Not a submitted exit, not a
+    #: reported fill, not a decision to exit.
+    require_broker_confirmed_closure: bool = True
+    #: An execution whose outcome was never learned never releases capital.
+    release_on_unknown: bool = False
+    #: A critical reconciliation finding touching the position stops it.
+    require_clean_reconciliation: bool = True
+    #: Whether realised profit is added to the campaign's spendable envelope.
+    #: Off: the campaign budget is a policy figure from ``campaign.yaml``, and
+    #: a system that quietly grew its own budget on a winning trade would be
+    #: compounding without anybody deciding to.
+    return_realized_pnl_to_campaign: bool = False
+
+    @model_validator(mode="after")
+    def _capital_returns_on_evidence_only(self) -> PnLSettlementConfig:
+        if self.release_on_unknown:
+            raise ValueError(
+                "pnl.settlement.release_on_unknown is set. An execution whose outcome was "
+                "never learned may be a live order right now; returning its capital is how a "
+                "campaign funds the same trade twice. There is no configuration that permits "
+                "it, exactly as there is none in reconciliation.yaml."
+            )
+        if not self.require_broker_confirmed_closure:
+            raise ValueError(
+                "pnl.settlement.require_broker_confirmed_closure=false would let a submitted "
+                "exit return capital. Only broker reality closes a position (Milestone 10)."
+            )
+        return self
+
+
+class PnLConfig(_ConfigModel):
+    """Realised profit and loss policy (``config/pnl.yaml``, Milestone 11).
+
+    Realised profit and loss is computed from **broker-confirmed fills** and
+    from nothing else: not a limit price, not a reference price, not a
+    midpoint, not an estimate of what an exit ought to have made.
+    """
+
+    config_version: str = "2026.08.14-1"
+    enabled: bool = True
+
+    #: Exchange-local timezone the trading *day* is bounded by. A closure at
+    #: 21:30 UTC belongs to the New York session that has just ended, and
+    #: bounding the day in UTC would file it under tomorrow.
+    day_boundary_timezone: str = "America/New_York"
+
+    #: Whether a missing commission makes the *net* figure unavailable. True:
+    #: IBKR reports fills before commission reports, and treating an absent
+    #: commission as zero understates the cost of every trade the feed was
+    #: slow about. The gross figure is still reported.
+    require_commission_for_net: bool = True
+    #: Never assume a contract multiplier. A fill with no multiplier yields no
+    #: money figure at all.
+    assume_multiplier: bool = False
+
+    #: Whether unrealised profit and loss may be mixed into the daily figure.
+    #: False, and there is no path that mixes them silently: a daily loss limit
+    #: evaluated against marked-to-market paper losses is a different limit
+    #: from the one the risk policy describes.
+    include_unrealized_in_daily: bool = False
+
+    currency: PnLCurrencyConfig = Field(default_factory=PnLCurrencyConfig)
+    settlement: PnLSettlementConfig = Field(default_factory=PnLSettlementConfig)
+
+    @model_validator(mode="after")
+    def _nothing_is_assumed(self) -> PnLConfig:
+        if self.assume_multiplier:
+            raise ValueError(
+                "pnl.assume_multiplier is set. A standard US equity option is 100 and a "
+                "system that assumed so would misprice the first one that is not — silently, "
+                "in the figure the daily loss limit is evaluated against."
+            )
+        if self.include_unrealized_in_daily:
+            raise ValueError(
+                "pnl.include_unrealized_in_daily is set. Realised and unrealised results are "
+                "different claims; the daily loss limit is stated over realised results, and "
+                "mixing them would enforce a limit nobody wrote."
+            )
+        return self
+
+
+class AlertThresholdConfig(_ConfigModel):
+    """One alert rule's threshold and severity."""
+
+    enabled: bool = True
+    severity: AlertSeverity = AlertSeverity.WARNING
+    #: Count of occurrences within the window that fires the alert.
+    threshold: int = Field(default=1, ge=1)
+    #: The window the count is taken over.
+    window_minutes: int = Field(default=60, ge=1)
+
+    @model_validator(mode="after")
+    def _a_disabled_rule_is_not_a_silent_one(self) -> AlertThresholdConfig:
+        if not self.enabled and self.severity is AlertSeverity.CRITICAL:
+            raise ValueError(
+                "a CRITICAL alert rule cannot be disabled in configuration. Turning off the "
+                "notification does not turn off the condition, and the safety alerts are the "
+                "ones an operator most needs to have not been quietly muted."
+            )
+        return self
+
+
+class NotificationChannelConfig(_ConfigModel):
+    """One outbound channel. Vendor-specific behaviour lives behind an adapter."""
+
+    #: ``console``, ``file`` or ``webhook``. Nothing here names a vendor; a
+    #: Telegram or e-mail channel is a ``webhook`` adapter's concern.
+    kind: str = "console"
+    enabled: bool = True
+    #: For ``file``: a path relative to the data root. For ``webhook``: the
+    #: environment variable holding the URL — never the URL itself, which
+    #: frequently carries a token.
+    target: str | None = None
+    minimum_severity: AlertSeverity = AlertSeverity.WARNING
+    timeout_seconds: float = Field(default=5.0, gt=0, le=30.0)
+
+    @model_validator(mode="after")
+    def _no_secret_in_configuration(self) -> NotificationChannelConfig:
+        if self.kind not in ("console", "file", "webhook"):
+            raise ValueError(
+                f"alerts.channels kind {self.kind!r} is not one of 'console', 'file', "
+                f"'webhook'. Vendor-specific delivery belongs behind a webhook adapter."
+            )
+        if self.kind == "webhook":
+            if not self.target:
+                raise ValueError(
+                    "a webhook channel must name the environment variable holding its URL"
+                )
+            if "://" in self.target:
+                raise ValueError(
+                    "alerts.channels target for a webhook must be the NAME of an environment "
+                    "variable, not a URL. A webhook URL usually embeds a token, and this file "
+                    "is committed."
+                )
+        return self
+
+
+class AlertsConfig(_ConfigModel):
+    """Operational alerting (``config/alerts.yaml``, Milestone 11).
+
+    An alert is a notification and nothing else. Nothing in this file, and
+    nothing in :mod:`trading_system.operations.alerts`, can place, cancel or
+    modify an order — a test walks the import graph and asserts it. Safety is
+    enforced by the domain; alerting is how a person finds out.
+    """
+
+    config_version: str = "2026.08.14-1"
+    enabled: bool = True
+    #: Alerts are stored whether or not any channel accepts them. A
+    #: notification that failed to send is not an alert that did not happen.
+    persist: bool = True
+
+    rules: dict[str, AlertThresholdConfig] = Field(default_factory=dict)
+    channels: list[NotificationChannelConfig] = Field(default_factory=list)
+
+    #: Rules the milestone requires to exist, so a deployment cannot quietly
+    #: ship without the safety alerts. ClassVar, not a config field.
+    REQUIRED_RULES: ClassVar[tuple[str, ...]] = (
+        "BROKER_CONNECTION_ERRORS",
+        "BROKER_TIMEOUTS",
+        "EXECUTION_UNKNOWN",
+        "EXECUTION_REJECTION_RATE",
+        "LIVE_EXECUTION_ATTEMPT",
+        "RECONCILIATION_MISMATCH",
+        "SCHEDULER_JOB_FAILED",
+        "EXIT_UNKNOWN",
+        "EXPIRATION_APPROACHING",
+        "DAILY_LOSS_THRESHOLD_EXCEEDED",
+        "DAILY_LOSS_UNAVAILABLE",
+    )
+
+    @model_validator(mode="after")
+    def _every_rule_names_a_known_alert(self) -> AlertsConfig:
+        known = {code.value for code in AlertCode}
+        unknown = sorted(set(self.rules) - known)
+        if unknown:
+            raise ValueError(
+                f"alerts.yaml defines rules for unknown alert codes: {', '.join(unknown)}. "
+                f"The vocabulary is closed; add a member to AlertCode first."
+            )
+        missing = [rule for rule in self.REQUIRED_RULES if rule not in self.rules]
+        if missing:
+            raise ValueError(f"alerts.yaml is missing required rules: {', '.join(missing)}")
         return self
 
 
@@ -1960,12 +2503,15 @@ class ExitConfig(_ConfigModel):
 class SystemConfig(_ConfigModel):
     """All YAML configuration, loaded and validated together."""
 
+    alerts: AlertsConfig
     application: ApplicationConfig
     campaign: CampaignConfig
     contract_selection: ContractSelectionConfig
     data: DataConfig
     execution: ExecutionConfig
     exit: ExitConfig
+    observability: ObservabilityConfig
+    pnl: PnLConfig
     positions: PositionsConfig
     reconciliation: ReconciliationConfig
     research: ResearchConfig
@@ -2180,12 +2726,15 @@ def load_config(config_dir: Path | str | None = None) -> SystemConfig:
         raise ConfigError(f"no strategy definitions found in {strategies_dir}")
 
     payload = {
+        "alerts": _read_yaml(directory / "alerts.yaml"),
         "application": _read_yaml(directory / "application.yaml"),
         "campaign": _read_yaml(directory / "campaign.yaml"),
         "contract_selection": _read_yaml(directory / "contract_selection.yaml"),
         "data": _read_yaml(directory / "data.yaml"),
         "execution": _read_yaml(directory / "execution.yaml"),
         "exit": _read_yaml(directory / "exit.yaml"),
+        "observability": _read_yaml(directory / "observability.yaml"),
+        "pnl": _read_yaml(directory / "pnl.yaml"),
         "positions": _read_yaml(directory / "positions.yaml"),
         "reconciliation": _read_yaml(directory / "reconciliation.yaml"),
         "research": _read_yaml(directory / "research.yaml"),

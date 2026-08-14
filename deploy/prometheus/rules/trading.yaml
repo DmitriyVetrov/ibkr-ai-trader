@@ -1,0 +1,131 @@
+# Alerting rules, mirroring config/alerts.yaml (Milestone 11).
+#
+# These are the SAME conditions the application evaluates in
+# trading_system/operations/alerts.py, expressed for Prometheus so an operator
+# who lives in Grafana sees them too. The application's own rules remain
+# authoritative: they run whether or not this stack is up, they read domain
+# artifacts rather than metrics, and they are what produces the stored Alert
+# record. These are a convenience, not a second enforcement.
+#
+# Nothing here can execute a trade. Prometheus has no path to this system's
+# order code, and an alert is a notification in both places.
+
+groups:
+  - name: trading-safety
+    interval: 30s
+    rules:
+      - alert: ExecutionUnknown
+        expr: increase(execution_unknown_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: execution
+        annotations:
+          summary: "An execution's outcome was never learned"
+          description: >-
+            The order may be live at the broker right now. Resolve by OBSERVING
+            the broker — `execution explain --resolve` or a reconciliation run.
+            There is no retry path, and the capital stays locked until the
+            broker settles what happened.
+
+      - alert: ReconciliationMismatch
+        expr: increase(reconciliation_findings_total{severity="CRITICAL"}[1h]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: safety
+        annotations:
+          summary: "Internal records and the broker disagree"
+          description: >-
+            IBKR is authoritative. New executions should not proceed until this
+            is resolved; reconciliation reports and never repairs.
+
+      - alert: LiveExecutionAttempt
+        expr: increase(execution_submissions_total{trading_mode="LIVE"}[24h]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: safety
+        annotations:
+          summary: "An execution was attempted in LIVE mode"
+          description: >-
+            LIVE is refused in the configuration, in the broker factory and in
+            the adapter. Establish what attempted it before anything else.
+
+  - name: trading-broker
+    interval: 30s
+    rules:
+      - alert: BrokerConnectionErrors
+        expr: increase(broker_connection_errors_total[30m]) >= 3
+        for: 1m
+        labels:
+          severity: warning
+          category: broker
+        annotations:
+          summary: "Repeated broker connection errors"
+
+      - alert: BrokerTimeouts
+        expr: increase(broker_timeouts_total[30m]) >= 3
+        for: 1m
+        labels:
+          severity: warning
+          category: broker
+        annotations:
+          summary: "Repeated broker request timeouts"
+          description: >-
+            A second uncached round trip on one connection can go unanswered
+            indefinitely against the validated TWS build. Check whether a caller
+            is batching requests onto one connection.
+
+  - name: trading-workflow
+    interval: 30s
+    rules:
+      - alert: SchedulerJobsFailing
+        expr: increase(scheduler_jobs_total{status="FAILED"}[1h]) >= 2
+        for: 5m
+        labels:
+          severity: warning
+          category: workflow
+        annotations:
+          summary: "Scheduled jobs are failing"
+          description: >-
+            Jobs are isolated, so unrelated jobs kept running. Check `ops jobs`.
+
+      - alert: SchedulerJobUnknown
+        expr: increase(scheduler_jobs_total{status="UNKNOWN"}[2h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          category: workflow
+        annotations:
+          summary: "A scheduled job never recorded a result"
+          description: >-
+            A question rather than a failure — the work may have completed.
+            Every job is idempotent, so the next firing establishes the answer.
+
+      - alert: LlmErrorRate
+        expr: increase(llm_errors_total[1h]) >= 3
+        for: 5m
+        labels:
+          severity: warning
+          category: research
+        annotations:
+          summary: "Model calls are failing"
+          description: >-
+            Research fails closed: an unreachable model produces no outlook
+            rather than a synthesised one.
+
+  - name: trading-capital
+    interval: 60s
+    rules:
+      - alert: SettlementsBlocked
+        expr: increase(settlements_blocked_total[24h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          category: capital
+        annotations:
+          summary: "Capital did not return to the campaign after a closure"
+          description: >-
+            Each blocked settlement names the evidence that was missing.
+            Capital returns on broker-confirmed closure and nothing weaker.

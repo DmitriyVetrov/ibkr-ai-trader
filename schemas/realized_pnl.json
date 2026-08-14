@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/realized_pnl.json",
+  "title": "RealizedPnL",
+  "description": "What one closed strategy STRUCTURE actually made or lost, computed from broker-confirmed fills and from nothing else (Milestone 11). Never from a limit price, a reference price, a midpoint or an estimate. One record per structure, never one per leg: a straddle is one trade with one result. NOT_AVAILABLE is a first-class status and carries no figure at all — a plausible number would be used by the daily loss limit as though it had been measured.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "pnl_id",
+    "position_id",
+    "campaign_id",
+    "underlying",
+    "strategy",
+    "status",
+    "computed_at"
+  ],
+  "properties": {
+    "pnl_id": { "type": "string", "minLength": 1 },
+    "position_id": { "type": "string", "minLength": 1 },
+    "campaign_id": { "type": "string", "minLength": 1 },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
+    "strategy": { "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"] },
+    "status": { "enum": ["COMPLETE", "PARTIAL", "NOT_AVAILABLE"] },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "OK",
+          "PARTIALLY_CLOSED",
+          "ENTRY_FILLS_UNAVAILABLE",
+          "EXIT_FILLS_UNAVAILABLE",
+          "MULTIPLIER_UNAVAILABLE",
+          "CURRENCY_MISMATCH",
+          "COMMISSION_UNAVAILABLE",
+          "EXECUTION_UNKNOWN",
+          "UNMATCHED_LEG",
+          "ENTRY_COST_PRORATED"
+        ]
+      }
+    },
+
+    "opened_quantity": { "$ref": "#/$defs/quantity" },
+    "closed_quantity": { "$ref": "#/$defs/quantity" },
+    "matched_quantity": {
+      "description": "Units both sides' confirmed fills support. The result covers these and no others.",
+      "$ref": "#/$defs/quantity"
+    },
+    "legs": { "type": "array", "items": { "$ref": "#/$defs/leg" } },
+
+    "entry_cost": { "$ref": "#/$defs/nullable_money" },
+    "exit_proceeds": { "$ref": "#/$defs/nullable_money" },
+    "realized_gross_pnl": { "$ref": "#/$defs/nullable_money" },
+    "realized_net_pnl": {
+      "description": "Gross less actually-reported commissions. null whenever a single commission is missing: a partly-known cost is not a cost.",
+      "$ref": "#/$defs/nullable_money"
+    },
+    "total_commission": { "$ref": "#/$defs/nullable_money" },
+    "commission_status": { "enum": ["KNOWN", "PARTIAL", "NOT_AVAILABLE"] },
+    "return_pct": { "type": ["number", "null"] },
+    "currency": { "type": ["string", "null"], "minLength": 3, "maxLength": 8 },
+
+    "opened_at": { "type": ["string", "null"], "format": "date-time" },
+    "closed_at": { "type": ["string", "null"], "format": "date-time" },
+    "session_date": {
+      "description": "The exchange-local session the closure belongs to. A closure at 21:30 UTC belongs to the New York session that has just ended.",
+      "type": ["string", "null"],
+      "format": "date"
+    },
+    "computed_at": { "type": "string", "format": "date-time" },
+
+    "entry_execution_id": { "type": ["string", "null"] },
+    "exit_execution_ids": { "type": "array", "items": { "type": "string" } },
+    "allocation_id": { "type": ["string", "null"] },
+    "opportunity_id": { "type": ["string", "null"] },
+    "reservation_id": { "type": ["string", "null"] },
+    "research_report_id": { "type": ["string", "null"] },
+    "contract_selection_id": { "type": ["string", "null"] },
+    "source_fill_ids": {
+      "description": "Every broker execution id this figure rests on.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "account_reference": {
+      "description": "MASKED. A full account number never reaches a stored payload.",
+      "type": ["string", "null"]
+    },
+    "broker_source": { "type": "string" },
+    "versions": { "type": ["object", "null"] },
+    "detail": { "type": ["string", "null"] }
+  },
+
+  "allOf": [
+    {
+      "description": "NOT_AVAILABLE reports no figure at all, and says why.",
+      "if": { "properties": { "status": { "const": "NOT_AVAILABLE" } }, "required": ["status"] },
+      "then": {
+        "properties": {
+          "realized_gross_pnl": { "type": "null" },
+          "realized_net_pnl": { "type": "null" },
+          "return_pct": { "type": "null" }
+        },
+        "required": ["reason_codes"]
+      }
+    },
+    {
+      "description": "A net figure requires costs that are actually known.",
+      "if": {
+        "properties": { "realized_net_pnl": { "type": "string" } },
+        "required": ["realized_net_pnl"]
+      },
+      "then": { "properties": { "commission_status": { "const": "KNOWN" } } }
+    }
+  ],
+
+  "$defs": {
+    "money": { "type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "nullable_money": {
+      "type": ["string", "null"],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "quantity": { "type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "leg": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["leg_index", "key"],
+      "properties": {
+        "leg_index": { "type": "integer", "minimum": 0 },
+        "key": { "type": "string", "minLength": 1 },
+        "contract_id": { "type": ["integer", "null"] },
+        "right": { "enum": ["CALL", "PUT", null] },
+        "strike": { "$ref": "#/$defs/nullable_money" },
+        "expiration": { "type": ["string", "null"], "format": "date" },
+        "multiplier": {
+          "description": "Never assumed. null here is what makes the whole result unavailable.",
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "opened_quantity": { "$ref": "#/$defs/quantity" },
+        "closed_quantity": { "$ref": "#/$defs/quantity" },
+        "matched_quantity": { "$ref": "#/$defs/quantity" },
+        "entry_cost": { "$ref": "#/$defs/nullable_money" },
+        "exit_proceeds": { "$ref": "#/$defs/nullable_money" },
+        "average_entry_quote": {
+          "description": "The broker's QUOTED terms (6.05), not money (605.00).",
+          "$ref": "#/$defs/nullable_money"
+        },
+        "average_exit_quote": { "$ref": "#/$defs/nullable_money" },
+        "entry_commission": { "$ref": "#/$defs/nullable_money" },
+        "exit_commission": { "$ref": "#/$defs/nullable_money" },
+        "entry_fill_ids": { "type": "array", "items": { "type": "string" } },
+        "exit_fill_ids": { "type": "array", "items": { "type": "string" } },
+        "currency": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

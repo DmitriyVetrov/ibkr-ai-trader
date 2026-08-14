@@ -1,47 +1,135 @@
 # Job cadences for the persistent scheduler (specification section 23).
 #
-# Schedules live here and nowhere else — never hard-coded inside an agent.
-# Every job must also be independently runnable from the CLI:
-#   python -m trading_system.cli run <job>
+# Schedules live here and nowhere else — never hard-coded inside an agent or a
+# job. Every job must also be independently runnable from the CLI:
+#   python -m trading_system.cli ops jobs run <job>
 #
-# Cron expressions are interpreted in the timezone below. Note the deliberate
-# asymmetry: research is slow and expensive, position monitoring is frequent
-# and cheap. Do not run the full research process every few minutes.
-config_version: "2026.08.10-1"
+# Cron expressions are five fields (minute hour day-of-month month day-of-week)
+# interpreted in the timezone below, with one-minute resolution. Note the
+# deliberate asymmetry: research is slow and expensive, position monitoring is
+# frequent and cheap. Do not run the full research process every few minutes.
+#
+# Milestone 11 is what actually runs these. Three properties hold for every job
+# and are tested rather than asserted:
+#
+#   * the scheduler ORCHESTRATES; it contains no trading logic and holds no
+#     broker. Each job calls one already-tested service method;
+#   * a job may run twice and the second run must move nothing. The protection
+#     is persisted domain state, never a process-local flag;
+#   * a failing job does not stop an unrelated one. Research collection can
+#     fail all morning and reconciliation still runs.
+config_version: "2026.08.14-1"
 timezone: America/New_York
+
+# Master switch for the loop. With this false every job is still described and
+# still individually runnable from the CLI; nothing fires on a cadence.
+enabled: true
+# How often the scheduler asks "what is due?". Cron has one-minute resolution,
+# so anything above 60 would silently miss firings.
+tick_seconds: 30
+tick_timeout_seconds: 900.0
+# A job whose completion was never recorded may be re-run, because every job
+# here is idempotent against persisted state. That is what makes it safe; the
+# switch exists so a job that ever stops being idempotent can be excluded
+# without editing code.
+rerun_unknown_jobs: true
 
 jobs:
   data_collection:
     cron: "*/30 9-16 * * 1-5"
     enabled: true
+    market_hours_only: true
+    timeout_seconds: 600.0
     description: Collect and persist market/option snapshots during the session.
 
   universe_refresh:
     cron: "0 7 * * 1-5"
     enabled: true
+    # Before the open, deliberately: the universe is chosen from stored data.
+    market_hours_only: false
+    timeout_seconds: 600.0
     description: Rebuild the candidate underlying universe before the open.
 
   opportunity_scan:
     cron: "30 10 * * 1-5"
-    enabled: true
+    # DISABLED BY DEFAULT. This job runs research, strategy, contract selection
+    # and allocation — everything up to an authorisation, and no further: it
+    # submits no order under any configuration. It ships off because opening
+    # positions on a cadence is a decision an operator makes deliberately, not
+    # one inherited from a default.
+    enabled: false
+    market_hours_only: true
+    timeout_seconds: 1800.0
     description: Slow loop - research, strategy, contract, rank, allocate, risk.
 
   position_monitor:
     cron: "*/5 9-16 * * 1-5"
     enabled: true
-    description: Fast loop - reconcile, snapshot, risk, exit policy.
+    market_hours_only: true
+    timeout_seconds: 300.0
+    # Never authorises an exit. Evaluation and execution are separate jobs for
+    # the same reason `exit evaluate` and `exit run --confirm` are separate
+    # commands: judging whether a position should close must not close one.
+    authorize_exits: false
+    description: Fast loop - capture broker positions, evaluate the exit policy.
+
+  exit_management:
+    cron: "*/5 9-16 * * 1-5"
+    # DISABLED BY DEFAULT, and this is the second of the two switches. Sending
+    # an exit order additionally needs execution.enabled in
+    # config/execution.yaml. Neither implies the other, exactly as an entry
+    # needs both execution.enabled and an explicit --confirm.
+    enabled: false
+    market_hours_only: true
+    timeout_seconds: 300.0
+    authorize_exits: true
+    description: Submit exits for positions Milestone 10 decided should close.
 
   thesis_monitor:
     cron: "0 12 * * 1-5"
-    enabled: true
-    description: Re-check whether entry theses still hold. Not run every tick.
+    # The specification's SEPARATE thesis monitor, returning
+    # VALID / WEAKENING / INVALIDATED / UNKNOWN, does not exist. Milestone 10
+    # evaluates a stored thesis deterministically inside the exit policy and
+    # never returns WEAKENING — deciding a thesis has weakened without being
+    # falsified is a judgement, and no milestone has made it yet. The job is
+    # registered and disabled so the gap is visible in `ops jobs`; running it
+    # records SKIPPED / NOT_IMPLEMENTED rather than fabricating a verdict.
+    enabled: false
+    market_hours_only: true
+    timeout_seconds: 600.0
+    description: Re-check whether entry theses still hold. NOT IMPLEMENTED.
 
   reconciliation:
     cron: "*/10 * * * *"
     enabled: true
+    # Not market-hours gated, deliberately: a disagreement between our records
+    # and the broker is most worth finding when nobody is watching.
+    market_hours_only: false
+    timeout_seconds: 300.0
     description: Compare internal state against IBKR. Broker state wins.
+
+  pnl_settlement:
+    cron: "*/15 * * * *"
+    enabled: true
+    market_hours_only: false
+    timeout_seconds: 300.0
+    description: >-
+      Compute realised profit and loss for confirmed-closed positions and
+      settle their reservations. Capital returns on broker-confirmed closure
+      and on nothing weaker.
+
+  operational_health:
+    cron: "*/5 * * * *"
+    enabled: true
+    market_hours_only: false
+    timeout_seconds: 120.0
+    description: >-
+      Record trading health and observability health, separately, and evaluate
+      the alert rules. Reads only; notifies only.
 
   end_of_day_report:
     cron: "0 18 * * 1-5"
     enabled: true
-    description: Daily performance and decision report.
+    market_hours_only: false
+    timeout_seconds: 300.0
+    description: Daily realised profit and loss roll-up from the P&L ledger.

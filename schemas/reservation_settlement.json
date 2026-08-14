@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/reservation_settlement.json",
+  "title": "ReservationSettlement",
+  "description": "Committed capital returning to the campaign, or the refusal to return it (Milestone 11). Written whichever way it went — a refusal is the more interesting record of the two, because it names the evidence that was missing. Capital returns on BROKER-CONFIRMED CLOSURE and on nothing weaker: not a requested exit, not a submitted one, not a reported fill. UNKNOWN never settles, and no configuration permits it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "settlement_id",
+    "reservation_id",
+    "position_id",
+    "campaign_id",
+    "allocation_id",
+    "status",
+    "currency",
+    "settled_at"
+  ],
+  "properties": {
+    "settlement_id": { "type": "string", "minLength": 1 },
+    "reservation_id": { "type": "string", "minLength": 1 },
+    "position_id": { "type": "string", "minLength": 1 },
+    "campaign_id": { "type": "string", "minLength": 1 },
+    "allocation_id": { "type": "string", "minLength": 1 },
+    "schema_version": { "type": "string", "minLength": 1 },
+
+    "status": {
+      "enum": ["SETTLED", "PARTIALLY_SETTLED", "ALREADY_SETTLED", "BLOCKED", "NOT_APPLICABLE"]
+    },
+    "block_reason": {
+      "enum": [
+        "CLOSURE_NOT_CONFIRMED",
+        "EXECUTION_UNKNOWN",
+        "PNL_UNAVAILABLE",
+        "RECONCILIATION_MISMATCH",
+        "RESERVATION_MISSING",
+        "NOTHING_CONSUMED",
+        "CURRENCY_MISMATCH",
+        null
+      ]
+    },
+    "currency": { "type": "string", "minLength": 3, "maxLength": 8 },
+
+    "committed_before": { "$ref": "#/$defs/money" },
+    "settled_amount": { "$ref": "#/$defs/money" },
+    "committed_after": { "$ref": "#/$defs/money" },
+
+    "pnl_id": { "type": ["string", "null"] },
+    "realized_pnl": { "$ref": "#/$defs/nullable_money" },
+    "matched_quantity": { "$ref": "#/$defs/money" },
+    "authorized_quantity": { "type": "integer", "minimum": 0 },
+
+    "settled_at": { "type": "string", "format": "date-time" },
+    "reconciliation_id": { "type": ["string", "null"] },
+    "detail": { "type": ["string", "null"] }
+  },
+
+  "allOf": [
+    {
+      "description": "A refusal moves no money and names the missing evidence.",
+      "if": { "properties": { "status": { "const": "BLOCKED" } }, "required": ["status"] },
+      "then": {
+        "properties": {
+          "settled_amount": { "const": "0" },
+          "block_reason": { "type": "string" }
+        },
+        "required": ["block_reason"]
+      }
+    },
+    {
+      "description": "A settlement that happened was not refused.",
+      "if": {
+        "properties": { "status": { "enum": ["SETTLED", "PARTIALLY_SETTLED"] } },
+        "required": ["status"]
+      },
+      "then": { "properties": { "block_reason": { "type": "null" } } }
+    },
+    {
+      "description": "A full settlement leaves nothing committed.",
+      "if": { "properties": { "status": { "const": "SETTLED" } }, "required": ["status"] },
+      "then": { "properties": { "committed_after": { "const": "0" } } }
+    }
+  ],
+
+  "$defs": {
+    "money": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$" },
+    "nullable_money": { "type": ["string", "null"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$" }
+  }
+}

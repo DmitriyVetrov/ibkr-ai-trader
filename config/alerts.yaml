@@ -1,0 +1,157 @@
+# Operational alerts (Milestone 11).
+#
+# An alert is a NOTIFICATION. Nothing here, and nothing in
+# trading_system/operations/alerts.py, can place, cancel or modify an order —
+# tests/operations/test_boundaries.py walks the import graph and asserts it.
+# Safety is enforced by the domain: the risk engine refuses a trade, the exit
+# engine blocks a position, reconciliation reports a mismatch. Alerting is how
+# a person finds out that one of those happened.
+#
+# Thresholds are counts within a window. A single broker timeout on a Monday
+# morning is weather; five in ten minutes is a problem.
+config_version: "2026.08.14-1"
+
+enabled: true
+# Alerts are stored whether or not a channel accepts them. A notification that
+# failed to send is not an alert that did not happen.
+persist: true
+
+rules:
+  # --- broker ---------------------------------------------------------------
+  BROKER_CONNECTION_ERRORS:
+    severity: WARNING
+    threshold: 3
+    window_minutes: 30
+  BROKER_TIMEOUTS:
+    severity: WARNING
+    threshold: 3
+    window_minutes: 30
+  BROKER_UNAVAILABLE:
+    severity: CRITICAL
+    threshold: 1
+    window_minutes: 60
+
+  # --- execution ------------------------------------------------------------
+  EXECUTION_REJECTION_RATE:
+    severity: WARNING
+    threshold: 3
+    window_minutes: 1440
+  # One is enough. An execution whose outcome was never learned may be a live
+  # order, and it is resolved by observing the broker, never by waiting.
+  EXECUTION_UNKNOWN:
+    severity: CRITICAL
+    threshold: 1
+    window_minutes: 1440
+  EXECUTION_DUPLICATE_ATTEMPT:
+    severity: CRITICAL
+    threshold: 1
+    window_minutes: 1440
+  EXECUTION_STUCK:
+    severity: WARNING
+    threshold: 1
+    window_minutes: 120
+
+  # --- research / AI --------------------------------------------------------
+  LLM_ERROR_RATE:
+    severity: WARNING
+    threshold: 3
+    window_minutes: 60
+  RESEARCH_FAILURE_RATE:
+    severity: WARNING
+    threshold: 3
+    window_minutes: 1440
+
+  # --- workflow -------------------------------------------------------------
+  WORKFLOW_FAILURES:
+    severity: WARNING
+    threshold: 3
+    window_minutes: 1440
+  SCHEDULER_JOB_FAILED:
+    severity: WARNING
+    threshold: 2
+    window_minutes: 60
+  # A job whose completion was never recorded. Not a failure — a question.
+  SCHEDULER_JOB_UNKNOWN:
+    severity: WARNING
+    threshold: 1
+    window_minutes: 120
+
+  # --- safety ---------------------------------------------------------------
+  # Every one of these is CRITICAL and cannot be disabled: a CRITICAL rule with
+  # enabled=false fails to load, because muting the notification does not mute
+  # the condition.
+  LIVE_EXECUTION_ATTEMPT:
+    severity: CRITICAL
+    threshold: 1
+    window_minutes: 1440
+  ORDER_WITHOUT_ALLOCATION:
+    severity: CRITICAL
+    threshold: 1
+    window_minutes: 1440
+  ORDER_WITHOUT_EXECUTION_RECORD:
+    severity: CRITICAL
+    threshold: 1
+    window_minutes: 1440
+  EXECUTION_OUTSIDE_AUTHORIZED_PATH:
+    severity: CRITICAL
+    threshold: 1
+    window_minutes: 1440
+  RECONCILIATION_MISMATCH:
+    severity: CRITICAL
+    threshold: 1
+    window_minutes: 1440
+
+  # --- position -------------------------------------------------------------
+  POSITION_CLOSE_NOT_CONFIRMED:
+    severity: WARNING
+    threshold: 1
+    window_minutes: 1440
+  EXPIRATION_APPROACHING:
+    severity: WARNING
+    threshold: 1
+    window_minutes: 1440
+  EXIT_UNKNOWN:
+    severity: CRITICAL
+    threshold: 1
+    window_minutes: 1440
+
+  # --- capital --------------------------------------------------------------
+  DAILY_LOSS_THRESHOLD_EXCEEDED:
+    severity: CRITICAL
+    threshold: 1
+    window_minutes: 1440
+  # "We could not determine today's result" is not "there were no losses". It
+  # gets its own alert for exactly that reason.
+  DAILY_LOSS_UNAVAILABLE:
+    severity: WARNING
+    threshold: 1
+    window_minutes: 1440
+  SETTLEMENT_BLOCKED:
+    severity: WARNING
+    threshold: 1
+    window_minutes: 1440
+
+  # --- telemetry ------------------------------------------------------------
+  # Worth knowing, never worth stopping trading for.
+  TELEMETRY_EXPORT_FAILING:
+    severity: INFO
+    threshold: 5
+    window_minutes: 60
+
+channels:
+  - kind: console
+    enabled: true
+    minimum_severity: WARNING
+  - kind: file
+    enabled: true
+    # Relative to the data root. An append-only record of what was notified.
+    target: alerts/notified.jsonl
+    minimum_severity: INFO
+  # A webhook adapter is how a vendor (Telegram, Slack, e-mail relay) is
+  # reached. The target names the ENVIRONMENT VARIABLE holding the URL, never
+  # the URL — a webhook URL usually embeds a token and this file is committed.
+  - kind: webhook
+    enabled: false
+    target: ALERT_WEBHOOK_URL
+    minimum_severity: CRITICAL
+    timeout_seconds: 5.0

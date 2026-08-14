@@ -70,6 +70,9 @@ from trading_system.domain.models import SystemVersions
 from trading_system.infrastructure.clock import Clock, SystemClock
 from trading_system.infrastructure.logging import get_logger
 from trading_system.infrastructure.settings import Settings, SystemConfig, project_root
+from trading_system.observability import metrics as _metrics
+from trading_system.observability.attributes import TRADING_STATUS, TRADING_UNIVERSE_ID
+from trading_system.observability.instrument import traced
 from trading_system.universe.features import EvidenceGatherer
 from trading_system.universe.filters import (
     FilterOutcome,
@@ -219,6 +222,15 @@ class UniverseSelectionService:
         return self._universe_repository.latest()
 
     # --- the run -----------------------------------------------------------
+    @traced(
+        "universe.selection",
+        count=_metrics.UNIVERSE_RUNS_TOTAL,
+        result_attributes=lambda run: {
+            TRADING_UNIVERSE_ID: run.result.run_id,
+            TRADING_STATUS: run.result.status.value,
+        },
+        labels=lambda run: {"status": run.result.status.value},
+    )
     def run(self, *, as_of: datetime | None = None, dry_run: bool = False) -> UniverseRun:
         """Select a universe for ``as_of`` (default: now).
 

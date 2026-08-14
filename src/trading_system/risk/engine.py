@@ -41,6 +41,7 @@ from decimal import Decimal
 
 from trading_system.data.hashing import stable_hash
 from trading_system.domain.enums import (
+    DailyPnLStatus,
     RiskCheckOutcome,
     RiskLimitScope,
     RiskOutcome,
@@ -337,21 +338,61 @@ class RiskEngine:
         return checks
 
     def _daily_loss_check(self, campaign: CampaignSnapshot) -> RiskCheck:
-        """The daily loss limit, or an honest record that it could not be checked.
+        """The daily loss limit, or an honest record of why it could not be checked.
 
-        Realised profit and loss is not tracked until positions exist, so
-        today this is usually ``NOT_EVALUATED``. That is deliberately not the
-        same as ``PASS``: reading an untracked figure as "no losses today"
-        would be the same mistake as reading a missing volume as a satisfied
-        threshold. Configuration decides whether the unknown blocks a trade,
-        via ``campaign.account.require_daily_loss_tracking``.
+        Three inputs, three different answers, and keeping them apart is the
+        whole substance of this check:
+
+        ``TRACKED``
+            Milestone 11's ledger produced a figure for every position that
+            closed today. The limit is evaluated against a measured number.
+        ``UNKNOWN``
+            Positions closed today and at least one produced no usable result.
+            This is *not* zero loss — it is an absence of knowledge about a day
+            on which money moved, which is the more alarming of the two
+            unavailable cases and has its own reason code and its own switch.
+        ``NOT_TRACKED``
+            No profit-and-loss ledger was consulted at all. Recorded as
+            ``NOT_EVALUATED`` rather than passed, exactly as before: an
+            unevaluated limit is not a satisfied one, and reading an untracked
+            figure as "no losses today" is the same mistake as reading a
+            missing volume as a satisfied threshold.
         """
         limits = self._limits
         realized = campaign.realized_pnl_today
+
+        if campaign.daily_pnl_status is DailyPnLStatus.UNKNOWN:
+            unavailable = ", ".join(campaign.unavailable_pnl_position_ids) or "at least one"
+            detail = (
+                f"positions closed today and {unavailable} produced no usable realised "
+                f"result, so the day's total is unknown. An unknown loss is not a small one, "
+                f"and it is not zero"
+            )
+            if limits.block_on_unknown_daily_loss or limits.require_daily_loss_tracking:
+                return RiskCheck(
+                    name="daily_loss",
+                    scope=RiskLimitScope.GLOBAL,
+                    outcome=RiskCheckOutcome.FAIL,
+                    reason_code=RiskReasonCode.DAILY_LOSS_UNKNOWN,
+                    limit=str(limits.max_daily_loss),
+                    detail=(
+                        f"{detail}, and configuration refuses to authorise capital against a "
+                        f"day it cannot measure"
+                    ),
+                )
+            return RiskCheck(
+                name="daily_loss",
+                scope=RiskLimitScope.GLOBAL,
+                outcome=RiskCheckOutcome.NOT_EVALUATED,
+                reason_code=RiskReasonCode.DAILY_LOSS_UNKNOWN,
+                limit=str(limits.max_daily_loss),
+                detail=f"{detail}. Recorded as unevaluated rather than passed",
+            )
+
         if realized is None:
             untracked = (
-                "realised profit and loss for the day is not tracked yet (Milestone 9), so "
-                "the daily loss limit could not be evaluated"
+                "no realised profit-and-loss figure was recorded for today, so the daily loss "
+                "limit could not be evaluated"
             )
             if limits.require_daily_loss_tracking:
                 return RiskCheck(

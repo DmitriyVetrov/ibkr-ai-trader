@@ -1,0 +1,269 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/scheduler_run.json",
+  "title": "SchedulerRun",
+  "description": "One scheduler tick: what was due, what ran, and what each one did (Milestone 11). Isolation is visible in the shape — a failed job appears alongside the successful ones, and the status is PARTIAL rather than FAILED, because 'research collection failed and reconciliation still ran' is the intended behaviour rather than a degraded one. orders_submitted is the SUM of the jobs' own counts, which they read off the services they invoked; it is evidence, not a summary written by hand.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "scheduler_run_id",
+    "scheduled_for",
+    "started_at",
+    "finished_at",
+    "status",
+    "trading_mode"
+  ],
+  "properties": {
+    "scheduler_run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scheduled_for": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finished_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "SUCCESS",
+        "PARTIAL",
+        "FAILED",
+        "IDLE",
+        "BLOCKED"
+      ]
+    },
+    "trading_mode": {
+      "enum": [
+        "DRY_RUN",
+        "PAPER",
+        "LIVE"
+      ]
+    },
+    "timezone": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runs": {
+      "description": "The job runs this tick produced. Embedded rather than referenced: every schema in this repository is self-contained, and tests/operations/test_schemas.py asserts this definition stays in step with schemas/job_run.json — which is the standalone shape each run is actually stored under.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/job_run"
+      }
+    },
+    "duration_seconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "orders_submitted": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "detail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "$defs": {
+    "job_run": {
+      "description": "One invocation of one scheduled job (Milestone 11). Written twice: as RUNNING before the work starts, and complete when it ends. The first write is what makes restart safe — a process that dies mid-job leaves a RUNNING record, which the next start reads as 'we do not know whether this finished' rather than as silence. SKIPPED, FAILED and UNKNOWN are three different facts and the scheduler never collapses them: a job that deliberately did not run is not an error, a job that raised is, and a job whose completion was never recorded is a question.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job_run_id",
+        "job",
+        "scheduled_for",
+        "started_at",
+        "status",
+        "trading_mode"
+      ],
+      "properties": {
+        "job_run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "job": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scheduled_for": {
+          "description": "The cadence instant this run is FOR. Two processes waking for the same firing share it, which is what makes duplicate protection work.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finished_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "status": {
+          "enum": [
+            "RUNNING",
+            "SUCCESS",
+            "FAILED",
+            "SKIPPED",
+            "BLOCKED",
+            "UNKNOWN"
+          ]
+        },
+        "skip_reason": {
+          "enum": [
+            "DISABLED",
+            "NOT_DUE",
+            "MARKET_CLOSED",
+            "CALENDAR_UNKNOWN",
+            "ALREADY_RAN",
+            "NOT_IMPLEMENTED",
+            "TRADING_MODE_NOT_PERMITTED",
+            "NOTHING_TO_DO",
+            null
+          ]
+        },
+        "trading_mode": {
+          "enum": [
+            "DRY_RUN",
+            "PAPER",
+            "LIVE"
+          ]
+        },
+        "error_type": {
+          "description": "A short, stable classification. Never a stack trace: the trace belongs in the log.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error_message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duration_seconds": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "orders_submitted": {
+          "description": "Read off whatever service the job invoked, on every run, so 'the scheduler placed no orders' is evidence.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "artifact_ids": {
+          "description": "References only. A job run is not a second copy of an execution, a position or a result.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "description": "A completed run is dated; an undated one is still in flight.",
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "SUCCESS",
+                  "FAILED",
+                  "SKIPPED",
+                  "BLOCKED",
+                  "UNKNOWN"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "finished_at"
+            ],
+            "properties": {
+              "finished_at": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "description": "A job that did not run cannot have submitted an order.",
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "SKIPPED",
+                  "BLOCKED"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "orders_submitted": {
+                "const": 0
+              }
+            }
+          }
+        },
+        {
+          "description": "A skip says why.",
+          "if": {
+            "properties": {
+              "status": {
+                "const": "SKIPPED"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "skip_reason"
+            ],
+            "properties": {
+              "skip_reason": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

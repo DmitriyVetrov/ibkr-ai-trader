@@ -1,0 +1,59 @@
+# Realised profit and loss, and the settlement of committed capital
+# (Milestone 11).
+#
+# Realised profit and loss is computed from BROKER-CONFIRMED FILLS and from
+# nothing else. Not a limit price, not the reference price Milestone 7
+# authorised, not a midpoint, not an estimate of what an exit ought to have
+# made. Where the fills do not support a figure, the answer is NOT_AVAILABLE —
+# a first-class outcome, because a figure assembled from a guessed commission
+# or an assumed multiplier would be worse than no figure at all: it would be
+# used, by the daily loss limit, to permit or refuse a trade.
+config_version: "2026.08.14-1"
+
+enabled: true
+
+# Exchange-local timezone the trading DAY is bounded by. A position closed at
+# 21:30 UTC belongs to the New York session that has just ended; bounding the
+# day in UTC would file it under tomorrow and let a losing day look like two
+# quiet ones.
+day_boundary_timezone: America/New_York
+
+# IBKR frequently reports a fill before its commission report arrives. A
+# missing commission makes the NET figure unavailable; the GROSS figure still
+# stands. Reading an absent commission as zero would understate the cost of
+# every trade the feed was slow about.
+require_commission_for_net: true
+
+# Refused if set. A standard US equity option is 100 and a system that assumed
+# so would misprice the first one that is not.
+assume_multiplier: false
+
+# Refused if set. Realised and unrealised results are different claims, and the
+# daily loss limit is stated over realised ones.
+include_unrealized_in_daily: false
+
+currency:
+  # Refused if set. No deterministic FX rate source exists, so a cross-currency
+  # result is NOT_AVAILABLE rather than a guess — the same refusal Milestone 7
+  # makes when it declines to size a USD contract against a EUR campaign.
+  allow_conversion: false
+  precision: 2
+
+settlement:
+  enabled: true
+  # Only broker-confirmed closure settles. Not a requested exit, not a
+  # submitted one, not an accepted one, not a reported fill. Refused if false.
+  require_broker_confirmed_closure: true
+  # Refused if set. An execution whose outcome was never learned may be a live
+  # order right now, and returning its capital is how a campaign funds the same
+  # trade twice.
+  release_on_unknown: false
+  # A critical reconciliation finding touching the position stops settlement:
+  # capital must not move while our records and the broker disagree about what
+  # is held.
+  require_clean_reconciliation: true
+  # Whether realised profit is added to the campaign's spendable envelope. Off:
+  # the budget is a policy figure in campaign.yaml, and a system that grew its
+  # own budget on a winning trade would be compounding without anybody deciding
+  # to. Profit is recorded and reported; it is not silently reinvested.
+  return_realized_pnl_to_campaign: false

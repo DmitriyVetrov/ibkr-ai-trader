@@ -1,0 +1,26 @@
+# Prometheus — metric storage for local development (Milestone 11).
+#
+# Scrapes the collector's Prometheus exporter. It never scrapes the trading
+# application directly: the application speaks OTLP and knows nothing about
+# Prometheus, which is what lets the metrics backend be replaced without
+# touching any Python.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    deployment: local
+
+rule_files:
+  - /etc/prometheus/rules/*.yaml
+
+scrape_configs:
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  # The collector's own health, so "no metrics are arriving" can be
+  # distinguished from "the collector is down".
+  - job_name: otel-collector-internal
+    static_configs:
+      - targets: ["otel-collector:8888"]

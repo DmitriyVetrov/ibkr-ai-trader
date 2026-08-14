@@ -414,6 +414,7 @@
               "FX_CONVERSION_UNAVAILABLE",
               "BELOW_MIN_OPPORTUNITY_SCORE",
               "DAILY_LOSS_NOT_TRACKED",
+          "DAILY_LOSS_UNKNOWN",
               "CONFIGURATION_ERROR"
             ]
           }
@@ -774,6 +775,21 @@
             "null"
           ],
           "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+        },
+        "daily_pnl_status": {
+          "description": "How far the realised figure can be relied on (Milestone 11). TRACKED means every position that closed today produced a usable result. UNKNOWN means positions closed and at least one did not — an absence of knowledge about a day on which money moved, and emphatically not zero loss. NOT_TRACKED means no profit-and-loss ledger was consulted.",
+          "enum": [
+            "TRACKED",
+            "UNKNOWN",
+            "NOT_TRACKED"
+          ]
+        },
+        "unavailable_pnl_position_ids": {
+          "description": "Positions that closed today and produced no usable figure. Named rather than counted.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
@@ -1204,6 +1220,7 @@
             "FX_CONVERSION_UNAVAILABLE",
             "BELOW_MIN_OPPORTUNITY_SCORE",
             "DAILY_LOSS_NOT_TRACKED",
+          "DAILY_LOSS_UNKNOWN",
             "CONFIGURATION_ERROR",
             null
           ]
@@ -1355,6 +1372,7 @@
               "FX_CONVERSION_UNAVAILABLE",
               "BELOW_MIN_OPPORTUNITY_SCORE",
               "DAILY_LOSS_NOT_TRACKED",
+          "DAILY_LOSS_UNKNOWN",
               "CONFIGURATION_ERROR"
             ]
           }
@@ -1582,6 +1600,10 @@
           "type": "boolean"
         },
         "require_daily_loss_tracking": {
+          "type": "boolean"
+        },
+        "block_on_unknown_daily_loss": {
+          "description": "Whether an UNKNOWN daily figure blocks new capital (Milestone 11). Separate from require_daily_loss_tracking and defaulting to true: 'we have never tracked this' and 'we tracked it, positions closed today, and the number is not trustworthy' are different facts, and only the second is evidence that something is wrong.",
           "type": "boolean"
         },
         "allow_currency_conversion": {

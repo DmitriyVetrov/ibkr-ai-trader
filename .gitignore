@@ -59,6 +59,13 @@ data/positions/*
 data/fills/*
 data/reservations/*
 data/reconciliation/*
+# Exit management (Milestone 10) and the operational record (Milestone 11).
+# Realised results are money; job runs, health reports and alerts name real
+# positions and a real account. None of it is source code.
+data/exit/*
+data/pnl/*
+data/operations/*
+data/alerts/*
 trades/open/*
 trades/closed/*
 trades/rejected/*

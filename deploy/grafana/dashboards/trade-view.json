@@ -1,0 +1,169 @@
+{
+  "uid": "trading-trade-view",
+  "title": "Trading \u2014 Trade and Position View",
+  "description": "Operational navigation from a campaign to a reconciliation. Grafana provides the path; the domain artifacts remain the truth.",
+  "tags": [
+    "trading",
+    "milestone-11"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "domain_id",
+        "type": "textbox",
+        "label": "Domain identifier",
+        "description": "An execution, position, exit, allocation or campaign id \u2014 NOT a trace id. Both levels exist and neither substitutes for the other.",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "Navigating one trade",
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Enter a domain identifier above and this dashboard shows the traces and log lines that mention it. **The detailed truth is not here** \u2014 it is in the immutable artifact on disk, and the last hop leaves Grafana on purpose:\n\n```\ncampaign  ->  trace  ->  execution  ->  position  ->  exit  ->  reconciliation\n```\n\n| You have | Artifact command |\n|---|---|\n| `trading.execution.id` | `execution explain --execution-id \u2026` |\n| `trading.position.id` | `exit explain --position-id \u2026` \u00b7 `positions explain` |\n| `trading.exit.id` | `exit show --position-id \u2026` |\n| `trading.allocation.id` | `allocation explain --symbol \u2026` |\n| `trading.pnl.id` | `pnl show --position-id \u2026` |\n| `trading.reconciliation.id` | `reconciliation explain --reconciliation-id \u2026` |\n\nTelemetry stores **ids, never payloads**: no account number, no balance, no prompt, no model response, no order contents."
+      }
+    },
+    {
+      "type": "row",
+      "title": "Traces mentioning this identifier",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "table",
+      "title": "Executions",
+      "description": "Every span carrying the identifier, whichever operation produced it.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{ .trading.execution.id = \"$domain_id\" || .trading.position.id = \"$domain_id\" }",
+          "limit": 50
+        }
+      ],
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No traces match"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Correlated logs",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "logs",
+      "title": "Log lines for this identifier",
+      "description": "Structured logs carry trace_id and span_id whenever they are emitted inside a span, so a line here leads back to its trace and a trace leads back to these lines.",
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=\"trading-system\"} |= \"$domain_id\""
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
+    },
+    {
+      "type": "row",
+      "title": "Position lifecycle activity",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "logs",
+      "title": "Lifecycle events",
+      "description": "The five named business operations Milestone 10 left as seams, plus settlement. Closure is broker reality: an exit that was submitted is not a position that closed.",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=\"trading-system\"} |~ \"position.monitor|exit.evaluate|exit.execute|exit.confirm|pnl.settle\""
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
+    }
+  ],
+  "editable": true
+}

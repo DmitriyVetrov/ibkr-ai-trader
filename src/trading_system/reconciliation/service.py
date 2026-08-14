@@ -63,6 +63,12 @@ from trading_system.execution.models import ExecutionRecord
 from trading_system.infrastructure.clock import Clock, SystemClock
 from trading_system.infrastructure.logging import get_logger
 from trading_system.infrastructure.settings import Settings, SystemConfig, project_root
+from trading_system.observability import metrics as _metrics
+from trading_system.observability.attributes import (
+    TRADING_RECONCILIATION_ID,
+    TRADING_STATUS,
+)
+from trading_system.observability.instrument import traced
 from trading_system.positions.expected import ExpectedProjection
 from trading_system.positions.models import ObservedFill
 from trading_system.positions.service import BrokerState, PositionCapture, PositionService
@@ -197,6 +203,16 @@ class ReconciliationService:
         return self._repository.history(limit=limit)
 
     # --- the run -----------------------------------------------------------
+    @traced(
+        "reconciliation.run",
+        count=_metrics.RECONCILIATION_RUNS_TOTAL,
+        duration=_metrics.RECONCILIATION_DURATION,
+        result_attributes=lambda run: {
+            TRADING_RECONCILIATION_ID: run.result.reconciliation_id,
+            TRADING_STATUS: run.result.status.value,
+        },
+        labels=lambda run: {"status": run.result.status.value},
+    )
     def run(
         self,
         *,

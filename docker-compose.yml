@@ -62,6 +62,14 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
       LOG_FORMAT: json
+      # Telemetry (Milestone 11). Ships OFF. The collector lives behind the
+      # `observability` profile, so with the profile down these are simply
+      # unread — the runtime does not try to reach a collector that is not
+      # there, and would run identically if it did and failed.
+      OBSERVABILITY_ENABLED: ${OBSERVABILITY_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-local}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL}
     volumes:
       # Research artifacts and trade records outlive the container.
       - ./data:/app/data
@@ -77,3 +85,105 @@ services:
     # Milestone 2 is read-only: the runtime reports connectivity and exits.
     # An autonomous trading loop is not started, and none exists yet.
     command: ["test", "ibkr-connection"]
+
+  # -------------------------------------------------------------------------
+  # Observability stack (Milestone 11). OPTIONAL, and behind a profile:
+  #
+  #   docker compose --profile observability up
+  #
+  # The trading system starts and runs without any of this. That is the
+  # milestone's central claim, not a convenience — telemetry is a side channel,
+  # and a system whose trading behaviour depended on a Grafana container would
+  # have the dependency exactly backwards.
+  #
+  # Data flows one way only:
+  #
+  #   trading-runtime --OTLP--> otel-collector --> tempo / prometheus / loki
+  #                                                        |
+  #                                                     grafana
+  #
+  # No secret belongs in any of these services. The Grafana password is an
+  # environment variable with a local-development default, and the alert
+  # webhook URL is passed to the application rather than to this stack.
+  # -------------------------------------------------------------------------
+  otel-collector:
+    image: ${OTEL_COLLECTOR_IMAGE:-otel/opentelemetry-collector-contrib:0.115.1}
+    profiles: ["observability"]
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/collector.yaml"]
+    volumes:
+      - ./deploy/otel/collector.yaml:/etc/otelcol/collector.yaml:ro
+    ports:
+      # OTLP in. The application talks to this and to nothing else.
+      - "${OTLP_HTTP_PORT:-4318}:4318"
+      - "${OTLP_GRPC_PORT:-4317}:4317"
+    depends_on:
+      - tempo
+      - loki
+
+  tempo:
+    image: ${TEMPO_IMAGE:-grafana/tempo:2.6.1}
+    profiles: ["observability"]
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./deploy/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "${TEMPO_HTTP_PORT:-3200}:3200"
+
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3.0.1}
+    profiles: ["observability"]
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yaml"
+      - "--storage.tsdb.path=/prometheus"
+      # Local development retention. Metrics are operational; the audit record
+      # is the immutable domain artifact and is not stored here.
+      - "--storage.tsdb.retention.time=15d"
+    volumes:
+      - ./deploy/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - ./deploy/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+
+  loki:
+    image: ${LOKI_IMAGE:-grafana/loki:3.3.2}
+    profiles: ["observability"]
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./deploy/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.4.0}
+    profiles: ["observability"]
+    restart: unless-stopped
+    environment:
+      # Local development only. Change it, or put Grafana behind something
+      # that authenticates, before this is reachable from anywhere.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Trace-to-log and log-to-trace navigation.
+      GF_FEATURE_TOGGLES_ENABLE: traceToMetrics
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+
+volumes:
+  tempo-data:
+  prometheus-data:
+  loki-data:
+  grafana-data:

@@ -33,6 +33,18 @@ ibkr = [
 llm = [
     "anthropic>=0.40",
 ]
+# Telemetry. Optional for the strongest reason of the three: the whole point of
+# Milestone 11 is that trading behaviour is identical with and without it, so a
+# hard dependency would contradict the property the package exists to provide.
+# Absent the SDK, telemetry reports SDK_UNAVAILABLE and the system runs on the
+# null provider — which is also the shipped default, so that is the well-tested
+# path. The exporter is the ONLY thing here that opens a socket, which is why it
+# is confined to observability/otel.py and imported lazily from one place.
+observability = [
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+]
 dev = [
     "pytest>=8.3",
     "pytest-cov>=5.0",
@@ -40,6 +52,14 @@ dev = [
     "mypy>=1.11",
     "types-PyYAML>=6.0",
     "ib_async>=2.0",
+    # The OpenTelemetry SDK, so a developer exercises the *real* provider rather
+    # than only the null one. The suite passes either way — the failure-isolation
+    # tests accept ACTIVE and SDK_UNAVAILABLE alike, because both must produce
+    # identical trading behaviour — but a checkout without it never runs the
+    # code path a deployment with telemetry on actually takes.
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
 ]
 
 [project.scripts]
@@ -112,6 +132,15 @@ plugins = ["pydantic.mypy"]
 # that uses it. Type-checking must pass without it installed, exactly as it does
 # for a checkout with no ib_async — neither is a prerequisite for the domain.
 module = "anthropic.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The OpenTelemetry SDK, for the same reason, and one more: telemetry is an
+# operational side channel and the milestone's central claim is that the system
+# runs identically without it. Requiring it to type-check would make the
+# optional dependency mandatory for developers, which is the first step towards
+# it being mandatory at runtime.
+module = "opentelemetry.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

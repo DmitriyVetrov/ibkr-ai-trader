@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Milestones 1–10 of 12 are complete.** Built and tested: the domain layer (models, enums,
+**Milestones 1–11 of 12 are complete.** Built and tested: the domain layer (models, enums,
 events, state machine), YAML configuration, the 30 JSON workflow schemas, the CLI surface,
 structured logging, an injectable clock, the `Broker` abstraction with `SimulatedBroker` and
 `IBKRBroker`, the read-only broker diagnostics, the reconciliation foundation, the
@@ -27,29 +27,36 @@ reconciliation engine with an immutable, content-addressed result — and **exit
 and the position lifecycle**: the deterministic exit policy engine with an explicit
 precedence, the trailing-stop state machine, the exchange-local expiration policy, the
 deterministic thesis check, the position lifecycle, and exit orders that go out through
-Milestone 8 and are confirmed by Milestone 9.
-4378 passing tests; ruff, ruff format and mypy clean.
+Milestone 8 and are confirmed by Milestone 9 — and **observability and operations**:
+realised profit and loss from broker-confirmed fills, reservation settlement that finally
+returns capital to the campaign, daily loss tracking, the operational scheduler that runs
+the monitoring loop on a cadence, OpenTelemetry instrumentation behind a vendor-free seam,
+operational health that separates trading from observability, alerting that cannot trade,
+and an optional Collector/Tempo/Prometheus/Loki/Grafana stack.
+4867 passing tests; ruff, ruff format and mypy clean.
 
-**Not built, by design:** the scheduler, autonomous trading, live trading. A position is now
-*managed* — it is evaluated, and it can be closed — but nothing runs that evaluation on a
-cadence: `config/schedules.yaml` still describes jobs no process executes. There is no
-Telegram notification, no health-check loop and no separate thesis monitor. The CLI exposes
-those commands but they exit `3` naming the milestone that delivers them — they never
-fabricate output. Follow that pattern for anything still pending.
+**Not built, by design:** autonomous opportunity discovery on a cadence, the separate thesis
+monitor, live trading. The scheduler exists and runs, but `opportunity_scan` and
+`exit_management` ship **disabled** — opening and closing positions on a cadence is a
+decision an operator makes deliberately, not one inherited from a default. `thesis_monitor`
+is registered, disabled and honest: the specification's `VALID / WEAKENING / INVALIDATED /
+UNKNOWN` verdict needs a judgement no milestone has made, and the job records
+`SKIPPED / NOT_IMPLEMENTED` rather than fabricating one. `run thesis-monitor` still exits
+`3`. Follow that pattern for anything still pending.
 
-**Milestone 11 is next: production observability** — OpenTelemetry, Tempo, Prometheus, Loki
-and Grafana. Milestone 10 left the seams for it: five named business operations
-(`position.monitor`, `exit.evaluate`, `exit.decision`, `exit.execute`, `exit.confirm`), each
-a service method logged under a stable event name, with no telemetry vendor anywhere in the
-dependency tree. Milestone 11 must be able to attach `trading.position.id`,
-`trading.exit.id`, `trading.reason_code` and the rest without changing a trading decision,
-and telemetry must never influence one.
+**Milestone 12 is next: live-trading readiness** — the signed-off checklist, and the
+operational history that justifies signing it. Everything Milestone 12 needs to observe now
+exists: a realised result per closed trade, a daily figure the risk engine actually reads, a
+health model that separates trading from observability, and an alert vocabulary that names
+every safety condition.
 
-Two things earlier milestones left open remain open, and one is now closable. An
+One thing earlier milestones left open remains open, and one is now closed. An
 `ORPHAN_BROKER_POSITION` is still reported and never adopted, so a controlled onboarding
 workflow for pre-existing holdings belongs to a later milestone. Realised profit and loss is
-still untracked, which is why an exit's proceeds never move a reservation — Milestone 11
-owns that figure, and the `DAILY_LOSS_NOT_TRACKED` risk code with it.
+**now tracked**: an exit's proceeds settle the reservation behind the position, capital
+returns to the campaign, and `DAILY_LOSS_NOT_TRACKED` now means "no ledger was consulted"
+rather than "no ledger exists" — with `DAILY_LOSS_UNKNOWN` as the distinct, more alarming
+case where the ledger was consulted and could not produce a figure.
 
 [CLOUD_CODE_IMPLEMENTATION_SPEC.md](CLOUD_CODE_IMPLEMENTATION_SPEC.md) remains the source of
 truth for module layout, CLI surface, schemas, testing layers, and milestone order. Read the
@@ -193,9 +200,29 @@ full tree; the boundaries that matter:
   including the execution service that type-checks against `ExitRequest`.
   Specification §3 has no package for this; it ships as `exit/` so the package, the CLI
   group and the test suite share one name, exactly as `positions/` does.
-- `monitoring/` — the scheduler, and the specification's separate thesis monitor. Still
-  a docstring: Milestone 10 built the callable operation (`ExitService.monitor`) and
-  deliberately not the loop that calls it.
+- `pnl/` — realised profit and loss, and the capital behind it: `models · calculator ·
+  settlement · campaign_state · store · service · report`. `calculator.py` and
+  `settlement.py` are pure functions of captured state — no clock, no broker, no
+  repository — so a stored result and a stored settlement are reproducible. It creates
+  **no second capital ledger**: capital moves as an appended event on the Milestone 9
+  reservation. Specification §3 names `portfolio/` for P&L; it ships as `pnl/` so the
+  package, the CLI group and the test suite share one name, exactly as `positions/` and
+  `exit/` do.
+- `operations/` — the scheduler, operational health and alerting: `cron · models · jobs ·
+  scheduler · health · alerts · notifications · store · service`. Every job is **one call
+  to an already-tested service method**; the scheduler contains no trading logic and holds
+  no broker. `alerts.py` is pure and reaches no order path — a test walks the transitive
+  graph. `notifications.py` is the only module here that opens a socket, and it is
+  deliberately separate from the module that decides.
+- `observability/` — telemetry, as a side channel: `attributes · privacy · provider ·
+  tracing · metrics · instrument · llm · logging · runtime · otel`. Everything except
+  `otel.py` imports **nothing but the standard library**; only `runtime.py` imports
+  `otel.py`. That layering is what lets the agents, the risk engine and the exit engine be
+  instrumented at all — their boundary tests forbid `socket`, `urllib` and `http`, and the
+  OTLP exporter imports all three.
+- `monitoring/` — the specification's separate thesis monitor. Still a docstring: the
+  scheduler moved to `operations/`, and a `VALID / WEAKENING / INVALIDATED / UNKNOWN`
+  verdict is a judgement no milestone has made.
 
 **Two loops, different cadences.** The Opportunity Discovery loop (universe → research → strategy →
 contract → rank → allocate → risk → execute) is slow. The Position Management loop (reconcile →
@@ -697,6 +724,134 @@ lifecycle state, and what this milestone deliberately does not do — is in
 introduces **no agent**, so there is deliberately no `.claude/agents/` entry for it, exactly
 as in Milestones 7, 8 and 9.
 
+## Observability and operations (Milestone 11)
+
+> **Telemetry observes; it never controls. The scheduler orchestrates; it never
+> decides. Capital returns on broker-confirmed closure and on nothing weaker.**
+
+The milestone that makes the system operable — and the one where a mistake is quietest,
+because every failure mode here looks like a system working normally.
+
+```
+DOMAIN ARTIFACTS  (authoritative)          OBSERVABILITY  (side channel)
+      |                                            |
+confirmed fills (M9)                         span / metric / log
+      |                                            |
+realised P&L        pure, from fills only    OTLP -> Collector
+      |                                            |
+settlement          capital returns          Tempo / Prometheus / Loki
+      |                                            |
+daily loss state    what risk reads next          Grafana
+
+OPERATIONS:  cron -> job -> ONE existing service method -> persisted JobRun
+```
+
+Nine rules govern it, each with tests that fail loudly:
+
+- **Telemetry cannot change a trading decision.** If the collector, Tempo, Prometheus,
+  Loki and Grafana are all down, the system behaves identically. Every telemetry call is
+  wrapped, `fail_open: false` fails to load, `block_on_full_queue: true` fails to load,
+  and the claim is asserted in its strongest form: the same operation runs with telemetry
+  off, recording, broken and half-broken, and the stored artifacts are compared **byte for
+  byte**.
+- **The SDK lives in one module.** `attributes`, `privacy`, `provider`, `tracing`,
+  `metrics`, `instrument`, `llm` and `logging` import only the standard library; only
+  `otel.py` imports `opentelemetry`, and only `runtime.py` imports `otel`. That is not
+  tidiness — the research agent, the risk engine, the exit engine and the strategy selector
+  all have boundary tests forbidding `socket`, `urllib`, `http` and `requests`, and the
+  OTLP exporter imports every one of them.
+- **A domain identifier is never a metric label.** One time series per trade is how a
+  metrics backend falls over, on a system this one does not own. Identifiers go in spans
+  and logs; the guard is in `metrics.py` as well as in `config/observability.yaml`, because
+  a mis-edited YAML file is still a metrics explosion. Both spellings are refused —
+  `execution_id` and `trading.execution.id`.
+- **Telemetry is not an audit archive.** No account number, no balance, no portfolio, no
+  prompt, no model response, no monetary payload. A span carries the *id* of an immutable
+  artifact; the artifact stays where it can be audited. `privacy.py` enforces it and the
+  tests prove it against real spans rather than by inspection.
+- **The scheduler contains no trading logic.** Every job is one call to an already-tested
+  service method. Whether a position should close is M10's answer, how an exit is sent is
+  M8's, what happened at the broker is M9's. It holds no broker either: services open their
+  own short-lived read-only connections, which is what keeps M2's
+  one-reliable-round-trip-per-connection constraint intact.
+- **`SKIPPED`, `FAILED` and `UNKNOWN` are three different facts.** A job that deliberately
+  did not run is not an error. A job whose completion was never recorded is a *question* —
+  Python cannot kill a thread, so an over-running job may still be in flight, and calling
+  that a failure would invite a retry policy built on a claim nobody can support. On
+  restart a `RUNNING` record becomes `UNKNOWN`, never `SUCCESS` and never `FAILED`.
+- **Idempotency is persisted, never process-local.** A job run's identity comes from the
+  *scheduled instant*, so two processes waking for 14:35 derive the same id and the second
+  recognises the first. A duplicate firing returns the stored run rather than writing a
+  second, contradictory line about it.
+- **Only a broker-confirmed fill makes a result.** Not a limit price, not the reference
+  price M7 authorised, not a midpoint. A missing commission, an absent multiplier, a
+  cross-currency pair or an unresolved execution each produce `NOT_AVAILABLE` **with no
+  figure attached at all** — the model refuses a number next to that status, because the
+  consumer that reads the number is the daily loss limit.
+- **Capital returns only on broker-confirmed closure.** Not a requested exit, not a
+  submitted one, not a reported fill. `release_on_unknown: true` and
+  `require_broker_confirmed_closure: false` both fail to load, and a partial exit settles
+  only its matched fraction.
+
+**A structure is one trade, here too.** A straddle's result is one number over two legs;
+the legs are reported because they explain it, never as results of their own. A call that
+gained 300 and a put that lost 300 is a flat trade, not two trades.
+
+**Settlement returns capital, not proceeds.** 1,210 went out and 1,610 came back: 1,210
+returns to the campaign and 400 is recorded as the result. `settled_amount` is a *separate
+dimension* from consumed/released/remaining — moving capital from `consumed` back to
+`released` would erase the only record that it was ever spent, and `released` already means
+something different: capital that was never spent at all. `SETTLED` is a new terminal
+reservation state, and `COMMITTED_RESERVATION_STATES` deliberately excludes it.
+
+**The daily figure has three states, not two.** `TRACKED` is a measurement. `UNKNOWN` means
+positions closed today and at least one produced no usable figure — an absence of knowledge
+about a day on which money moved, which is emphatically not zero loss. `NOT_TRACKED` means
+no ledger was consulted at all. `CampaignSnapshot` refuses a figure alongside any status but
+`TRACKED`, because a comfortable number next to "we could not measure today" is exactly how
+an unmeasured day passes a loss limit. `block_on_unknown_daily_loss` ships **true**;
+`require_daily_loss_tracking` ships **false**, because a deployment that has never closed a
+position should not be blocked by a limit it has no data for.
+
+**A settled opportunity stops consuming the campaign envelope.** This is the seam that makes
+the release *real* rather than cosmetic: M7 replays the **allocation** ledger to decide
+whether another trade may be funded, so `reservations_from` now excludes opportunities whose
+reservation has settled. Nothing weaker qualifies — an unexecuted authorisation, a working
+order and an `UNKNOWN` submission all still consume budget, exactly as before.
+
+**Two switches for a scheduled exit, exactly as for a manual one.** `execution.enabled` in
+`config/execution.yaml` *and* `authorize_exits` on the `exit_management` job in
+`config/schedules.yaml`. Neither implies the other, the job ships disabled, and a test
+asserts that it is the only registered job with any path to an order.
+
+**An alert is a notification.** Nothing in the alerting path can place, cancel or modify an
+order — a boundary test walks the transitive graph — and `Alert` refuses a
+`recommended_action` that reads as an instruction to trade. A `CRITICAL` rule cannot be
+disabled in configuration, because muting the notification does not mute the condition.
+Alerts are stored *before* any channel sees them: an alert nobody could be told about is
+still an alert that happened, and the difference between the two files is exactly the set
+an operator never saw.
+
+**Health has two verdicts, computed from disjoint components.** `trading_status` answers
+*can this system safely trade?*; `observability_status` answers *can we see what it is
+doing?*. An unreachable Grafana degrades the second and cannot move the first, and the model
+refuses a report where a telemetry component did. `UNKNOWN` outranks `HEALTHY`: an unprobed
+broker is reported `UNKNOWN`, because "all green" must not be achievable by not looking.
+
+**The observability stack is optional and ships disabled.** `docker compose --profile
+observability up` brings up the collector, Tempo, Prometheus, Loki and Grafana, with
+datasources and three dashboards provisioned. The application speaks OTLP to a **collector**
+and to nothing else, so replacing any backend is a change to `deploy/otel/collector.yaml`
+rather than to any Python. Where a dashboard panel cannot be derived honestly it shows
+**unavailable** rather than `0`: "nothing ran" and "a run selected nothing" are different
+facts.
+
+Development guidance — what to do when adding a span, a metric, an attribute, a job, a
+failure mode or a settlement condition — is in
+[skills/operations/README.md](skills/operations/README.md). Milestone 11 introduces **no
+agent**, so there is deliberately no `.claude/agents/` entry for it, exactly as in
+Milestones 7, 8, 9 and 10.
+
 **Configuration over hardcoding.** Schedules live in `config/schedules.yaml`, risk in `risk.yaml`,
 strategies in `config/strategies/*.yaml`, data policy in `data.yaml`, the candidate pool,
 eligibility filters and ranking policy in `universe.yaml`, the research horizon, data
@@ -710,7 +865,13 @@ deduplication and structure policy in `positions.yaml`, and the reconciliation p
 per-finding severity and the reservation lifecycle in `reconciliation.yaml`, and the exit
 policy precedence envelope — expiration thresholds, the quote field, trailing, take profit,
 maximum loss, thesis and the exit order — in `exit.yaml`, whose safety values every
-`config/strategies/*.yaml` may narrow and none may widen. Note the
+`config/strategies/*.yaml` may narrow and none may widen, and the realised-result policy —
+the day boundary, commission handling, currency and settlement — in `pnl.yaml`, the alert
+rules and notification channels in `alerts.yaml`, and telemetry in `observability.yaml`.
+Note the split there too: `observability.yaml` is *policy* (sampling, privacy, the
+cardinality guard) and is committed; the OTLP endpoint and the alert webhook URL are
+*deployment switches* and live in the environment, because one differs per deployment and
+the other usually embeds a token. Note the
 splits: `strategy.yaml` configures the *stage*,
 `config/strategies/*.yaml` configure the *payoffs* — one is an agent, the others are
 instruments; and `risk.yaml` states the outer boundary of the whole system while
@@ -731,6 +892,15 @@ shape: `data/positions/` (broker position snapshots), `data/fills/` (recorded br
 keyed on the broker's own execution ids), `data/reservations/` (the capital ledger — base
 records plus per-reservation event streams, folded on read) and `data/reconciliation/`
 (comparison results plus their own event histories).
+
+Milestone 11 adds `data/pnl/` (immutable `results/`, `daily/` and `settlements/`, each with
+its own append-only index) and `data/operations/` (`jobs/`, `ticks/`, `health/` and
+`alerts/`, likewise). One deliberate exception to immutability lives in the second: a
+**job run is written twice** — as `RUNNING` before the work starts and complete when it
+ends, under the same id. Writing only on completion is precisely the failure the milestone
+is shaped to prevent, because a process that died mid-job would leave *silence*, and the
+next start could not tell "never ran" from "ran and we never found out". Rewriting a
+*finished* run is still refused.
 
 Milestone 10 adds `data/exit/`: immutable `evaluations/` and `decisions/`, an append-only
 `history.jsonl` and `runs.jsonl`, per-position `events/<position_id>.jsonl` that a
@@ -935,6 +1105,37 @@ python -m trading_system.cli positions monitor           # the scheduled operati
 python -m trading_system.cli positions monitor --capture # read the broker first
 python -m trading_system.cli test exit                   # diagnostic; submits nothing
 
+# Operations. Health READS, alerts NOTIFY, the scheduler ORCHESTRATES services
+# that already made their decisions. Nothing here decides a trade.
+python -m trading_system.cli ops health                  # trading + observability, apart
+python -m trading_system.cli ops health --broker         # one read-only probe as well
+python -m trading_system.cli ops scheduler plan          # what would run. Side-effect free
+python -m trading_system.cli ops scheduler status        # the last tick, and any UNKNOWN job
+python -m trading_system.cli ops scheduler tick          # run everything due, once
+python -m trading_system.cli ops scheduler start --max-ticks 10
+python -m trading_system.cli ops jobs                    # registered jobs + run history
+python -m trading_system.cli ops jobs --run reconciliation   # one job, through the guards
+python -m trading_system.cli ops alerts                  # what was raised
+python -m trading_system.cli ops alerts --evaluate       # evaluate the rules now
+python -m trading_system.cli ops metrics                 # telemetry + the cardinality guard
+
+# The scheduled jobs, individually. Each goes through the scheduler's own
+# guards, so running one by hand cannot do what the cadence would have refused.
+python -m trading_system.cli run position-monitor        # capture + evaluate. Submits nothing
+python -m trading_system.cli run reconciliation          # compare and report
+python -m trading_system.cli run pnl-settlement          # results + settlement
+python -m trading_system.cli run operational-health      # health + alerts
+python -m trading_system.cli run end-of-day-report       # the day's realised roll-up
+python -m trading_system.cli run exit-management         # CAN SUBMIT. Needs BOTH switches
+
+# Realised profit and loss. From broker-confirmed fills only; never an estimate.
+python -m trading_system.cli pnl show                    # every result, one line each
+python -m trading_system.cli pnl show --position-id <ID> # one result, in full
+python -m trading_system.cli pnl show --daily            # today's roll-up
+python -m trading_system.cli pnl history [--daily]
+python -m trading_system.cli pnl settle --dry-run        # what would move, moving nothing
+python -m trading_system.cli pnl settle                  # returns capital on confirmed closure
+
 pytest -m "not ibkr and not llm"                # default: no gateway, no API key needed
 pytest tests/universe                           # filters, point-in-time, snapshots, CLI
 pytest tests/research                           # evidence, dedup, validation, snapshots, CLI
@@ -948,11 +1149,15 @@ pytest tests/positions                          # snapshots, fills, expected pos
 pytest tests/reservations                       # lifecycle, release, UNKNOWN, invariants
 pytest tests/reconciliation                     # engine, orders, fills, orphans, idempotency
 pytest tests/exit                               # precedence, trailing, expiration, thesis, CLI
+pytest tests/pnl                                # arithmetic, settlement, daily loss
+pytest tests/operations                         # cron, scheduler, alerts, boundaries
+pytest tests/observability                      # spans, privacy, cardinality, isolation
 pytest tests/integration/test_research_to_allocation.py   # the whole chain; 0 orders
 pytest tests/integration/test_research_to_execution.py    # the chain through execution
 pytest tests/integration/test_execution_to_position.py   # execution -> fill -> position
 pytest tests/integration/test_reconciliation_workflow.py # the whole loop, id by id
 pytest tests/integration/test_exit_to_execution_to_reconciliation.py  # M10 -> M8 -> M9
+pytest tests/integration/test_operations_lifecycle.py     # exit -> P&L -> settlement -> daily loss
 pytest tests/agents/test_universe_selector.py   # agent contract; needs no API key
 pytest tests/agents/test_research_agent.py      # agent contract; needs no API key
 pytest tests/agents/test_strategy_selector.py   # agent contract; needs no API key
@@ -1024,7 +1229,12 @@ Every other command exits `3` until its milestone lands. Command help is tagged 
 `[square brackets]` in help strings, hence the parentheses. Makefile shortcuts mirror the test
 layout (`make test-risk`, `make test-reconciliation`, `make ibkr-connection`).
 `docker-compose.yml` and `Dockerfile` build and run `trading-runtime`; `ib-gateway` itself has
-not been started against a real account.
+not been started against a real account. The **optional** observability stack lives behind a
+compose profile — `docker compose --profile observability up` brings up the collector,
+Tempo, Prometheus, Loki and Grafana with datasources and dashboards provisioned. The trading
+system starts and runs without any of it, and none of those services has ever been started
+against this checkout: the compose file and every backend configuration are validated
+(`make observability-validate`) but **not** exercised end to end.
 
 ## Working in this repository
 
@@ -1299,6 +1509,63 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   different artifacts under the same content-derived id, and the immutable store refused the
   second. `observe` now returns the record *unchanged* when nothing moved; that we looked is
   recorded in the lifecycle history, where it belongs.
+- **A run identifier must include what the run *concluded*, not only what it looked at.**
+  The profit-and-loss run id derived from the campaign, the instant and the results
+  collided two genuinely different runs: the first settled a position and returned 1,210,
+  the second found it already settled and moved nothing. Same inputs, different answers,
+  same id — and the immutable store correctly refused the second. The settlement outcomes
+  are now in the digest. This is the third time this lesson has been learned in this
+  repository (allocation records it about the campaign's committed state, execution about
+  the ledger's), and it was found by an integration test both times before.
+- **A duplicate firing returns the stored run; it does not write a second line about it.**
+  The scheduler's first shape recorded `SKIPPED / ALREADY_RAN` when a job was asked twice
+  for the same instant — which meant writing a `SKIPPED` record over a `SUCCESS` one, and
+  the store refused it. The stored run *is* the record of that firing; overwriting it would
+  erase what actually happened. Found by running `serve()` under a `FixedClock`, where
+  every tick is the same firing.
+- **A position confirmed closed this morning must still settle this afternoon.** Settlement
+  originally required a currently-usable broker snapshot as well as a `CLOSED` lifecycle,
+  which meant a gateway outage blocked capital from returning for a closure that was
+  confirmed hours earlier. Those are two different facts: Milestone 10 reaches `CLOSED`
+  only on broker reality and the state is terminal, so the lifecycle *is* the confirmation.
+  The `broker_read_usable` flag remains on `SettlementInputs` so the pure function still
+  refuses a caller with weaker evidence.
+- **An unavailable result still belongs to a trading day.** A `NOT_AVAILABLE` result has no
+  exit fills, so it had no `closed_at`, so it belonged to no session, so the day's roll-up
+  reported `NOT_TRACKED` — "nothing happened" — for a day on which a position closed and
+  the result could not be computed. That is the single most misleading thing the daily loss
+  limit could be told. The lifecycle's closure instant is now passed in for *session
+  attribution only*; it never contributes to a figure.
+- **A blunt substring guard needs an explicit allow-list, not a loosened pattern.** The
+  privacy filter drops any attribute whose name contains `token` or `pnl`, which correctly
+  catches `api_key` and `realized_pnl` and incorrectly caught `llm.input_tokens` and
+  `trading.pnl.id` — a token *count* and an identifier. `ALLOWED_EXACT_NAMES` lists the
+  exact names, so each exception is deliberate and reviewable, and a test asserts every
+  name in the attribute vocabulary survives the filter.
+- **A boundary test that greps for `_submit_order` flags `can_submit_orders`.** The same
+  mistake the other boundary suites avoid by parsing rather than grepping, in a field whose
+  whole purpose is to say which job could reach an order path. The operations suite matches
+  *call syntax* — `.place_order(` — instead.
+- **A scheduled job must be handed its data root.** `JobContext` originally carried
+  settings, config and a clock, so every service a job built fell back to `project_root()`
+  — and the first scheduler test wrote into the repository's own `data/operations/`. A
+  scheduler rooted at `tmp_path` must have jobs that write *there*, and a container with a
+  mounted volume the same. Found by `git status`, not by an assertion, which is why
+  `tests/operations/conftest.py` now also fails loudly if anything reaches for a broker.
+- **Telemetry has to be importable without its SDK.** The OTLP exporter imports `socket`,
+  `urllib` and `http`; the research agent, the risk engine, the exit engine and the
+  strategy selector all have boundary tests forbidding exactly those in their transitive
+  graphs. So the SDK is confined to `observability/otel.py`, reachable only from
+  `runtime.py`, and everything the trading packages import — `tracing`, `metrics`,
+  `attributes`, `privacy`, `instrument`, `llm` — imports nothing but the standard library.
+  A lazy `import opentelemetry` inside a function would not help: the boundary tests walk
+  function bodies too.
+- **`SKIPPED` is not a failure and `UNKNOWN` is not either.** The scheduler keeps five
+  statuses apart, and the one that costs the most to collapse is `UNKNOWN`: Python cannot
+  kill a thread, so a job that exceeded its timeout may still be running. Recording it as
+  `FAILED` would be a claim nobody can support — and would invite a retry policy built on
+  it. The same reasoning M8 applies to an unacknowledged submission, applied to a job.
+
 - **A half-held structure is not a closed position, and the check order decides which it
   looks like.** A straddle with its call held and its put gone has zero *complete* units, so
   a `observed_quantity == 0` test placed before the `PARTIAL` test files a naked long option

@@ -145,6 +145,27 @@ class Reservation(ImmutableModel):
     #: part of the record rather than something to infer from context.
     consumed_from_actual_fills: bool = False
 
+    # --- what came back (Milestone 11) -------------------------------------
+    #
+    # Settlement is a *separate dimension* from the consumed/released/remaining
+    # identity above, deliberately. Moving capital from ``consumed`` back to
+    # ``released`` on closure would erase the only record that it was ever
+    # spent — and ``released`` means something specific and different: capital
+    # that was never spent at all. What settlement records is that spent
+    # capital's position is gone and the money is available again.
+    #: Consumed capital returned to the campaign after broker-confirmed
+    #: closure. Never exceeds what was consumed.
+    settled_amount: Money = Field(default=Decimal("0"), ge=0)
+    #: The realised result behind that settlement, where one is known. This is
+    #: a *reference figure* for reporting; the authoritative record is the
+    #: :class:`~trading_system.pnl.models.RealizedPnL` this points at.
+    realized_pnl: Money | None = None
+    settled_at: UtcDatetime | None = None
+    #: Every settlement recorded against this reservation, in order. A partial
+    #: exit settles once and a later full exit settles again.
+    settlement_ids: list[str] = Field(default_factory=list)
+    pnl_id: Identifier | None = None
+
     state: ReservationState = ReservationState.RESERVED
     reason_codes: list[ReservationReasonCode] = Field(default_factory=list)
 
@@ -159,6 +180,10 @@ class Reservation(ImmutableModel):
     research_report_id: Identifier | None = None
     allocation_run_id: Identifier | None = None
     broker_order_id: str | None = None
+    #: The strategy position this capital bought, once one exists. Set by
+    #: Milestone 11 settlement, which is the first thing that needs to connect
+    #: an authorisation to what became of the position it funded.
+    position_id: Identifier | None = None
     detail: str | None = None
 
     @model_validator(mode="after")
@@ -236,6 +261,55 @@ class Reservation(ImmutableModel):
                 f"reservation {self.reservation_id} is UNKNOWN without saying so in its reason "
                 f"codes; an operator must be able to filter for exactly this case"
             )
+        if state is ReservationState.SETTLED and self.committed_amount:
+            raise ValueError(
+                f"reservation {self.reservation_id} is SETTLED but still holds "
+                f"{self.committed_amount} of the campaign's capital. SETTLED is the claim that "
+                f"the position this money bought is confirmed gone and the money is available "
+                f"again; capital still committed contradicts it"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _nothing_settles_that_was_never_spent(self) -> Reservation:
+        """Settled capital can only ever be capital that was consumed.
+
+        The bound matters more than it looks. Settlement is the one path that
+        *returns* money to the campaign envelope, and a settlement larger than
+        the consumption behind it would quietly grow the budget — the campaign
+        would believe it had capital it never had, and authorise a trade
+        against it.
+        """
+        if self.settled_amount > self.consumed_amount:
+            raise ValueError(
+                f"reservation {self.reservation_id} settled {self.settled_amount} against "
+                f"{self.consumed_amount} consumed. Only spent capital can come back, and "
+                f"returning more than went out would grow the campaign envelope by an amount "
+                f"nobody authorised"
+            )
+        if self.settled_amount and self.settled_at is None:
+            raise ValueError(
+                f"reservation {self.reservation_id} settled {self.settled_amount} without "
+                f"recording when. Capital movements are dated"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _an_unknown_reservation_never_settles(self) -> Reservation:
+        """``UNKNOWN`` capital stays locked, and settlement cannot unlock it.
+
+        The invariant Milestone 9 established, extended to the one new way
+        capital can move. An execution whose outcome was never learned may be
+        a live order right now; returning its capital is how one intention
+        becomes two positions, and there is no configuration that permits it.
+        """
+        if self.state is ReservationState.UNKNOWN and self.settled_amount:
+            raise ValueError(
+                f"reservation {self.reservation_id} is UNKNOWN and has settled "
+                f"{self.settled_amount}. An unresolved execution may be a live order; its "
+                f"capital is released by observing the broker, never by elapsed time and "
+                f"never by a settlement"
+            )
         return self
 
     # --- derived views -----------------------------------------------------
@@ -244,10 +318,14 @@ class Reservation(ImmutableModel):
         """Capital this reservation still takes out of the campaign.
 
         Consumed capital is in a position and remaining capital is held for an
-        order that may yet be sent; both are unavailable. Only released capital
-        returns to the campaign.
+        order that may yet be sent; both are unavailable. Released capital was
+        never spent and returns to the campaign; *settled* capital was spent,
+        its position is confirmed gone at the broker, and it returns too. Those
+        last two are subtracted for the same reason and kept apart for a
+        different one: the difference between what a settlement returns and
+        what it originally consumed is the trade's realised result.
         """
-        return self.consumed_amount + self.remaining_amount
+        return self.consumed_amount + self.remaining_amount - self.settled_amount
 
     @property
     def committed(self) -> bool:
@@ -289,6 +367,7 @@ class Reservation(ImmutableModel):
             "remaining_amount": remaining,
             "over_authorized_amount": self.over_authorized_amount + event.over_delta,
             "consumed_quantity": self.consumed_quantity + event.consumed_quantity_delta,
+            "settled_amount": self.settled_amount + event.settled_delta,
         }
         if event.reason_code is not None and event.reason_code not in self.reason_codes:
             updates["reason_codes"] = [*self.reason_codes, event.reason_code]
@@ -298,6 +377,16 @@ class Reservation(ImmutableModel):
             updates["broker_order_id"] = event.broker_order_id
         if event.consumed_from_actual_fills:
             updates["consumed_from_actual_fills"] = True
+        if event.position_id is not None:
+            updates["position_id"] = event.position_id
+        if event.settled_delta:
+            updates["settled_at"] = event.observed_at
+        if event.settlement_id is not None and event.settlement_id not in self.settlement_ids:
+            updates["settlement_ids"] = [*self.settlement_ids, event.settlement_id]
+        if event.pnl_id is not None:
+            updates["pnl_id"] = event.pnl_id
+        if event.realized_pnl is not None:
+            updates["realized_pnl"] = (self.realized_pnl or Decimal("0")) + event.realized_pnl
         if event.detail:
             updates["detail"] = event.detail
 
@@ -333,6 +422,16 @@ class ReservationEvent(ImmutableModel):
     over_delta: Money = Field(default=Decimal("0"))
     consumed_quantity_delta: int = Field(default=0)
     consumed_from_actual_fills: bool = False
+    #: Milestone 11. Consumed capital returning to the campaign because the
+    #: broker confirms the position is gone. A delta, exactly like the others,
+    #: so applying the same settlement twice moves nothing.
+    settled_delta: Money = Field(default=Decimal("0"))
+    #: The realised result behind that settlement, where one is known. May be
+    #: negative: a loss is as real a result as a profit.
+    realized_pnl: Money | None = None
+    settlement_id: Identifier | None = None
+    pnl_id: Identifier | None = None
+    position_id: Identifier | None = None
 
     reason_code: ReservationReasonCode | None = None
     detail: str | None = None
@@ -366,6 +465,15 @@ class CampaignCapital(ImmutableModel):
     authorized_total: Money = Field(default=Decimal("0"), ge=0)
     consumed_total: Money = Field(default=Decimal("0"), ge=0)
     released_total: Money = Field(default=Decimal("0"), ge=0)
+    #: Milestone 11. Spent capital whose position the broker confirms is gone.
+    #: Reported apart from ``released_total`` because the two answer different
+    #: questions: released capital never bought anything, settled capital
+    #: bought something that has since been sold.
+    settled_total: Money = Field(default=Decimal("0"), ge=0)
+    #: The realised result behind the settled capital, where it is known. May
+    #: be negative. ``None`` means no settlement has produced a usable figure —
+    #: never zero, which would be a claim that the trades broke even.
+    realized_pnl_total: Money | None = None
     committed_total: Money = Field(default=Decimal("0"), ge=0)
     #: Capital held solely because an execution's outcome is unknown. Not
     #: available, and not in a position either.

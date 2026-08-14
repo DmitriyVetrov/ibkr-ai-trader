@@ -1,0 +1,70 @@
+# Grafana datasources, provisioned (Milestone 11).
+#
+# No manual configuration is required for basic operation: bring the stack up
+# and the three datasources are there, wired for trace-to-log and
+# log-to-trace navigation.
+#
+# The correlation is the point. An operator goes:
+#
+#   metric rate change  ->  trace in Tempo  ->  trace_id
+#                       ->  logs in Loki filtered by that trace_id
+#                       ->  trading.execution.id on the span
+#                       ->  the immutable execution artifact on disk
+#
+# The last hop is deliberately outside Grafana. Telemetry is a side channel;
+# the audit record is the domain artifact, and this stack navigates TO it
+# rather than replacing it.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+      # Metrics carry no domain ids by design, so the jump to a trace goes
+      # through an exemplar rather than through a label.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      # Trace -> logs. Given a trace, show every log line the operation
+      # emitted; the application's structlog processor puts trace_id on each.
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        filterByTraceID: true
+        filterBySpanID: false
+      # Trace -> metrics, on the low-cardinality labels that actually exist.
+      tracesToMetrics:
+        datasourceUid: prometheus
+        queries:
+          - name: Operation rate
+            query: 'sum(rate(trading_workflows_total[5m]))'
+      nodeGraph:
+        enabled: true
+
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      # Log -> trace. The reverse direction: a log line carries the trace id
+      # that leads back to the span.
+      derivedFields:
+        - name: TraceID
+          matcherRegex: '"trace_id":\s*"(\w+)"'
+          url: '$${__value.raw}'
+          datasourceUid: tempo

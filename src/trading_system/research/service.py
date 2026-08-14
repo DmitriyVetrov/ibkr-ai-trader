@@ -66,6 +66,9 @@ from trading_system.domain.models import SystemVersions
 from trading_system.infrastructure.clock import Clock, SystemClock
 from trading_system.infrastructure.logging import get_logger
 from trading_system.infrastructure.settings import Settings, SystemConfig, project_root
+from trading_system.observability import metrics as _metrics
+from trading_system.observability.attributes import TRADING_RESEARCH_ID, TRADING_STATUS
+from trading_system.observability.instrument import traced
 from trading_system.research.context import ResearchInputBuilder
 from trading_system.research.models import (
     RESEARCH_SCHEMA_VERSION,
@@ -244,6 +247,16 @@ class ResearchService:
         return self._universe_repository.latest()
 
     # --- the run -----------------------------------------------------------
+    @traced(
+        "research.run",
+        count=_metrics.RESEARCH_RUNS_TOTAL,
+        duration=_metrics.RESEARCH_DURATION,
+        result_attributes=lambda run: {
+            TRADING_RESEARCH_ID: run.result.run_id,
+            TRADING_STATUS: run.result.status.value,
+        },
+        labels=lambda run: {"status": run.result.status.value},
+    )
     def run(
         self,
         *,

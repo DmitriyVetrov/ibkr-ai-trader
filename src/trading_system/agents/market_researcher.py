@@ -63,6 +63,7 @@ from trading_system.domain.enums import (
     RiskCategory,
 )
 from trading_system.infrastructure.settings import ResearchConfig
+from trading_system.observability.llm import llm_span
 from trading_system.research.models import ResearchAgentOutput, ResearchInput
 from trading_system.research.validation import (
     ResearchOutputInvalidError,
@@ -303,7 +304,9 @@ class MarketResearcherAgent:
         )
 
         started = time.perf_counter()
-        response = self._client.complete(request)
+        with llm_span(agent="market_researcher", client=self._client) as call:
+            response = self._client.complete(request)
+            call.record(response)
         elapsed_ms = (time.perf_counter() - started) * 1000
 
         if response.stop_reason in _NON_ANSWER_STOP_REASONS:

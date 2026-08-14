@@ -1,0 +1,107 @@
+# OpenTelemetry Collector — the boundary between this application and the
+# telemetry backends (Milestone 11).
+#
+#   trading-system  --OTLP-->  collector  -->  Tempo / Prometheus / Loki
+#
+# The application talks OTLP to this collector and to NOTHING ELSE. It has no
+# dependency on Tempo, Prometheus, Loki or Grafana, and swapping any of them is
+# a change to this file rather than to any Python. That is the whole reason the
+# boundary exists.
+#
+# Nothing here is load bearing for trading. If this process is down the
+# application drops telemetry and continues; the exporter is non-blocking by
+# construction and observability.exporter.block_on_full_queue fails to load.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # Bounded, and it drops rather than applying back-pressure. A collector that
+  # slowed the application down would be a monitoring tool causing an outage.
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
+  memory_limiter:
+    check_interval: 2s
+    limit_mib: 384
+    spike_limit_mib: 96
+
+  # A second line of defence for the privacy rules the application already
+  # enforces in observability/privacy.py. Belt and braces on purpose: the
+  # application drops these attributes before they are ever emitted, and this
+  # removes them again in case a future instrumentation point forgets.
+  attributes/redact:
+    actions:
+      - key: ibkr_account
+        action: delete
+      - key: account_number
+        action: delete
+      - key: api_key
+        action: delete
+      - key: password
+        action: delete
+      - key: prompt
+        action: delete
+      - key: completion
+        action: delete
+
+  # Resource attributes every signal carries, so a Grafana query can select one
+  # deployment without the application having to know these names.
+  resource/env:
+    attributes:
+      - key: collector.name
+        value: trading-otel-collector
+        action: upsert
+
+exporters:
+  # --- traces ---------------------------------------------------------------
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # --- metrics --------------------------------------------------------------
+  #
+  # Exposed for Prometheus to SCRAPE rather than pushed. Prometheus owns its own
+  # scrape cadence, and a push path would make the application's metric
+  # interval and the backend's retention policy the same decision.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # Resource attributes become labels once, here, rather than being repeated
+    # on every metric by the application — which is how a service name becomes
+    # a per-metric cardinality decision.
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # --- logs -----------------------------------------------------------------
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+
+  # Local development: see what would be exported without a backend running.
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact, resource/env, batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/env, batch]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact, resource/env, batch]
+      exporters: [otlphttp/loki]

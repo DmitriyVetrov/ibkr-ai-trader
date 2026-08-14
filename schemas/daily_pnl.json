@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/daily_pnl.json",
+  "title": "DailyPnL",
+  "description": "One exchange-local trading day's realised result, and — separately — how reliable that figure is (Milestone 11). The daily loss limit is evaluated against this. UNKNOWN means positions closed today and at least one produced no usable figure: that is an absence of knowledge about a day on which money moved, and it is not zero loss. A record whose status is not TRACKED carries no total at all.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "daily_pnl_id",
+    "campaign_id",
+    "session_date",
+    "timezone",
+    "status",
+    "currency",
+    "computed_at"
+  ],
+  "properties": {
+    "daily_pnl_id": { "type": "string", "minLength": 1 },
+    "campaign_id": { "type": "string", "minLength": 1 },
+    "session_date": { "type": "string", "format": "date" },
+    "timezone": { "type": "string", "minLength": 1 },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["TRACKED", "UNKNOWN", "NOT_TRACKED"] },
+    "currency": { "type": "string", "minLength": 3, "maxLength": 8 },
+
+    "realized_pnl": { "$ref": "#/$defs/nullable_money" },
+    "realized_gross_pnl": { "$ref": "#/$defs/nullable_money" },
+    "total_commission": { "$ref": "#/$defs/nullable_money" },
+    "commission_status": { "enum": ["KNOWN", "PARTIAL", "NOT_AVAILABLE"] },
+    "realized_loss": {
+      "description": "The loss as a positive number, or zero on a profitable day. The figure the daily loss limit is compared against.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9]+(\\.[0-9]+)?$"
+    },
+
+    "positions_closed": { "type": "integer", "minimum": 0 },
+    "positions_with_result": { "type": "integer", "minimum": 0 },
+    "positions_without_result": { "type": "integer", "minimum": 0 },
+    "pnl_ids": { "type": "array", "items": { "type": "string" } },
+    "unavailable_position_ids": {
+      "description": "Positions that closed today and produced no usable figure. Named, not merely counted: 'which one' is the first question anybody asks.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "computed_at": { "type": "string", "format": "date-time" },
+    "detail": { "type": ["string", "null"] }
+  },
+
+  "allOf": [
+    {
+      "description": "A day whose figure is not trustworthy reports no figure.",
+      "if": {
+        "properties": { "status": { "enum": ["UNKNOWN", "NOT_TRACKED"] } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "realized_pnl": { "type": "null" },
+          "realized_loss": { "type": "null" }
+        }
+      }
+    },
+    {
+      "description": "TRACKED means there is a real number.",
+      "if": { "properties": { "status": { "const": "TRACKED" } }, "required": ["status"] },
+      "then": { "required": ["realized_pnl"], "properties": { "realized_pnl": { "type": "string" } } }
+    },
+    {
+      "description": "UNKNOWN names at least one position that produced no result.",
+      "if": { "properties": { "status": { "const": "UNKNOWN" } }, "required": ["status"] },
+      "then": {
+        "properties": { "unavailable_position_ids": { "type": "array", "minItems": 1 } },
+        "required": ["unavailable_position_ids"]
+      }
+    }
+  ],
+
+  "$defs": {
+    "nullable_money": { "type": ["string", "null"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$" }
+  }
+}

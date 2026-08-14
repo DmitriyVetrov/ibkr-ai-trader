@@ -148,10 +148,18 @@ def test_config_validates_and_prints() -> None:
         ["portfolio"],
         ["opportunities"],
         ["run", "opportunities"],
-        ["run", "position-monitor"],
+        # `run thesis-monitor` is the one scheduled job Milestone 11 did NOT
+        # build. Milestone 10 evaluates a stored thesis deterministically as
+        # part of the exit policy and never returns WEAKENING; deciding that a
+        # thesis has weakened without being falsified is a judgement no
+        # milestone has made, and this command fabricates none.
         ["run", "thesis-monitor"],
-        ["run", "reconciliation"],
-        ["run", "end-of-day-report"],
+        # `run position-monitor`, `run reconciliation`, `run pnl-settlement`,
+        # `run operational-health`, `run exit-management` and
+        # `run end-of-day-report` became real in Milestone 11: each invokes one
+        # registered scheduler job, through the scheduler's own guards. They
+        # are covered by tests/operations/, which roots every store at tmp_path
+        # so no command touches the repository's own data/.
         # The IBKR diagnostics and `test reconciliation` landed in Milestone 2;
         # they are covered by tests/broker and tests/integration.
         ["test", "ibkr-order-simulation"],

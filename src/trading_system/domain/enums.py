@@ -13,6 +13,9 @@ from enum import StrEnum, unique
 
 __all__ = [
     "AcquisitionProvenance",
+    "AlertCategory",
+    "AlertCode",
+    "AlertSeverity",
     "AllocationOutcome",
     "AllocationPolicy",
     "AllocationReason",
@@ -23,10 +26,12 @@ __all__ = [
     "BudgetSource",
     "ClaimSupport",
     "CollectionOutcome",
+    "CommissionStatus",
     "ConfidenceLevel",
     "ContractRejectionReason",
     "ContractSelectionStatus",
     "CorporateEventType",
+    "DailyPnLStatus",
     "DataGapStatus",
     "DataQuality",
     "DataQualityIssue",
@@ -51,6 +56,11 @@ __all__ = [
     "ExitRunStatus",
     "ExpectedMagnitude",
     "ExpirationSelectionPolicy",
+    "HealthComponent",
+    "HealthDomain",
+    "HealthStatus",
+    "JobSkipReason",
+    "JobStatus",
     "LegAction",
     "MarketDataOrigin",
     "MarketEventType",
@@ -62,6 +72,8 @@ __all__ = [
     "OrderSide",
     "OrderStatus",
     "OrderType",
+    "PnLReasonCode",
+    "PnLStatus",
     "PositionLifecycleEventType",
     "PositionLifecycleState",
     "PositionState",
@@ -83,8 +95,11 @@ __all__ = [
     "RiskLimitScope",
     "RiskOutcome",
     "RiskReasonCode",
+    "SchedulerRunStatus",
     "SecurityType",
     "SelectionMethod",
+    "SettlementBlockReason",
+    "SettlementStatus",
     "SourceTier",
     "StrategyAction",
     "StrategySelectionReason",
@@ -92,6 +107,7 @@ __all__ = [
     "StrategyType",
     "StrikeSelectionPolicy",
     "StructureStatus",
+    "TelemetryExportStatus",
     "ThesisConditionOutcome",
     "ThesisStatus",
     "TimeInForce",
@@ -354,9 +370,18 @@ class RiskReasonCode(StrEnum):
     FX_CONVERSION_UNAVAILABLE = "FX_CONVERSION_UNAVAILABLE"
     #: Ranked, but below the configured floor for deserving capital.
     BELOW_MIN_OPPORTUNITY_SCORE = "BELOW_MIN_OPPORTUNITY_SCORE"
-    #: Realised profit and loss for the day is not tracked yet, so the daily
-    #: loss limit could not be evaluated. Recorded rather than assumed passed.
+    #: Realised profit and loss for the day is not tracked at all, so the
+    #: daily loss limit could not be evaluated. Recorded rather than assumed
+    #: passed. Milestone 11 built the ledger, so this now means the ledger was
+    #: not consulted — an artifact written before it, or a deployment with
+    #: profit-and-loss tracking switched off.
     DAILY_LOSS_NOT_TRACKED = "DAILY_LOSS_NOT_TRACKED"
+    #: Milestone 11. The ledger *was* consulted, positions closed today, and
+    #: at least one produced no usable figure. Deliberately distinct from
+    #: ``DAILY_LOSS_NOT_TRACKED``: "we have no tracking" and "we have tracking
+    #: and today's number is not trustworthy" call for different responses,
+    #: and neither is "no losses today".
+    DAILY_LOSS_UNKNOWN = "DAILY_LOSS_UNKNOWN"
     CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
 
 
@@ -1781,6 +1806,12 @@ class ReservationState(StrEnum):
     RELEASED = "RELEASED"
     #: The execution behind it is unresolved. The capital stays locked.
     UNKNOWN = "UNKNOWN"
+    #: Milestone 11. The position this capital bought is confirmed gone at the
+    #: broker, realised profit and loss is recorded, and the committed capital
+    #: has returned to the campaign. Deliberately distinct from ``RELEASED``:
+    #: released capital was never spent, settled capital was spent and came
+    #: back, and the difference between the two figures is the trade's result.
+    SETTLED = "SETTLED"
 
 
 @unique
@@ -1804,6 +1835,15 @@ class ReservationEventType(StrEnum):
     RESERVATION_CORRECTED = "RESERVATION_CORRECTED"
     #: Observed without change. Kept so an audit shows we looked.
     RESERVATION_OBSERVED = "RESERVATION_OBSERVED"
+    #: Milestone 11. The position closed, the result is known, and the capital
+    #: returned to the campaign.
+    RESERVATION_SETTLED = "RESERVATION_SETTLED"
+    #: Milestone 11. Part of the structure is confirmed closed and that part's
+    #: capital returned. The rest stays committed.
+    RESERVATION_PARTIALLY_SETTLED = "RESERVATION_PARTIALLY_SETTLED"
+    #: Milestone 11. Settlement was evaluated and refused. Recorded rather than
+    #: implied: a decision not to return capital is a decision.
+    RESERVATION_SETTLEMENT_BLOCKED = "RESERVATION_SETTLEMENT_BLOCKED"
 
 
 @unique
@@ -1837,6 +1877,365 @@ class ReservationReasonCode(StrEnum):
     CURRENCY_MISMATCH = "CURRENCY_MISMATCH"
     #: Broker evidence puts consumed capital above what was authorised.
     BROKER_CORRECTION = "BROKER_CORRECTION"
+
+    # --- Milestone 11 ------------------------------------------------------
+    #
+    # Settlement: the capital of a position the broker confirms is gone.
+    # Deliberately distinct from every release code above, all of which mean
+    # "this capital was never spent". Settled capital *was* spent, the position
+    # it bought no longer exists, and the difference between what went out and
+    # what came back is realised profit and loss.
+
+    #: The broker confirms it holds none of the structure, realised profit and
+    #: loss is computed, and the committed capital returns to the campaign.
+    POSITION_CLOSED_CONFIRMED = "POSITION_CLOSED_CONFIRMED"
+    #: Part of the structure is confirmed gone. Only that part settles.
+    POSITION_PARTIALLY_CLOSED = "POSITION_PARTIALLY_CLOSED"
+    #: Settlement was refused. The specific reason is a
+    #: :class:`SettlementBlockReason` on the settlement record.
+    SETTLEMENT_BLOCKED = "SETTLEMENT_BLOCKED"
+
+
+@unique
+class SettlementStatus(StrEnum):
+    """What one settlement attempt concluded (Milestone 11).
+
+    ``BLOCKED`` and ``NOT_APPLICABLE`` are separate answers on purpose: the
+    first says a position that should settle could not, the second that there
+    was nothing to settle. Collapsing them would hide every refusal in a count
+    of positions nobody was trying to settle.
+    """
+
+    #: The whole reservation settled: capital returned, profit and loss stored.
+    SETTLED = "SETTLED"
+    #: Part of the structure is confirmed closed; that part settled.
+    PARTIALLY_SETTLED = "PARTIALLY_SETTLED"
+    #: Already settled by an earlier run. Nothing moved.
+    ALREADY_SETTLED = "ALREADY_SETTLED"
+    #: A condition refused it. See :class:`SettlementBlockReason`.
+    BLOCKED = "BLOCKED"
+    #: There is nothing here to settle — the position is still open.
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+@unique
+class SettlementBlockReason(StrEnum):
+    """Why settlement refused to move capital (Milestone 11).
+
+    Every member is a statement about *evidence*, never about how long
+    something has taken. Capital returns to the campaign on broker-confirmed
+    closure and on nothing else.
+    """
+
+    #: The broker still reports the structure, or reported nothing at all.
+    CLOSURE_NOT_CONFIRMED = "CLOSURE_NOT_CONFIRMED"
+    #: An execution against this position is ``UNKNOWN``. It may be a live
+    #: order right now, and no elapsed time turns that into a failure.
+    EXECUTION_UNKNOWN = "EXECUTION_UNKNOWN"
+    #: Realised profit and loss could not be computed, so what came back is
+    #: not a known quantity. Settling anyway would return a figure nobody has.
+    PNL_UNAVAILABLE = "PNL_UNAVAILABLE"
+    #: Reconciliation reports a critical disagreement touching this position.
+    RECONCILIATION_MISMATCH = "RECONCILIATION_MISMATCH"
+    #: There is no reservation for the authorisation behind this position.
+    RESERVATION_MISSING = "RESERVATION_MISSING"
+    #: The reservation never consumed anything, so there is nothing to settle.
+    NOTHING_CONSUMED = "NOTHING_CONSUMED"
+    #: Entry and exit settled in different currencies and no deterministic FX
+    #: rate source exists.
+    CURRENCY_MISMATCH = "CURRENCY_MISMATCH"
+
+
+@unique
+class PnLStatus(StrEnum):
+    """How complete a realised profit-and-loss figure is (Milestone 11).
+
+    ``NOT_AVAILABLE`` is a first-class answer. A figure assembled from a
+    guessed commission, an assumed multiplier or an invented exchange rate
+    would be worse than no figure at all: it would be *used*.
+    """
+
+    #: Every leg matched, entry and exit, from broker-confirmed fills.
+    COMPLETE = "COMPLETE"
+    #: Part of the structure closed. The figure covers the matched units only.
+    PARTIAL = "PARTIAL"
+    #: Could not be computed. See :class:`PnLReasonCode`.
+    NOT_AVAILABLE = "NOT_AVAILABLE"
+
+
+@unique
+class PnLReasonCode(StrEnum):
+    """Why a realised profit-and-loss figure is what it is (Milestone 11)."""
+
+    OK = "OK"
+    #: The closed portion is smaller than what was opened.
+    PARTIALLY_CLOSED = "PARTIALLY_CLOSED"
+    #: No broker-confirmed fill establishes the entry.
+    ENTRY_FILLS_UNAVAILABLE = "ENTRY_FILLS_UNAVAILABLE"
+    #: No broker-confirmed fill establishes the exit.
+    EXIT_FILLS_UNAVAILABLE = "EXIT_FILLS_UNAVAILABLE"
+    #: A fill reported no contract multiplier. Never assumed to be 100.
+    MULTIPLIER_UNAVAILABLE = "MULTIPLIER_UNAVAILABLE"
+    #: Entry and exit are quoted in different currencies and no deterministic
+    #: rate source is configured. An invented rate is an invented result.
+    CURRENCY_MISMATCH = "CURRENCY_MISMATCH"
+    #: The broker has not reported commissions for every fill. The gross
+    #: figure stands; the net one is not available.
+    COMMISSION_UNAVAILABLE = "COMMISSION_UNAVAILABLE"
+    #: An execution against this position is unresolved, so what actually
+    #: traded is not settled fact yet.
+    EXECUTION_UNKNOWN = "EXECUTION_UNKNOWN"
+    #: A leg was sold that was never bought, or the reverse. A ledger fault
+    #: rather than a market outcome.
+    UNMATCHED_LEG = "UNMATCHED_LEG"
+    #: The entry cost had to be prorated because only part of the structure
+    #: closed. Exact arithmetic, quantised to the currency's precision.
+    ENTRY_COST_PRORATED = "ENTRY_COST_PRORATED"
+
+
+@unique
+class CommissionStatus(StrEnum):
+    """Whether trading costs are actually known (Milestone 11).
+
+    IBKR frequently reports a fill before its commission report arrives. A
+    missing commission is recorded as missing; it is never read as zero, which
+    would understate the cost of every trade the feed was slow about.
+    """
+
+    KNOWN = "KNOWN"
+    #: Some fills carry a commission and some do not. The sum is not the cost.
+    PARTIAL = "PARTIAL"
+    NOT_AVAILABLE = "NOT_AVAILABLE"
+
+
+@unique
+class DailyPnLStatus(StrEnum):
+    """Whether the day's realised figure can be relied on (Milestone 11).
+
+    Three states, not two, and the distinction is the point:
+
+    ``TRACKED``
+        Every closure today produced a realised figure. The daily-loss limit
+        can be evaluated against a real number.
+    ``UNKNOWN``
+        Closures happened today and at least one produced no usable figure.
+        This is emphatically not zero loss — it is an absence of knowledge
+        about a day on which money moved.
+    ``NOT_TRACKED``
+        No profit-and-loss ledger was consulted at all. The state every
+        artifact written before Milestone 11 is in.
+    """
+
+    TRACKED = "TRACKED"
+    UNKNOWN = "UNKNOWN"
+    NOT_TRACKED = "NOT_TRACKED"
+
+
+@unique
+class JobStatus(StrEnum):
+    """What became of one scheduled job run (Milestone 11).
+
+    ``SKIPPED``, ``FAILED`` and ``UNKNOWN`` are three different facts and the
+    scheduler never collapses them:
+
+    ``SKIPPED``
+        The job deliberately did not run — disabled, outside market hours, or
+        its preconditions said there was nothing to do. Not an error.
+    ``FAILED``
+        It ran and raised. Something is wrong.
+    ``UNKNOWN``
+        It started and its completion was never recorded — a timeout, or a
+        process that died mid-run. The work may still be in flight, so this is
+        never reported as a failure and never assumed to have succeeded.
+    ``BLOCKED``
+        A safety condition refused to let it run: a mode guard, an unresolved
+        execution, a switch that is off.
+    """
+
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+    BLOCKED = "BLOCKED"
+    UNKNOWN = "UNKNOWN"
+
+
+@unique
+class JobSkipReason(StrEnum):
+    """Why a scheduled job did not run (Milestone 11)."""
+
+    DISABLED = "DISABLED"
+    NOT_DUE = "NOT_DUE"
+    MARKET_CLOSED = "MARKET_CLOSED"
+    #: The calendar does not cover this date, so whether the market is open is
+    #: unknown. A market-hours job does not run on a guess.
+    CALENDAR_UNKNOWN = "CALENDAR_UNKNOWN"
+    #: This job already ran for this scheduled instant. The protection is the
+    #: persisted run record, never a process-local flag.
+    ALREADY_RAN = "ALREADY_RAN"
+    #: The operation this job names is not built yet. Registered and honest
+    #: rather than absent, so the gap is visible in the run history.
+    NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
+    #: The trading mode does not permit this job.
+    TRADING_MODE_NOT_PERMITTED = "TRADING_MODE_NOT_PERMITTED"
+    #: Nothing to act on: no open position, no closed position, no allocation.
+    NOTHING_TO_DO = "NOTHING_TO_DO"
+
+
+@unique
+class SchedulerRunStatus(StrEnum):
+    """The outcome of one scheduler tick (Milestone 11)."""
+
+    #: Every job that ran succeeded.
+    SUCCESS = "SUCCESS"
+    #: Some jobs succeeded and some did not. Isolation working as intended.
+    PARTIAL = "PARTIAL"
+    #: Every job that ran failed.
+    FAILED = "FAILED"
+    #: Nothing was due.
+    IDLE = "IDLE"
+    #: The scheduler itself refused to run — configuration, or a mode guard.
+    BLOCKED = "BLOCKED"
+
+
+@unique
+class HealthStatus(StrEnum):
+    """One component's operational state (Milestone 11).
+
+    ``UNAVAILABLE`` and ``BLOCKED`` differ in who has to act: the first is a
+    component that cannot be reached, the second a deliberate refusal that
+    stays until somebody resolves it.
+    """
+
+    HEALTHY = "HEALTHY"
+    DEGRADED = "DEGRADED"
+    UNAVAILABLE = "UNAVAILABLE"
+    BLOCKED = "BLOCKED"
+    #: Not checked in this report. Never rendered as healthy.
+    UNKNOWN = "UNKNOWN"
+
+
+@unique
+class HealthDomain(StrEnum):
+    """Which health question a component answers (Milestone 11).
+
+    The split is the milestone's central operational claim: an unreachable
+    Grafana is not a trading fault, and a system that reported it as one would
+    train its operators to ignore the alert that matters.
+    """
+
+    TRADING = "TRADING"
+    OBSERVABILITY = "OBSERVABILITY"
+
+
+@unique
+class HealthComponent(StrEnum):
+    """The components an operational health report covers (Milestone 11)."""
+
+    APPLICATION = "APPLICATION"
+    CONFIGURATION = "CONFIGURATION"
+    STORAGE = "STORAGE"
+    BROKER = "BROKER"
+    DATA = "DATA"
+    SCHEDULER = "SCHEDULER"
+    RISK_STATE = "RISK_STATE"
+    RECONCILIATION = "RECONCILIATION"
+    CAPITAL = "CAPITAL"
+    TELEMETRY = "TELEMETRY"
+    NOTIFICATIONS = "NOTIFICATIONS"
+
+
+@unique
+class TelemetryExportStatus(StrEnum):
+    """What the telemetry side-channel is doing (Milestone 11).
+
+    None of these values may ever reach a trading decision. They exist so an
+    operator can tell "we are not exporting" from "we are exporting and it is
+    failing", and both from "telemetry is switched off deliberately".
+    """
+
+    DISABLED = "DISABLED"
+    #: Configured and exporting.
+    ACTIVE = "ACTIVE"
+    #: Configured, but the SDK is not installed. The system runs unchanged.
+    SDK_UNAVAILABLE = "SDK_UNAVAILABLE"
+    #: Configured and the exporter is reporting failures. Trading is unaffected.
+    EXPORT_FAILING = "EXPORT_FAILING"
+    #: Configuration was rejected. Telemetry is off; trading policy is untouched.
+    MISCONFIGURED = "MISCONFIGURED"
+
+
+@unique
+class AlertSeverity(StrEnum):
+    """How urgently a human should look (Milestone 11)."""
+
+    INFO = "INFO"
+    WARNING = "WARNING"
+    CRITICAL = "CRITICAL"
+
+
+@unique
+class AlertCategory(StrEnum):
+    """What an alert is about (Milestone 11)."""
+
+    BROKER = "BROKER"
+    EXECUTION = "EXECUTION"
+    RESEARCH = "RESEARCH"
+    WORKFLOW = "WORKFLOW"
+    SAFETY = "SAFETY"
+    POSITION = "POSITION"
+    CAPITAL = "CAPITAL"
+    TELEMETRY = "TELEMETRY"
+
+
+@unique
+class AlertCode(StrEnum):
+    """The closed vocabulary of operational alerts (Milestone 11).
+
+    An alert is a *notification*. Nothing in this vocabulary authorises,
+    cancels or modifies an order, and a test asserts that the alert package
+    cannot reach anything that could.
+    """
+
+    # --- broker ------------------------------------------------------------
+    BROKER_CONNECTION_ERRORS = "BROKER_CONNECTION_ERRORS"
+    BROKER_TIMEOUTS = "BROKER_TIMEOUTS"
+    BROKER_UNAVAILABLE = "BROKER_UNAVAILABLE"
+
+    # --- execution ---------------------------------------------------------
+    EXECUTION_REJECTION_RATE = "EXECUTION_REJECTION_RATE"
+    EXECUTION_UNKNOWN = "EXECUTION_UNKNOWN"
+    EXECUTION_DUPLICATE_ATTEMPT = "EXECUTION_DUPLICATE_ATTEMPT"
+    EXECUTION_STUCK = "EXECUTION_STUCK"
+
+    # --- research / AI -----------------------------------------------------
+    LLM_ERROR_RATE = "LLM_ERROR_RATE"
+    RESEARCH_FAILURE_RATE = "RESEARCH_FAILURE_RATE"
+
+    # --- workflow ----------------------------------------------------------
+    WORKFLOW_FAILURES = "WORKFLOW_FAILURES"
+    SCHEDULER_JOB_FAILED = "SCHEDULER_JOB_FAILED"
+    SCHEDULER_JOB_UNKNOWN = "SCHEDULER_JOB_UNKNOWN"
+
+    # --- safety ------------------------------------------------------------
+    LIVE_EXECUTION_ATTEMPT = "LIVE_EXECUTION_ATTEMPT"
+    ORDER_WITHOUT_ALLOCATION = "ORDER_WITHOUT_ALLOCATION"
+    ORDER_WITHOUT_EXECUTION_RECORD = "ORDER_WITHOUT_EXECUTION_RECORD"
+    EXECUTION_OUTSIDE_AUTHORIZED_PATH = "EXECUTION_OUTSIDE_AUTHORIZED_PATH"
+    RECONCILIATION_MISMATCH = "RECONCILIATION_MISMATCH"
+
+    # --- position ----------------------------------------------------------
+    POSITION_CLOSE_NOT_CONFIRMED = "POSITION_CLOSE_NOT_CONFIRMED"
+    EXPIRATION_APPROACHING = "EXPIRATION_APPROACHING"
+    EXIT_UNKNOWN = "EXIT_UNKNOWN"
+
+    # --- capital -----------------------------------------------------------
+    DAILY_LOSS_THRESHOLD_EXCEEDED = "DAILY_LOSS_THRESHOLD_EXCEEDED"
+    DAILY_LOSS_UNAVAILABLE = "DAILY_LOSS_UNAVAILABLE"
+    SETTLEMENT_BLOCKED = "SETTLEMENT_BLOCKED"
+
+    # --- telemetry ---------------------------------------------------------
+    TELEMETRY_EXPORT_FAILING = "TELEMETRY_EXPORT_FAILING"
 
 
 @unique
@@ -2461,5 +2860,51 @@ LIVE_EXECUTION_STATES: frozenset[ExecutionState] = frozenset(
         ExecutionState.FILLED,
         ExecutionState.CANCEL_PENDING,
         ExecutionState.UNKNOWN,
+    }
+)
+
+#: Reservation states from which settlement may return capital (Milestone 11).
+#:
+#: ``UNKNOWN`` is deliberately absent and there is no configuration that adds
+#: it: an unresolved execution may be a live order, and settling it would hand
+#: its budget back to a campaign that could then fund the same trade again.
+#: ``RESERVED`` is absent for a different reason — nothing was spent, so there
+#: is nothing to settle; that capital comes back through a *release*.
+SETTLEABLE_RESERVATION_STATES: frozenset[ReservationState] = frozenset(
+    {
+        ReservationState.CONSUMED,
+        ReservationState.PARTIALLY_CONSUMED,
+    }
+)
+
+#: Job statuses after which a scheduler must not silently move on.
+#:
+#: ``UNKNOWN`` is here and ``SKIPPED`` is not: a job whose completion was never
+#: recorded is a question about the system, and a job that deliberately did not
+#: run is not.
+JOB_ATTENTION_STATUSES: frozenset[JobStatus] = frozenset(
+    {
+        JobStatus.FAILED,
+        JobStatus.UNKNOWN,
+        JobStatus.BLOCKED,
+    }
+)
+
+#: Job statuses from which no further transition happens within one run.
+TERMINAL_JOB_STATUSES: frozenset[JobStatus] = frozenset(
+    {
+        JobStatus.SUCCESS,
+        JobStatus.FAILED,
+        JobStatus.SKIPPED,
+        JobStatus.BLOCKED,
+        JobStatus.UNKNOWN,
+    }
+)
+
+#: Health statuses that mean the trading domain must not open new positions.
+BLOCKING_HEALTH_STATUSES: frozenset[HealthStatus] = frozenset(
+    {
+        HealthStatus.BLOCKED,
+        HealthStatus.UNAVAILABLE,
     }
 )

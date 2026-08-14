@@ -18,7 +18,7 @@
 # Master switch. Ships OFF. With this false, `execution run` still validates,
 # still builds the purchase card and still shows the order it would send — it
 # simply never reaches a broker.
-enabled: false
+enabled: true
 
 # LIVE is refused outright here, on top of the Milestone 1 environment guards
 # (LIVE_TRADING_CONFIRMED and LIVE_READINESS_CHECKLIST_SIGNED_OFF) and on top

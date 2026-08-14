@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/operational_health.json",
+  "title": "OperationalHealth",
+  "description": "The machine-readable health model (Milestone 11). TWO overall verdicts, computed from disjoint sets of components and neither derived from the other: trading_status answers 'can this system safely trade?' and observability_status answers 'can we see what it is doing?'. A collector that is down degrades the second and leaves the first untouched — a system that reported a Grafana outage as a trading fault would, after the third time, teach its operators to ignore exactly the banner that means a broker is unreachable. UNKNOWN outranks HEALTHY: a component nobody checked is not a component that is fine, and 'all green' must not be achievable by not looking.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "health_id",
+    "as_of",
+    "trading_status",
+    "observability_status",
+    "trading_mode",
+    "application_version",
+    "config_version"
+  ],
+  "properties": {
+    "health_id": { "type": "string", "minLength": 1 },
+    "as_of": { "type": "string", "format": "date-time" },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "trading_status": { "$ref": "#/$defs/status" },
+    "observability_status": { "$ref": "#/$defs/status" },
+    "trading_mode": { "enum": ["DRY_RUN", "PAPER", "LIVE"] },
+    "application_version": { "type": "string", "minLength": 1 },
+    "config_version": { "type": "string", "minLength": 1 },
+    "components": { "type": "array", "items": { "$ref": "#/$defs/component" } },
+    "alerts": { "type": "array", "items": { "type": "string" } },
+    "detail": { "type": ["string", "null"] }
+  },
+  "$defs": {
+    "status": { "enum": ["HEALTHY", "DEGRADED", "UNAVAILABLE", "BLOCKED", "UNKNOWN"] },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "domain", "status", "summary"],
+      "properties": {
+        "component": {
+          "enum": [
+            "APPLICATION",
+            "CONFIGURATION",
+            "STORAGE",
+            "BROKER",
+            "DATA",
+            "SCHEDULER",
+            "RISK_STATE",
+            "RECONCILIATION",
+            "CAPITAL",
+            "TELEMETRY",
+            "NOTIFICATIONS"
+          ]
+        },
+        "domain": { "enum": ["TRADING", "OBSERVABILITY"] },
+        "status": { "$ref": "#/$defs/status" },
+        "summary": { "type": "string", "minLength": 1 },
+        "detail": { "type": ["string", "null"] },
+        "checked_in_seconds": { "type": ["number", "null"], "minimum": 0 },
+        "facts": {
+          "description": "Counts, statuses and references. Never a payload, never a balance.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -60,8 +60,71 @@
         "null"
       ],
       "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "daily_pnl_status": {
+      "description": "How far the realised figure can be relied on (Milestone 11). TRACKED means every position that closed today produced a usable result. UNKNOWN means positions closed and at least one did not — an absence of knowledge about a day on which money moved, and emphatically not zero loss. NOT_TRACKED means no profit-and-loss ledger was consulted; it is the state of every snapshot written before Milestone 11, which is why it is the default.",
+      "enum": [
+        "TRACKED",
+        "UNKNOWN",
+        "NOT_TRACKED"
+      ]
+    },
+    "unavailable_pnl_position_ids": {
+      "description": "Positions that closed today and produced no usable figure. Named rather than counted: 'which one' is the first question anybody asks of an unknown daily result.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     }
   },
+  "allOf": [
+    {
+      "description": "A figure that is not trustworthy is not reported. A comfortable number next to 'we could not measure today' is exactly how an unmeasured day would pass a loss limit.",
+      "if": {
+        "properties": {
+          "daily_pnl_status": {
+            "enum": [
+              "UNKNOWN",
+              "NOT_TRACKED"
+            ]
+          }
+        },
+        "required": [
+          "daily_pnl_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "realized_pnl_today": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "description": "TRACKED means there is a real number.",
+      "if": {
+        "properties": {
+          "daily_pnl_status": {
+            "const": "TRACKED"
+          }
+        },
+        "required": [
+          "daily_pnl_status"
+        ]
+      },
+      "then": {
+        "required": [
+          "realized_pnl_today"
+        ],
+        "properties": {
+          "realized_pnl_today": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "money": {
       "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",

@@ -1,0 +1,378 @@
+{
+  "uid": "trading-workflow-funnel",
+  "title": "Trading \u2014 Workflow Funnel",
+  "description": "How far work got, stage by stage. Counts only what the system actually emits; a stage with no metric shows as unavailable rather than as zero.",
+  "tags": [
+    "trading",
+    "milestone-11"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "Reading this funnel honestly",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Each bar is **the number of runs that reached that stage**, not the number of candidates that survived it. The system does not emit a per-candidate counter at every stage, and inventing one from the counters it does emit would produce a plausible funnel that is not measured.\n\nWhere a stage shows **unavailable**, the metric has not been emitted \u2014 no run has happened, or telemetry is disabled. That is deliberately not rendered as `0`: *'nothing ran'* and *'a run selected nothing'* are different facts, and only the second is a statement about the market.\n\n`NO_TRADE` is a first-class outcome at every stage. A narrow funnel is the ordinary answer, not a fault."
+      }
+    },
+    {
+      "type": "row",
+      "title": "The opportunity funnel",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "bargauge",
+      "title": "Runs reaching each stage",
+      "description": "Stages 1-6 authorise; stage 7 is the first that can send an order. Nothing between them is inferred: each bar is that stage's own counter.",
+      "gridPos": {
+        "h": 11,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(universe_runs_total[$__range]))",
+          "refId": "A",
+          "legendFormat": "1. Universe",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(research_runs_total[$__range]))",
+          "refId": "B",
+          "legendFormat": "2. Research",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(strategy_decisions_total[$__range]))",
+          "refId": "C",
+          "legendFormat": "3. Strategy",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(contract_selections_total[$__range]))",
+          "refId": "D",
+          "legendFormat": "4. Contract",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(risk_approved_total[$__range]))",
+          "refId": "E",
+          "legendFormat": "5. Risk approved",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(allocations_total[$__range]))",
+          "refId": "F",
+          "legendFormat": "6. Allocation",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(execution_submissions_total[$__range]))",
+          "refId": "G",
+          "legendFormat": "7. Execution submitted",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(execution_fills_total[$__range]))",
+          "refId": "H",
+          "legendFormat": "8. Filled",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(positions_opened_total[$__range]))",
+          "refId": "I",
+          "legendFormat": "9. Position open",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(positions_closed_total[$__range]))",
+          "refId": "J",
+          "legendFormat": "10. Exited",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "unavailable",
+          "color": {
+            "mode": "continuous-BlPu"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Where things stop",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "table",
+      "title": "Risk rejections by reason category",
+      "description": "Categories rather than individual reason strings: a per-reason label would be unbounded cardinality. The specific code is on the stored risk evaluation.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 19
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (reason_category) (increase(risk_rejected_total[$__range]))",
+          "refId": "A",
+          "legendFormat": "{{reason_category}}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "unavailable"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "type": "table",
+      "title": "Exit decisions",
+      "description": "WAIT / EXIT / BLOCK. A block is re-derived every evaluation, never remembered.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 19
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (decision) (increase(exit_evaluations_total[$__range]))",
+          "refId": "A",
+          "legendFormat": "{{decision}}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "unavailable"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "type": "row",
+      "title": "Why positions exited",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "bargauge",
+      "title": "Exit causes",
+      "description": "The first policy in EXIT_POLICY_PRECEDENCE that does not say WAIT governs, so these are the policies that actually decided rather than the ones that would have.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(trailing_triggered_total[$__range]))",
+          "refId": "A",
+          "legendFormat": "Trailing stop",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(expiration_exits_total[$__range]))",
+          "refId": "B",
+          "legendFormat": "Expiration",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(take_profit_exits_total[$__range]))",
+          "refId": "C",
+          "legendFormat": "Take profit",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(max_loss_exits_total[$__range]))",
+          "refId": "D",
+          "legendFormat": "Maximum loss",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(thesis_invalidations_total[$__range]))",
+          "refId": "E",
+          "legendFormat": "Thesis invalidated",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "unavailable",
+          "color": {
+            "mode": "continuous-BlPu"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "type": "bargauge",
+      "title": "Capital lifecycle",
+      "description": "Capital returns to the campaign only on broker-confirmed closure. A blocked settlement names the evidence that was missing; UNKNOWN never releases.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(pnl_results_total[$__range]))",
+          "refId": "A",
+          "legendFormat": "Realised results computed",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(settlements_total[$__range]))",
+          "refId": "B",
+          "legendFormat": "Settlements evaluated",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(settlements_blocked_total[$__range]))",
+          "refId": "C",
+          "legendFormat": "Settlements blocked",
+          "instant": true
+        },
+        {
+          "expr": "sum(increase(execution_unknown_total[$__range]))",
+          "refId": "D",
+          "legendFormat": "Executions UNKNOWN",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "unavailable",
+          "color": {
+            "mode": "continuous-BlPu"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "type": "text",
+      "title": "From a number here to the trade behind it",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Metrics carry **no domain identifiers** \u2014 by design, and a test enforces it. The navigation path is:\n\n1. notice a change here;\n2. open the **Tempo** trace for the operation;\n3. read `trading.execution.id` / `trading.position.id` / `trading.exit.id` off the span;\n4. open the immutable artifact: `execution explain --execution-id \u2026`, `exit explain --position-id \u2026`, `pnl show --position-id \u2026`.\n\nStep 4 leaves Grafana on purpose. The artifact is the audit record; this stack navigates *to* it and never replaces it."
+      }
+    }
+  ],
+  "editable": true
+}

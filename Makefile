@@ -10,6 +10,11 @@ CLI := $(PYTHON) -m trading_system.cli
         test-positions test-reservations test-reconciliation test-position-integration \
         test-exit test-exit-unit test-exit-integration test-exit-safety test-exit-cli \
         test-paper-exit \
+        test-observability test-scheduler test-pnl test-operations test-alerts \
+        test-operations-integration \
+        ops-health ops-scheduler-plan ops-jobs ops-alerts ops-metrics \
+        pnl-show pnl-history pnl-settle \
+        observability-up observability-down observability-validate \
         test-broker test-data test-integration \
         test-e2e universe-validate universe-run universe-show research-validate \
         research-run research-show strategy-validate strategy-run strategy-show \
@@ -126,6 +131,24 @@ test-paper-exit:  ## CAN SUBMIT A REAL PAPER SELL ORDER. Needs a running IB Gate
 	@sleep 5
 	ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true \
 		$(PYTEST) tests/integration/test_paper_exit.py -m paper_execution -s
+
+test-observability:  ## Telemetry: spans, privacy, cardinality, failure isolation
+	$(PYTEST) tests/observability
+
+test-scheduler:  ## Scheduler: cadence, isolation, idempotency, restart safety
+	$(PYTEST) tests/operations/test_scheduler.py tests/operations/test_cron.py
+
+test-pnl:  ## Realised profit and loss, settlement and daily loss (Milestone 11)
+	$(PYTEST) tests/pnl
+
+test-operations:  ## Every operations suite: scheduler, alerts, health, boundaries
+	$(PYTEST) tests/operations
+
+test-alerts:  ## Alert rules, and the claim that an alert cannot trade
+	$(PYTEST) tests/operations/test_alerts.py
+
+test-operations-integration:  ## Allocation to settlement to daily loss, end to end
+	$(PYTEST) tests/integration/test_operations_lifecycle.py
 
 test-broker:  ## Broker adapter and simulator tests (Milestone 2)
 	$(PYTEST) tests/broker
@@ -266,6 +289,46 @@ positions-monitor:  ## Evaluate every open position for exit. Submits no orders
 # Deliberately no `execution-run` or `exit-run` target. Submitting requires
 # `--confirm` on the command line, and a make target that wrapped either would
 # be a way to open — or close — a position by typing four characters.
+
+ops-health:  ## Trading health and observability health, separately (Milestone 11)
+	$(CLI) ops health
+
+ops-scheduler-plan:  ## What would run now, and what fires next. Side-effect free
+	$(CLI) ops scheduler plan
+
+ops-jobs:  ## Registered jobs and their run history (Milestone 11)
+	$(CLI) ops jobs
+
+ops-alerts:  ## Recorded operational alerts. Alerts notify; they never trade
+	$(CLI) ops alerts
+
+ops-metrics:  ## The telemetry configuration, the metrics and the cardinality guard
+	$(CLI) ops metrics
+
+pnl-show:  ## Realised results, from broker-confirmed fills only (Milestone 11)
+	$(CLI) pnl show
+
+pnl-history:  ## List realised results, newest first
+	$(CLI) pnl history
+
+pnl-settle:  ## Compute results and return capital for confirmed-closed positions
+	$(CLI) pnl settle
+
+# Deliberately no `ops-scheduler-start` target. Starting the loop is a decision
+# an operator makes deliberately, and the one job that can place an order needs
+# two switches on top of it.
+
+observability-validate:  ## Validate the observability compose profile and configs
+	docker compose --profile observability config --quiet && echo "compose OK"
+
+observability-up:  ## Start the OPTIONAL telemetry stack. Trading runs without it
+	docker compose --profile observability up -d
+	@echo "Grafana:     http://localhost:$${GRAFANA_PORT:-3000}  (admin / $${GRAFANA_ADMIN_PASSWORD:-admin})"
+	@echo "Collector:   http://localhost:$${OTLP_HTTP_PORT:-4318}  (OTLP in)"
+	@echo "Set OBSERVABILITY_ENABLED=true to export to it."
+
+observability-down:  ## Stop the telemetry stack. Trading is unaffected
+	docker compose --profile observability down
 
 ibkr-connection:  ## Read-only IBKR connection test (Milestone 2)
 	$(CLI) test ibkr-connection

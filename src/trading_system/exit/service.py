@@ -101,6 +101,14 @@ from trading_system.exit.valuation import ExitQuoteReader, HeldLeg, read_and_val
 from trading_system.infrastructure.clock import Clock, SystemClock
 from trading_system.infrastructure.logging import get_logger
 from trading_system.infrastructure.settings import Settings, SystemConfig, project_root
+from trading_system.observability import metrics as _metrics
+from trading_system.observability.attributes import (
+    TRADING_EXIT_ID,
+    TRADING_POSITION_ID,
+    TRADING_REASON_CODE,
+    TRADING_STATUS,
+)
+from trading_system.observability.instrument import traced
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from trading_system.execution.models import ExecutionRecord
@@ -408,6 +416,23 @@ class ExitService:
         )
 
     # --- operation: exit.evaluate ------------------------------------------
+    @traced(
+        "exit.evaluate",
+        attributes=lambda self, position, **kwargs: {
+            TRADING_POSITION_ID: position.position_id,
+        },
+        count=_metrics.EXIT_EVALUATIONS_TOTAL,
+        duration=_metrics.EXIT_EVALUATION_DURATION,
+        result_attributes=lambda outcome: {
+            TRADING_EXIT_ID: outcome.decision.decision_id,
+            TRADING_STATUS: outcome.decision.decision.value,
+            TRADING_REASON_CODE: outcome.decision.primary_reason.value,
+        },
+        labels=lambda outcome: {
+            "decision": outcome.decision.decision.value,
+            "strategy": outcome.position.strategy.value,
+        },
+    )
     def evaluate(
         self,
         position: OpenPosition,
@@ -533,6 +558,12 @@ class ExitService:
         )
 
     # --- operation: position.monitor ---------------------------------------
+    @traced(
+        "position.monitor",
+        duration=_metrics.POSITION_MONITOR_DURATION,
+        result_attributes=lambda run: {TRADING_STATUS: run.result.status.value},
+        labels=lambda run: {"status": run.result.status.value},
+    )
     def monitor(
         self,
         *,
@@ -730,6 +761,15 @@ class ExitService:
             versions=self.versions(),
         )
 
+    @traced(
+        "exit.execute",
+        attributes=lambda self, outcome, **kwargs: {
+            TRADING_POSITION_ID: outcome.position.position_id,
+            TRADING_EXIT_ID: outcome.decision.decision_id,
+        },
+        count=_metrics.EXIT_TRIGGERED_TOTAL,
+        labels=lambda outcome: {"strategy": outcome.position.strategy.value},
+    )
     def _act(self, outcome: ExitEvaluationOutcome, *, at: datetime) -> ExitEvaluationOutcome:
         """Hand one triggered exit to Milestone 8, and record what came back."""
         request = self.build_request(outcome, at=at)
@@ -807,6 +847,11 @@ class ExitService:
         )
 
     # --- operation: exit.confirm -------------------------------------------
+    @traced(
+        "exit.confirm",
+        count=_metrics.POSITIONS_CLOSED_TOTAL,
+        labels=lambda confirmed: {"confirmed": str(len(confirmed))},
+    )
     def confirm(
         self, *, as_of: datetime | None = None, snapshot: BrokerPositionSnapshot | None = None
     ) -> list[PositionLifecycleSnapshot]:

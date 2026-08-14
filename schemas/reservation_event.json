@@ -16,9 +16,18 @@
     "source"
   ],
   "properties": {
-    "event_id": { "type": "string", "minLength": 1 },
-    "reservation_id": { "type": "string", "minLength": 1 },
-    "sequence": { "type": "integer", "minimum": 0 },
+    "event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reservation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
     "event_type": {
       "enum": [
         "RESERVATION_CREATED",
@@ -28,24 +37,59 @@
         "RESERVATION_RELEASED",
         "RESERVATION_RETAINED_UNKNOWN",
         "RESERVATION_CORRECTED",
-        "RESERVATION_OBSERVED"
+        "RESERVATION_OBSERVED",
+        "RESERVATION_SETTLED",
+        "RESERVATION_PARTIALLY_SETTLED",
+        "RESERVATION_SETTLEMENT_BLOCKED"
       ]
     },
     "state": {
       "description": "The state the reservation is in AFTER this event.",
-      "enum": ["RESERVED", "PARTIALLY_CONSUMED", "CONSUMED", "RELEASED", "UNKNOWN"]
+      "enum": [
+        "RESERVED",
+        "PARTIALLY_CONSUMED",
+        "CONSUMED",
+        "RELEASED",
+        "UNKNOWN",
+        "SETTLED"
+      ]
     },
-    "occurred_at": { "type": "string", "format": "date-time" },
-    "observed_at": { "type": "string", "format": "date-time" },
-    "source": { "type": "string", "minLength": 1 },
-    "schema_version": { "type": "string", "minLength": 1 },
-    "consumed_delta": { "$ref": "#/$defs/money" },
-    "released_delta": { "$ref": "#/$defs/money" },
-    "over_delta": { "$ref": "#/$defs/money" },
-    "consumed_quantity_delta": { "type": "integer" },
-    "consumed_from_actual_fills": { "type": "boolean" },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "consumed_delta": {
+      "$ref": "#/$defs/money"
+    },
+    "released_delta": {
+      "$ref": "#/$defs/money"
+    },
+    "over_delta": {
+      "$ref": "#/$defs/money"
+    },
+    "consumed_quantity_delta": {
+      "type": "integer"
+    },
+    "consumed_from_actual_fills": {
+      "type": "boolean"
+    },
     "reason_code": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "enum": [
         "AUTHORIZED",
         "NOT_EXECUTED",
@@ -62,19 +106,81 @@
         "BROKER_DATA_UNAVAILABLE",
         "CURRENCY_MISMATCH",
         "BROKER_CORRECTION",
-        null
+        null,
+        "POSITION_CLOSED_CONFIRMED",
+        "POSITION_PARTIALLY_CLOSED",
+        "SETTLEMENT_BLOCKED"
       ]
     },
-    "detail": { "type": ["string", "null"] },
-    "execution_id": { "type": ["string", "null"] },
-    "broker_order_id": { "type": ["string", "null"] },
+    "detail": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "execution_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "broker_order_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "reconciliation_id": {
       "description": "The reconciliation that produced this observation, where one did. An economic change with no evidence behind it should not be recordable silently.",
-      "type": ["string", "null"]
+      "type": [
+        "string",
+        "null"
+      ]
     },
-    "fill_ids": { "type": "array", "items": { "type": "string" } }
+    "fill_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "settled_delta": {
+      "description": "Consumed capital returning to the campaign because the broker confirms the position is gone (Milestone 11). A delta, exactly like the others, so applying the same settlement twice moves nothing.",
+      "$ref": "#/$defs/money"
+    },
+    "realized_pnl": {
+      "description": "The realised result behind that settlement, where one is known. May be negative: a loss is as real a result as a profit.",
+      "$ref": "#/$defs/nullable_money"
+    },
+    "settlement_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pnl_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "position_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
   },
   "$defs": {
-    "money": { "type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$" }
+    "money": {
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "nullable_money": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    }
   }
 }

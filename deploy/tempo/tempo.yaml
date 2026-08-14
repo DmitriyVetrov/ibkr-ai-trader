@@ -1,0 +1,37 @@
+# Tempo — trace storage for local development (Milestone 11).
+#
+# Receives OTLP from the collector, never from the application. Local
+# filesystem storage: this is a research deployment, not a production trace
+# store, and a single-binary Tempo is exactly enough to answer "show me the
+# trace for this execution id".
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    # Local development retention. A trace is an operational record with a
+    # short useful life; the AUDIT record is the immutable domain artifact,
+    # which is kept for ever and is not stored here.
+    block_retention: 48h
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks

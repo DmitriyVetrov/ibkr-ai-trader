@@ -47,6 +47,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from trading_system.domain.enums import DataType
     from trading_system.execution.service import ExecutionService
     from trading_system.exit.service import ExitService
+    from trading_system.operations.service import OperationsService
+    from trading_system.pnl.service import PnLService
     from trading_system.positions.service import PositionService
     from trading_system.reconciliation.service import ReconciliationService
     from trading_system.research.service import ResearchService
@@ -188,6 +190,23 @@ reports_app = typer.Typer(
     no_args_is_help=True,
 )
 
+ops_app = typer.Typer(
+    help=(
+        "Operations: health, the scheduler, jobs, alerts and metrics. "
+        "Everything here READS, notifies or orchestrates; nothing decides a trade. "
+        "(read-only unless a command says otherwise)"
+    ),
+    no_args_is_help=True,
+)
+
+pnl_app = typer.Typer(
+    help=(
+        "Realised profit and loss, from broker-confirmed fills only. "
+        "Never from a limit price, a reference price or an estimate. (read-only)"
+    ),
+    no_args_is_help=True,
+)
+
 app.add_typer(run_app, name="run")
 app.add_typer(test_app, name="test")
 app.add_typer(data_app, name="data")
@@ -203,6 +222,8 @@ app.add_typer(reservations_app, name="reservations")
 app.add_typer(exit_app, name="exit")
 app.add_typer(reconciliation_app, name="reconciliation")
 app.add_typer(reports_app, name="reports")
+app.add_typer(ops_app, name="ops")
+app.add_typer(pnl_app, name="pnl")
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +328,37 @@ def _print_zero_orders(broker: Broker) -> None:
 @app.callback()
 def _main_callback() -> None:
     """Autonomous options trading system."""
+    _bootstrap_telemetry()
+
+
+def _bootstrap_telemetry() -> None:
+    """Start telemetry, if it is configured. Never fails a command.
+
+    Runs before every command. Four outcomes are possible — disabled, SDK
+    absent, misconfigured, active — and all four produce identical trading
+    behaviour, which is the property ``tests/observability/`` asserts by
+    running the same operations under each and comparing stored artifacts.
+
+    Wrapped in its own ``try`` on top of the runtime's: a CLI that failed to
+    start because a collector was unreachable would be telemetry deciding
+    whether the system runs, which is precisely inverted.
+    """
+    try:
+        from trading_system.observability.logging import install_correlation
+        from trading_system.observability.runtime import configure_telemetry
+
+        settings = Settings()
+        config = load_config(settings.config_dir)
+        observability = settings.resolved_observability(config.observability)
+        configure_telemetry(config=observability, service_version=__version__)
+        if observability.logging.correlate_traces:
+            install_correlation(
+                service_name=observability.service_name,
+                trading_mode=settings.trading_mode.value,
+                include_service_context=observability.logging.include_service_context,
+            )
+    except Exception:
+        return
 
 
 @app.command()
@@ -501,20 +553,102 @@ def run_opportunities() -> None:
 
 @run_app.command("position-monitor")
 def run_position_monitor() -> None:
-    """Run the fast position management loop once. (mutates state)"""
-    _not_implemented("position monitor", "Milestone 9 (position lifecycle)")
+    """Run the scheduled position-monitor job once. (mutates local state)
+
+    The same job the scheduler fires: capture what the broker holds, evaluate
+    the exit policy against it, and submit nothing. Submitting is a separate
+    job (``exit_management``) behind two switches, for the same reason
+    ``exit evaluate`` and ``exit run --confirm`` are separate commands.
+    """
+    _run_scheduled_job("position_monitor")
+
+
+@run_app.command("exit-management")
+def run_exit_management() -> None:
+    """Run the scheduled exit-submission job once. (CAN SUBMIT AN ORDER)
+
+    Refuses unless **both** switches are on: ``authorize_exits`` on this job in
+    ``config/schedules.yaml`` *and* ``execution.enabled`` in
+    ``config/execution.yaml``. Neither implies the other. The decision is
+    Milestone 10's and the order is Milestone 8's; this job chooses nothing.
+    """
+    _run_scheduled_job("exit_management")
+
+
+@run_app.command("pnl-settlement")
+def run_pnl_settlement() -> None:
+    """Run the scheduled settlement job once. (mutates local state)
+
+    Computes realised results for confirmed-closed positions and returns their
+    capital to the campaign. Submits no order — this package holds no broker.
+    """
+    _run_scheduled_job("pnl_settlement")
+
+
+@run_app.command("operational-health")
+def run_operational_health() -> None:
+    """Run the scheduled health job once. (mutates local state)
+
+    Records trading health and observability health, separately, and evaluates
+    the alert rules. Reads only; notifies only.
+    """
+    _run_scheduled_job("operational_health")
+
+
+def _run_scheduled_job(name: str) -> None:
+    """Invoke one registered job through the scheduler's own guards.
+
+    Deliberately *through* the scheduler rather than by calling the service
+    directly: a job run by hand must not be able to do something the cadence
+    would have refused. The market calendar, the enabled switch and the
+    duplicate check against the stored run for this instant all still apply.
+    """
+    from trading_system.domain.enums import JobStatus
+
+    scheduler = _scheduler()
+    record = scheduler.run_job(name)
+    style = {
+        JobStatus.SUCCESS: "green",
+        JobStatus.SKIPPED: "yellow",
+        JobStatus.FAILED: "red",
+        JobStatus.UNKNOWN: "yellow",
+        JobStatus.BLOCKED: "yellow",
+    }.get(record.status, "white")
+    console.print(f"\n[{style}]{record.status.value}[/{style}]  {record.job}")
+    if record.skip_reason is not None:
+        console.print(f"Reason  : {record.skip_reason.value}")
+    console.print(f"Summary : {record.summary or '-'}")
+    if record.error_type:
+        console.print(f"[red]{record.error_type}[/red]: {record.error_message}")
+    submitted = record.orders_submitted
+    console.print(f"Orders submitted : [{'green' if submitted == 0 else 'yellow'}]{submitted}[/]")
+    if record.status is JobStatus.FAILED:
+        raise typer.Exit(code=EXIT_ERROR)
 
 
 @run_app.command("thesis-monitor")
 def run_thesis_monitor() -> None:
     """Re-check whether entry theses still hold. (mutates state)"""
-    _not_implemented("thesis monitor", "Milestone 9 (position lifecycle)")
+    _not_implemented(
+        "the separate thesis monitor (VALID / WEAKENING / INVALIDATED / UNKNOWN)",
+        "a later milestone",
+        hint=(
+            "'exit evaluate' checks each position's stored invalidation conditions "
+            "deterministically as part of the exit policy. What is absent is the judgement "
+            "that a thesis has WEAKENED without being falsified, and nothing fabricates one"
+        ),
+    )
 
 
 @run_app.command("reconciliation")
 def run_reconciliation() -> None:
-    """Reconcile internal state against IBKR. (mutates state)"""
-    _not_implemented("reconciliation loop", "Milestone 2 (broker connectivity)")
+    """Run the scheduled reconciliation job once. (mutates local state)
+
+    Compares internal records against broker reality and reports. It cannot
+    place, cancel or modify an order, and the submitted-order count is read off
+    the broker rather than asserted.
+    """
+    _run_scheduled_job("reconciliation")
 
 
 @run_app.command("data-collection")
@@ -545,8 +679,13 @@ def run_data_collection(simulated: SimulatedOption = False) -> None:
 
 @run_app.command("end-of-day-report")
 def run_end_of_day_report() -> None:
-    """Produce the daily report. (mutates state)"""
-    _not_implemented("end-of-day report", "Milestone 11 (evaluation)")
+    """Run the scheduled end-of-day roll-up once. (mutates local state)
+
+    Aggregates the session's realised results from the profit-and-loss ledger.
+    A day on which nothing closed produces no roll-up rather than a zero: a
+    flat day and a day with no trades are different facts.
+    """
+    _run_scheduled_job("end_of_day_report")
 
 
 # ---------------------------------------------------------------------------
@@ -4618,6 +4757,548 @@ def _mask_account(account_id: str | None) -> str:
 
 def _or_dash(value: object | None) -> str:
     return "-" if value is None else str(value)
+
+
+# ---------------------------------------------------------------------------
+# Operations (Milestone 11)
+# ---------------------------------------------------------------------------
+#
+# Two rules hold across this whole group, and both are asserted by tests:
+#
+# * nothing here decides a trade. Health reads, alerts notify, the scheduler
+#   orchestrates services that already made their decisions;
+# * only one scheduled job can submit an order, it needs two switches, and
+#   every command prints the count it read off the service it invoked rather
+#   than asserting zero.
+def _operations_service() -> OperationsService:
+    """Build the Milestone 11 operations root, or fail with a diagnostic."""
+    from trading_system.operations.service import OperationsService as _Service
+
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        err_console.print(f"[red]CONFIGURATION ERROR[/red]\n{exc}")
+        raise typer.Exit(code=EXIT_ERROR) from exc
+    return _Service(settings=settings, config=config)
+
+
+def _scheduler() -> Any:
+    """Build the scheduler, surfacing an unusable cadence as a fatal error."""
+    from trading_system.operations.scheduler import Scheduler, SchedulerError
+
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        err_console.print(f"[red]CONFIGURATION ERROR[/red]\n{exc}")
+        raise typer.Exit(code=EXIT_ERROR) from exc
+    try:
+        return Scheduler(settings=settings, config=config)
+    except (SchedulerError, KeyError) as exc:
+        _fail(str(exc))
+        raise AssertionError("unreachable") from exc  # pragma: no cover
+
+
+_HEALTH_STYLES = {
+    "HEALTHY": "green",
+    "DEGRADED": "yellow",
+    "UNAVAILABLE": "red",
+    "BLOCKED": "bold red",
+    "UNKNOWN": "yellow",
+}
+
+
+@ops_app.command("health")
+def ops_health(
+    probe_broker: Annotated[
+        bool,
+        typer.Option("--broker", help="Also open one read-only connection and probe it."),
+    ] = False,
+    store: Annotated[bool, typer.Option("--store/--no-store", help="Record the report.")] = True,
+) -> None:
+    """Report trading health and observability health, separately. (read-only)
+
+    The separation is the point: an unreachable Grafana degrades observability
+    health and leaves trading health untouched. A system that reported a
+    telemetry outage as a trading fault would train its operators to ignore the
+    banner that means a broker is unreachable.
+
+    The broker is **not** probed unless asked. A probe costs one of the
+    connection's reliable round trips, and an unprobed broker is reported
+    ``UNKNOWN`` rather than healthy — "all green" must not be achievable by not
+    looking.
+    """
+    from trading_system.domain.enums import HealthDomain, HealthStatus
+
+    service = _operations_service()
+    report = service.health(probe_broker=probe_broker, store=store)
+
+    def styled(status: HealthStatus) -> str:
+        style = _HEALTH_STYLES.get(status.value, "white")
+        return f"[{style}]{status.value}[/{style}]"
+
+    console.print("\n[bold]OPERATIONAL HEALTH[/bold]")
+    console.print(f"As of      : {report.as_of.isoformat()}")
+    console.print(f"Mode       : {report.trading_mode.value}")
+    console.print(f"Versions   : app {report.application_version}, config {report.config_version}")
+    console.print(f"\nTRADING        : {styled(report.trading_status)}")
+    console.print(f"OBSERVABILITY  : {styled(report.observability_status)}")
+
+    for domain in (HealthDomain.TRADING, HealthDomain.OBSERVABILITY):
+        components = report.for_domain(domain)
+        if not components:
+            continue
+        table = Table(title=f"{domain.value} components", show_header=True, header_style="bold")
+        table.add_column("Component")
+        table.add_column("Status")
+        table.add_column("Summary")
+        for component in components:
+            table.add_row(component.component.value, styled(component.status), component.summary)
+        console.print(table)
+
+    console.print(
+        "\n[dim]An unreachable telemetry backend degrades OBSERVABILITY and cannot move "
+        "TRADING. Trading health is derived from trading components alone.[/dim]"
+    )
+    if report.trading_status in (HealthStatus.BLOCKED, HealthStatus.UNAVAILABLE):
+        raise typer.Exit(code=EXIT_ERROR)
+
+
+@ops_app.command("scheduler")
+def ops_scheduler(
+    action: Annotated[
+        str,
+        typer.Argument(help="plan | tick | start | status"),
+    ] = "plan",
+    max_ticks: Annotated[
+        int | None,
+        typer.Option("--max-ticks", help="Stop after this many ticks (start only)."),
+    ] = None,
+    within: Annotated[
+        int, typer.Option("--within", help="Minutes ahead to show (plan only).")
+    ] = 60,
+) -> None:
+    """Inspect or run the scheduler. (``tick`` and ``start`` mutate state)
+
+    ``plan``    what would run now and what fires next. Side-effect free.
+    ``status``  the last tick, and any job whose completion was never recorded.
+    ``tick``    run everything due once, each job isolated and bounded.
+    ``start``   tick on the configured cadence until stopped.
+
+    Only ``exit_management`` can place an order, and only with
+    ``execution.enabled`` **and** ``authorize_exits`` on that job. Every run
+    prints the order count read off the services it invoked.
+    """
+    from trading_system.domain.enums import JobStatus
+
+    scheduler = _scheduler()
+
+    if action == "plan":
+        plans = scheduler.plan()
+        table = Table(title="Scheduler plan", show_header=True, header_style="bold")
+        for column in ("job", "cron", "due", "will run", "why not", "next fire", "can submit"):
+            table.add_column(column)
+        for plan in plans:
+            table.add_row(
+                plan.job,
+                plan.schedule.cron,
+                "yes" if plan.due else "no",
+                "[green]yes[/green]" if plan.will_run else "no",
+                plan.skip_reason.value if plan.skip_reason else "-",
+                plan.next_fire_at.isoformat() if plan.next_fire_at else "never",
+                "[yellow]ORDERS[/yellow]" if plan.definition.can_submit_orders else "no",
+            )
+        console.print(table)
+        console.print(
+            f"\n[dim]Timezone {scheduler.timezone}. Scheduler "
+            f"{'enabled' if scheduler.enabled else 'DISABLED'} in config/schedules.yaml.[/dim]"
+        )
+        upcoming = scheduler.upcoming(within_minutes=within)
+        console.print(f"{len(upcoming)} job(s) fire within {within} minutes.")
+        return
+
+    if action == "status":
+        latest = scheduler.repository.latest_scheduler_run()
+        if latest is None:
+            console.print("[yellow]No scheduler tick has been recorded.[/yellow]")
+            raise typer.Exit(code=EXIT_OK)
+        console.print(f"\n[bold]LAST TICK[/bold]  {latest.status.value}")
+        console.print(f"Scheduled for : {latest.scheduled_for.isoformat()}")
+        console.print(f"Jobs          : {len(latest.runs)}")
+        console.print(f"Orders        : {latest.orders_submitted}")
+        unfinished = scheduler.repository.unfinished_job_runs()
+        if unfinished:
+            console.print(
+                f"\n[yellow]{len(unfinished)} job run(s) never recorded a result.[/yellow]\n"
+                f"They are neither failures nor successes — the work may have completed. "
+                f"Starting the scheduler reclassifies them as UNKNOWN and, because every job "
+                f"is idempotent against persisted state, the next firing establishes the "
+                f"answer."
+            )
+            for run in unfinished:
+                console.print(f"  {run.job}  scheduled {run.scheduled_for.isoformat()}")
+        return
+
+    if action in ("tick", "start"):
+        scheduler.recover()
+        ticks = (
+            [scheduler.tick()] if action == "tick" else scheduler.serve(max_ticks=max_ticks or 1)
+        )
+        submitted = sum(tick.orders_submitted for tick in ticks)
+        for tick in ticks:
+            console.print(
+                f"\n[bold]TICK[/bold] {tick.scheduled_for.isoformat()}  {tick.status.value}"
+            )
+            for run in tick.runs:
+                style = {
+                    JobStatus.SUCCESS: "green",
+                    JobStatus.SKIPPED: "dim",
+                    JobStatus.FAILED: "red",
+                    JobStatus.UNKNOWN: "yellow",
+                    JobStatus.BLOCKED: "yellow",
+                }.get(run.status, "white")
+                console.print(
+                    f"  [{style}]{run.status.value:<8}[/{style}] {run.job:<20} {run.summary or ''}"
+                )
+        style = "green" if submitted == 0 else "yellow"
+        console.print(f"\nOrders submitted : [{style}]{submitted}[/{style}]")
+        return
+
+    _fail(f"unknown scheduler action {action!r}; use plan, tick, start or status")
+
+
+@ops_app.command("jobs")
+def ops_jobs(
+    job: Annotated[str | None, typer.Option("--job", help="Only this job's runs.")] = None,
+    run: Annotated[
+        str | None,
+        typer.Option("--run", help="Run this job once, now, outside the cadence."),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="How many runs to show.")] = 20,
+) -> None:
+    """List registered jobs and their run history. (``--run`` mutates state)
+
+    ``--run`` invokes one job immediately. It still goes through every guard
+    the cadence applies — the market calendar, the enabled switch, the
+    duplicate check against the *stored* run for this instant — so running a
+    job by hand cannot do something the scheduler would have refused.
+    """
+    from trading_system.domain.enums import JobStatus
+
+    scheduler = _scheduler()
+
+    if run is not None:
+        if run not in scheduler.registry:
+            _fail(f"no job named {run!r}. Registered: {', '.join(sorted(scheduler.registry))}")
+        record = scheduler.run_job(run)
+        style = "green" if record.status is JobStatus.SUCCESS else "yellow"
+        console.print(
+            f"\n[{style}]{record.status.value}[/{style}]  {record.job}\n{record.summary or ''}"
+        )
+        if record.error_type:
+            console.print(f"[red]{record.error_type}[/red]: {record.error_message}")
+        console.print(f"Orders submitted : {record.orders_submitted}")
+        if record.status is JobStatus.FAILED:
+            raise typer.Exit(code=EXIT_ERROR)
+        return
+
+    registry = Table(title="Registered jobs", show_header=True, header_style="bold")
+    for column in ("job", "cron", "enabled", "market hours", "timeout", "can submit"):
+        registry.add_column(column)
+    for name, definition in sorted(scheduler.registry.items()):
+        schedule = scheduler._config.schedules.jobs[name]
+        registry.add_row(
+            name,
+            schedule.cron,
+            "yes" if schedule.enabled else "[dim]no[/dim]",
+            "yes" if schedule.market_hours_only else "no",
+            f"{schedule.timeout_seconds:g}s",
+            "[yellow]ORDERS[/yellow]" if definition.can_submit_orders else "no",
+        )
+    console.print(registry)
+
+    runs = scheduler.repository.job_runs(limit=limit, job=job)
+    if not runs:
+        console.print("\n[yellow]No job runs recorded.[/yellow]")
+        return
+    history = Table(title="Recent runs", show_header=True, header_style="bold")
+    for column in ("scheduled", "job", "status", "why", "duration", "orders", "summary"):
+        history.add_column(column)
+    for record in runs:
+        history.add_row(
+            record.scheduled_for.strftime("%Y-%m-%d %H:%M"),
+            record.job,
+            record.status.value,
+            (record.skip_reason.value if record.skip_reason else record.error_type) or "-",
+            f"{record.duration_seconds:.2f}s" if record.duration_seconds is not None else "-",
+            str(record.orders_submitted),
+            (record.summary or "")[:60],
+        )
+    console.print(history)
+
+
+@ops_app.command("alerts")
+def ops_alerts(
+    evaluate: Annotated[
+        bool,
+        typer.Option("--evaluate", help="Evaluate the rules now and notify. (mutates state)"),
+    ] = False,
+    limit: Annotated[int, typer.Option("--limit", help="How many alerts to show.")] = 20,
+) -> None:
+    """Show recorded alerts, or evaluate the rules now. (read-only by default)
+
+    An alert is a **notification**. Nothing in the alerting path can place,
+    cancel or modify an order, and a boundary test walks the import graph to
+    prove it. Safety is enforced by the domain; this is how a person finds out.
+    """
+    service = _operations_service()
+
+    if evaluate:
+        alerts = service.evaluate_alerts()
+        if not alerts:
+            console.print("[green]No alert condition is currently met.[/green]")
+            return
+    else:
+        alerts = service.alerts(limit=limit)
+        if not alerts:
+            console.print("[yellow]No alerts recorded.[/yellow]")
+            return
+
+    table = Table(title="Alerts", show_header=True, header_style="bold")
+    for column in ("raised", "severity", "code", "subject", "count", "summary", "notified"):
+        table.add_column(column)
+    for alert in alerts:
+        style = {"CRITICAL": "bold red", "WARNING": "yellow", "INFO": "dim"}.get(
+            alert.severity.value, "white"
+        )
+        table.add_row(
+            alert.raised_at.strftime("%Y-%m-%d %H:%M"),
+            f"[{style}]{alert.severity.value}[/{style}]",
+            alert.code.value,
+            alert.subject,
+            f"{alert.occurrences}/{alert.threshold}",
+            alert.summary[:60],
+            ", ".join(alert.notified_channels) or "-",
+        )
+    console.print(table)
+    console.print(
+        "\n[dim]Alerts notify. They never execute a trade, and no configuration makes "
+        "them able to.[/dim]"
+    )
+
+
+@ops_app.command("metrics")
+def ops_metrics() -> None:
+    """Show the telemetry configuration and the metric vocabulary. (read-only)
+
+    Also prints the **cardinality guard**: the labels refused at the point of
+    recording, whatever configuration says. A domain identifier as a metric
+    label is one time series per trade, and the consequence lands on a system
+    this one does not own.
+    """
+    from trading_system.observability import metrics as observability_metrics
+    from trading_system.observability.runtime import telemetry_status
+
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        _fail(str(exc))
+        raise AssertionError("unreachable") from exc  # pragma: no cover
+    observability = settings.resolved_observability(config.observability)
+
+    console.print("\n[bold]TELEMETRY[/bold]")
+    console.print(f"Enabled        : {'yes' if observability.enabled else 'no (shipped default)'}")
+    console.print(f"Status         : {telemetry_status().value}")
+    console.print(f"Service        : {observability.service_name}")
+    console.print(f"Environment    : {observability.environment}")
+    console.print(
+        f"Endpoint       : {observability.exporter.endpoint}  (a COLLECTOR, never a backend)"
+    )
+    console.print(f"Protocol       : {observability.exporter.protocol}")
+    console.print(f"Sampling       : {observability.sampling.ratio}")
+    console.print(f"Metrics        : {'on' if observability.metrics.enabled else 'off'}")
+    console.print(
+        f"Fail open      : {observability.fail_open}  "
+        f"(a telemetry failure can never change a trading decision)"
+    )
+
+    table = Table(title="Instruments", show_header=True, header_style="bold")
+    table.add_column("#")
+    table.add_column("Metric")
+    for index, name in enumerate(observability_metrics.METRIC_NAMES, start=1):
+        table.add_row(str(index), name)
+    console.print(table)
+
+    console.print("\n[bold]CARDINALITY GUARD[/bold]")
+    console.print(
+        "These are refused as metric labels at the point of recording, whatever "
+        "configuration says. They belong in traces and logs:"
+    )
+    console.print("  " + ", ".join(sorted(observability_metrics.FORBIDDEN_LABELS)))
+
+
+# ---------------------------------------------------------------------------
+# Realised profit and loss (Milestone 11)
+# ---------------------------------------------------------------------------
+def _pnl_service() -> PnLService:
+    """Build the Milestone 11 profit-and-loss root, or fail with a diagnostic."""
+    from trading_system.pnl.service import PnLService as _Service
+
+    settings = _load_settings()
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        err_console.print(f"[red]CONFIGURATION ERROR[/red]\n{exc}")
+        raise typer.Exit(code=EXIT_ERROR) from exc
+    return _Service(settings=settings, config=config)
+
+
+@pnl_app.command("show")
+def pnl_show(
+    position_id: Annotated[
+        str | None, typer.Option("--position-id", help="One position's result, in full.")
+    ] = None,
+    pnl_id: Annotated[str | None, typer.Option("--pnl-id", help="One stored result.")] = None,
+    daily: Annotated[
+        bool, typer.Option("--daily", help="Today's roll-up instead of individual trades.")
+    ] = False,
+) -> None:
+    """Show realised results. (read-only)
+
+    Every figure comes from **broker-confirmed fills** and nothing else.
+    ``NOT_AVAILABLE`` is a real answer and prints no number: a result assembled
+    from a guessed commission or an assumed multiplier would be used by the
+    daily loss limit as though it had been measured.
+    """
+    from trading_system.pnl.report import render_daily, render_realized, render_summary
+
+    service = _pnl_service()
+
+    if daily:
+        rollup = service.daily_rollup(store=False)
+        if rollup is None:
+            console.print(
+                "[yellow]UNAVAILABLE[/yellow]  no position closed in this session, so there "
+                "is no daily result. A day with no trades is not a day that broke even."
+            )
+            raise typer.Exit(code=EXIT_OK)
+        console.print()
+        console.print(render_daily(rollup))
+        return
+
+    if pnl_id is not None:
+        stored = service.get(pnl_id)
+        if stored is None:
+            console.print(f"[yellow]UNAVAILABLE[/yellow]  no realised result {pnl_id}")
+            raise typer.Exit(code=EXIT_OK)
+        console.print()
+        console.print(render_realized(stored))
+        return
+
+    if position_id is not None:
+        records = service.for_position(position_id)
+        if not records:
+            console.print(
+                f"[yellow]UNAVAILABLE[/yellow]  no realised result for {position_id}. "
+                f"A result exists once the broker confirms the position is closed."
+            )
+            raise typer.Exit(code=EXIT_OK)
+        for record in records:
+            console.print()
+            console.print(render_realized(record))
+        return
+
+    console.print()
+    console.print(render_summary(service.repository.all(limit=50)))
+
+
+@pnl_app.command("history")
+def pnl_history(
+    limit: Annotated[int, typer.Option("--limit", help="How many entries to show.")] = 20,
+    daily: Annotated[bool, typer.Option("--daily", help="Daily roll-ups instead.")] = False,
+) -> None:
+    """List realised results or daily roll-ups, newest first. (read-only)"""
+    service = _pnl_service()
+
+    if daily:
+        records = service.daily_history(limit=limit)
+        if not records:
+            console.print("[yellow]No daily results recorded.[/yellow]")
+            raise typer.Exit(code=EXIT_OK)
+        table = Table(title="Daily realised results", show_header=True, header_style="bold")
+        for column in ("session", "status", "realised", "loss", "closed", "unavailable"):
+            table.add_column(column)
+        for record in records:
+            table.add_row(
+                record.session_date.isoformat(),
+                record.status.value,
+                _or_dash(record.realized_pnl),
+                _or_dash(record.realized_loss),
+                str(record.positions_closed),
+                str(record.positions_without_result),
+            )
+        console.print(table)
+        console.print(
+            "\n[dim]An UNKNOWN day reports no total. That is not zero loss: it is an "
+            "absence of knowledge about a day on which money moved.[/dim]"
+        )
+        return
+
+    entries = service.history(limit=limit)
+    if not entries:
+        console.print("[yellow]No realised results recorded.[/yellow]")
+        raise typer.Exit(code=EXIT_OK)
+    table = Table(title="Realised results", show_header=True, header_style="bold")
+    for column in ("computed", "position", "symbol", "strategy", "status", "result", "session"):
+        table.add_column(column)
+    for entry in entries:
+        table.add_row(
+            entry.computed_at.strftime("%Y-%m-%d %H:%M"),
+            entry.pnl_id,
+            entry.underlying,
+            entry.strategy,
+            entry.status,
+            _or_dash(entry.realized_pnl),
+            entry.session_date or "-",
+        )
+    console.print(table)
+
+
+@pnl_app.command("settle")
+def pnl_settle(
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Compute everything and move no capital."),
+    ] = False,
+) -> None:
+    """Compute results for closed positions and settle their capital. (mutates state)
+
+    Capital returns to the campaign on **broker-confirmed closure** and on
+    nothing weaker: not a requested exit, not a submitted one, not a reported
+    fill. An ``UNKNOWN`` execution never settles, and no configuration permits
+    it. Every refusal names the evidence that was missing.
+
+    Safe to run repeatedly: results are content-addressed, settlement outcomes
+    are deltas, and the reservation ledger recognises a replayed event — so the
+    second run over unchanged evidence returns no capital.
+    """
+    from trading_system.pnl.report import render_run, render_settlement
+
+    service = _pnl_service()
+    run = service.run(dry_run=dry_run)
+    console.print()
+    console.print(render_run(run.result))
+
+    for record in run.settlements:
+        if record.settlement.status.value == "BLOCKED" or record.applied:
+            console.print()
+            console.print(render_settlement(record.settlement))
+
+    if dry_run:
+        console.print("\n[yellow]DRY RUN[/yellow]  nothing was written and no capital moved.")
+    console.print(f"\nOrders submitted : [green]{run.orders_submitted}[/green]")
 
 
 def main() -> None:

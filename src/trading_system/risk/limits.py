@@ -167,6 +167,7 @@ def resolve_limits(
         max_account_snapshot_age_seconds=campaign.account.max_snapshot_age_seconds,
         require_account_snapshot=campaign.account.require_account_snapshot,
         require_daily_loss_tracking=campaign.account.require_daily_loss_tracking,
+        block_on_unknown_daily_loss=campaign.account.block_on_unknown_daily_loss,
         allow_currency_conversion=campaign.currency_policy.allow_conversion,
         accepted_currencies=sorted(
             {campaign.currency, *campaign.currency_policy.treat_as_campaign_currency}

@@ -39,6 +39,7 @@ from trading_system.agents.base import (
 )
 from trading_system.agents.prompts import load_prompt, prompt_fingerprint
 from trading_system.domain.enums import ConfidenceLevel, UniverseSelectionReason
+from trading_system.observability.llm import llm_span
 from trading_system.universe.models import (
     UniverseAgentRanking,
     UniverseSelectionInput,
@@ -163,7 +164,9 @@ class UniverseSelectorAgent:
         )
 
         started = time.perf_counter()
-        response = self._client.complete(request)
+        with llm_span(agent="universe_selector", client=self._client) as call:
+            response = self._client.complete(request)
+            call.record(response)
         elapsed_ms = (time.perf_counter() - started) * 1000
 
         if response.stop_reason in _NON_ANSWER_STOP_REASONS:

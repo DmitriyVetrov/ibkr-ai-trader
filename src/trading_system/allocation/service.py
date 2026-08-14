@@ -75,6 +75,10 @@ from trading_system.domain.models import SystemVersions
 from trading_system.infrastructure.clock import Clock, SystemClock
 from trading_system.infrastructure.logging import get_logger
 from trading_system.infrastructure.settings import Settings, SystemConfig, project_root
+from trading_system.observability import metrics as _metrics
+from trading_system.observability.attributes import TRADING_ALLOCATION_ID, TRADING_STATUS
+from trading_system.observability.instrument import traced
+from trading_system.pnl.campaign_state import CampaignPnLState
 from trading_system.research.store import FilesystemResearchRepository, ResearchRepository
 from trading_system.risk.engine import RiskEngine
 from trading_system.risk.exposure import would_add
@@ -143,11 +147,16 @@ class AllocationService:
         contract_repository: ContractSelectionRepository | None = None,
         allocation_repository: AllocationRepository | None = None,
         account_repository: AccountSnapshotRepository | None = None,
+        campaign_state: CampaignPnLState | None = None,
         root: Path | None = None,
     ) -> None:
         self._settings = settings
         self._config = config
         self._clock = clock or SystemClock()
+        #: Supplied by a caller that has already read the profit-and-loss
+        #: ledger, or in a test that wants an exact daily figure. ``None``
+        #: reads it from the store on demand.
+        self._campaign_state = campaign_state
 
         data_root = Path(config.data.storage.root)
         if not data_root.is_absolute():
@@ -219,10 +228,24 @@ class AllocationService:
         return self._strategy_repository.latest()
 
     def campaign_snapshot(self, as_of: datetime) -> CampaignSnapshot:
-        """The campaign as it stood at ``as_of``, replayed from the ledger."""
+        """The campaign as it stood at ``as_of``, replayed from the ledger.
+
+        Milestone 11 adds two facts to the replay, and both come from stores
+        rather than from a service — this package may not reach a broker, a
+        provider or a data repository, and a boundary test walks its whole
+        import graph to keep it that way:
+
+        * **settled opportunities** stop consuming the envelope. Milestone 7
+          treated every authorisation as permanently spent because it could not
+          know whether the order filled; a settlement is proof that the position
+          is confirmed closed and the capital has come back.
+        * **the day's realised result**, with its reliability alongside it. An
+          unknown day is passed through as unknown, never as zero.
+        """
         budget, reserve, source = resolve_campaign_budget(
             self._config.campaign, override=self._settings.campaign_budget_eur
         )
+        state = self._campaign_pnl_state(as_of)
         return build_campaign_snapshot(
             self._allocation_repository.all_runs(),
             campaign_id=self._config.campaign.campaign_id,
@@ -231,13 +254,66 @@ class AllocationService:
             reserve=reserve,
             as_of=as_of,
             budget_source=source,
+            realized_pnl_today=state.realized_pnl_today,
+            daily_pnl_status=state.daily_pnl_status,
+            unavailable_pnl_position_ids=state.unavailable_position_ids,
+            settled_opportunity_ids=state.settled_opportunity_ids,
         )
+
+    def _campaign_pnl_state(self, as_of: datetime) -> CampaignPnLState:
+        """Read the two facts the profit-and-loss ledger contributes.
+
+        Imported inside the method, deliberately. The rule this package lives
+        under is that nothing in ``allocation/`` may reach a broker, a provider
+        or a data repository, and while this particular reader touches none of
+        them, keeping the import local means the constraint is enforced at the
+        one place a future change would break it.
+
+        A store that cannot be read at all yields ``untracked`` rather than an
+        exception: an unavailable ledger must not stop an allocation run, and
+        ``NOT_TRACKED`` is exactly the honest thing to record — the daily-loss
+        limit is then unevaluated rather than passed.
+        """
+        if self._campaign_state is not None:
+            return self._campaign_state
+        from trading_system.pnl.campaign_state import CampaignPnLState as _State
+        from trading_system.pnl.campaign_state import read_campaign_state
+
+        try:
+            return read_campaign_state(
+                self._data_root,
+                campaign_id=self._config.campaign.campaign_id,
+                as_of=as_of,
+                day_boundary_timezone=self._config.pnl.day_boundary_timezone,
+                enabled=self._config.pnl.enabled,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            _logger.warning(
+                "allocation.pnl_state_unavailable",
+                error=str(exc),
+                detail=(
+                    "the profit-and-loss ledger could not be read, so the daily loss limit is "
+                    "recorded as unevaluated rather than passed and no capital is treated as "
+                    "settled"
+                ),
+            )
+            return _State.untracked()
 
     def account_snapshot(self, as_of: datetime) -> AccountSnapshot | None:
         """The newest account snapshot that was knowable at ``as_of``."""
         return self._account_repository.latest_as_of(as_of)
 
     # --- the run -----------------------------------------------------------
+    @traced(
+        "allocation.calculate",
+        count=_metrics.ALLOCATIONS_TOTAL,
+        duration=_metrics.ALLOCATION_DURATION,
+        result_attributes=lambda run: {
+            TRADING_ALLOCATION_ID: run.result.run_id,
+            TRADING_STATUS: run.result.status.value,
+        },
+        labels=lambda run: {"status": run.result.status.value},
+    )
     def run(
         self,
         *,

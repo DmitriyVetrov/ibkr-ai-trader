@@ -1,0 +1,22 @@
+# Dashboard provisioning (Milestone 11).
+#
+# Dashboards are files in the repository, loaded on start. Nobody has to build
+# one by hand to get basic operation, and a change to a panel is a diff in a
+# pull request rather than a click somebody has to remember.
+
+apiVersion: 1
+
+providers:
+  - name: trading-system
+    orgId: 1
+    folder: Trading
+    type: file
+    disableDeletion: false
+    # Editing in the UI is allowed; the files remain the source of truth and an
+    # unsaved edit is lost on restart, which is the correct direction of
+    # authority for something that is reviewed.
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

@@ -96,6 +96,32 @@ REQUIRED_SCHEMAS = (
     "position_lifecycle_snapshot",
     "exit_request",
     "exit_run",
+    # Milestone 11 adds the realised-result, settlement and operational
+    # boundaries. `realized_pnl` is what one closed structure actually made,
+    # from broker-confirmed fills and nothing else; `daily_pnl` is the
+    # exchange-local roll-up the daily loss limit is evaluated against, and it
+    # carries a *status* alongside the figure because an untracked day and a
+    # break-even day are different facts. `reservation_settlement` records
+    # capital returning to the campaign — or the refusal to return it, which is
+    # the more interesting of the two because it names the missing evidence.
+    #
+    # There is no Milestone 1 schema for any of these; unlike research,
+    # strategy and execution, this milestone has no narrow boundary to project
+    # onto, because nothing downstream consumes a realised result yet.
+    "realized_pnl",
+    "daily_pnl",
+    "reservation_settlement",
+    # The operational artifacts. `job_run` and `scheduler_run` are the
+    # scheduler's own record — what was due, what ran, what was skipped and
+    # why — and both carry an order count read off the service each job
+    # invoked, so "the scheduler placed no orders" is evidence rather than a
+    # claim. `operational_health` keeps trading health and observability health
+    # in separate fields computed from disjoint components. `alert` is a
+    # notification and can express no trade.
+    "job_run",
+    "scheduler_run",
+    "operational_health",
+    "alert",
     "trade_snapshot",
 )
 

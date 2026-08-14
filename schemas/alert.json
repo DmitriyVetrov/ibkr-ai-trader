@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/alert.json",
+  "title": "Alert",
+  "description": "One operational notification (Milestone 11). An alert REPORTS. It cannot place, cancel or modify an order, there is no field here through which it could ask for one, and a boundary test walks the import graph of the whole alerting path to prove nothing it can reach could either. Safety is enforced by the domain — the risk engine refuses a trade, the exit engine blocks a position, reconciliation reports a mismatch; this is how a person finds out. Identity derives from the code, the subject and the window start, so a condition that is still true on the next tick is the SAME alert rather than a new one every five minutes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "alert_id",
+    "code",
+    "category",
+    "severity",
+    "subject",
+    "summary",
+    "raised_at",
+    "window_start",
+    "window_end",
+    "trading_mode"
+  ],
+  "properties": {
+    "alert_id": { "type": "string", "minLength": 1 },
+    "code": {
+      "enum": [
+        "BROKER_CONNECTION_ERRORS",
+        "BROKER_TIMEOUTS",
+        "BROKER_UNAVAILABLE",
+        "EXECUTION_REJECTION_RATE",
+        "EXECUTION_UNKNOWN",
+        "EXECUTION_DUPLICATE_ATTEMPT",
+        "EXECUTION_STUCK",
+        "LLM_ERROR_RATE",
+        "RESEARCH_FAILURE_RATE",
+        "WORKFLOW_FAILURES",
+        "SCHEDULER_JOB_FAILED",
+        "SCHEDULER_JOB_UNKNOWN",
+        "LIVE_EXECUTION_ATTEMPT",
+        "ORDER_WITHOUT_ALLOCATION",
+        "ORDER_WITHOUT_EXECUTION_RECORD",
+        "EXECUTION_OUTSIDE_AUTHORIZED_PATH",
+        "RECONCILIATION_MISMATCH",
+        "POSITION_CLOSE_NOT_CONFIRMED",
+        "EXPIRATION_APPROACHING",
+        "EXIT_UNKNOWN",
+        "DAILY_LOSS_THRESHOLD_EXCEEDED",
+        "DAILY_LOSS_UNAVAILABLE",
+        "SETTLEMENT_BLOCKED",
+        "TELEMETRY_EXPORT_FAILING"
+      ]
+    },
+    "category": {
+      "enum": [
+        "BROKER",
+        "EXECUTION",
+        "RESEARCH",
+        "WORKFLOW",
+        "SAFETY",
+        "POSITION",
+        "CAPITAL",
+        "TELEMETRY"
+      ]
+    },
+    "severity": { "enum": ["INFO", "WARNING", "CRITICAL"] },
+    "schema_version": { "type": "string", "minLength": 1 },
+    "subject": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string", "minLength": 1 },
+    "detail": { "type": ["string", "null"] },
+    "raised_at": { "type": "string", "format": "date-time" },
+    "window_start": { "type": "string", "format": "date-time" },
+    "window_end": { "type": "string", "format": "date-time" },
+    "occurrences": { "type": "integer", "minimum": 0 },
+    "threshold": { "type": "integer", "minimum": 0 },
+    "trading_mode": { "enum": ["DRY_RUN", "PAPER", "LIVE"] },
+    "references": {
+      "description": "Domain identifiers, so an operator can navigate from the alert to the artifact. Ids only — an alert never carries a payload.",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "recommended_action": {
+      "description": "What a PERSON should do. Never an instruction the system will carry out.",
+      "type": ["string", "null"]
+    },
+    "notified_channels": { "type": "array", "items": { "type": "string" } }
+  }
+}

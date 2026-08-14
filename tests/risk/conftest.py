@@ -23,6 +23,7 @@ import pytest
 
 from trading_system.domain.enums import (
     ConfidenceLevel,
+    DailyPnLStatus,
     Direction,
     ExpectedMagnitude,
     LegAction,
@@ -191,7 +192,14 @@ def make_candidate(
 
 @pytest.fixture
 def make_campaign() -> Callable[..., CampaignSnapshot]:
-    """An empty EUR 5,000 campaign holding a 20% reserve."""
+    """An empty EUR 5,000 campaign holding a 20% reserve.
+
+    A realised figure implies ``daily_pnl_status=TRACKED`` unless a test says
+    otherwise. The snapshot refuses a figure alongside any other status — that
+    combination is what "we could not measure today" quietly passing a loss
+    limit would look like — so a fixture that let a caller build one would be
+    handing tests a shape the system cannot produce.
+    """
 
     def _make(**overrides: Any) -> CampaignSnapshot:
         fields: dict[str, Any] = {
@@ -204,6 +212,8 @@ def make_campaign() -> Callable[..., CampaignSnapshot]:
             "realized_pnl_today": None,
         }
         fields.update(overrides)
+        if fields.get("realized_pnl_today") is not None:
+            fields.setdefault("daily_pnl_status", DailyPnLStatus.TRACKED)
         return CampaignSnapshot(**fields)
 
     return _make

@@ -49,6 +49,7 @@ from pydantic import Field, model_validator
 from trading_system.data.hashing import stable_hash
 from trading_system.domain.enums import (
     ConfidenceLevel,
+    DailyPnLStatus,
     DataQuality,
     Direction,
     ExpectedMagnitude,
@@ -335,9 +336,52 @@ class CampaignSnapshot(ImmutableModel):
     budget_source: Identifier = "CONFIG"
     open_positions: list[CampaignPosition] = Field(default_factory=list)
     #: Realised profit and loss for the day, when it is tracked. ``None`` means
-    #: *not tracked*, which the daily-loss check records as NOT_EVALUATED — it
-    #: is never read as "no losses today".
+    #: *no figure*, which the daily-loss check records as NOT_EVALUATED or
+    #: refuses outright — it is never read as "no losses today".
     realized_pnl_today: Money | None = None
+    #: How far that figure can be relied on (Milestone 11). Three states, and
+    #: the distinction between the last two is the point:
+    #:
+    #: ``TRACKED``
+    #:     every position that closed today produced a usable result.
+    #: ``UNKNOWN``
+    #:     positions closed today and at least one produced no result. This is
+    #:     an absence of knowledge about a day on which money moved, and the
+    #:     engine is required to treat it differently from the case below.
+    #: ``NOT_TRACKED``
+    #:     no profit-and-loss ledger was consulted. The state of every snapshot
+    #:     written before Milestone 11, which is why it is the default.
+    daily_pnl_status: DailyPnLStatus = DailyPnLStatus.NOT_TRACKED
+    #: Positions that closed today and produced no usable figure. Named rather
+    #: than counted: "which one" is the first question anybody asks of an
+    #: unknown daily result.
+    unavailable_pnl_position_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _an_unknown_day_carries_no_figure(self) -> CampaignSnapshot:
+        """``UNKNOWN`` and a number cannot both be true.
+
+        Enforced rather than trusted, because the consumer that matters reads
+        the number: a snapshot claiming ``UNKNOWN`` while carrying a comfortable
+        realised figure would pass the daily loss limit on a day nobody could
+        actually measure.
+        """
+        if (
+            self.daily_pnl_status is not DailyPnLStatus.TRACKED
+            and self.realized_pnl_today is not None
+        ):
+            raise ValueError(
+                f"campaign {self.campaign_id} reports a realised figure of "
+                f"{self.realized_pnl_today} while its daily profit-and-loss status is "
+                f"{self.daily_pnl_status.value}. A figure that is not trustworthy is not "
+                f"reported: the limit must see an absence, never a number that happens to "
+                f"look safe"
+            )
+        if self.daily_pnl_status is DailyPnLStatus.TRACKED and self.realized_pnl_today is None:
+            raise ValueError(
+                f"campaign {self.campaign_id} claims a TRACKED daily result but carries no figure"
+            )
+        return self
 
     @model_validator(mode="after")
     def _reserve_fits_inside_the_budget(self) -> CampaignSnapshot:
@@ -758,6 +802,12 @@ class RiskLimits(ImmutableModel):
     max_account_snapshot_age_seconds: int = Field(ge=0)
     require_account_snapshot: bool = True
     require_daily_loss_tracking: bool = False
+    #: Whether an *unknown* daily figure blocks new capital (Milestone 11).
+    #: Separate from the flag above and defaulting to true: "we have never
+    #: tracked this" and "we tracked it, positions closed today, and the number
+    #: is not trustworthy" are different facts, and only the second is evidence
+    #: that something is wrong.
+    block_on_unknown_daily_loss: bool = True
     allow_currency_conversion: bool = False
     accepted_currencies: list[str] = Field(default_factory=list)
 

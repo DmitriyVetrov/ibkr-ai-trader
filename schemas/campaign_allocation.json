@@ -221,6 +221,7 @@
           "FX_CONVERSION_UNAVAILABLE",
           "BELOW_MIN_OPPORTUNITY_SCORE",
           "DAILY_LOSS_NOT_TRACKED",
+          "DAILY_LOSS_UNKNOWN",
           "CONFIGURATION_ERROR"
         ]
       }
@@ -877,6 +878,7 @@
             "FX_CONVERSION_UNAVAILABLE",
             "BELOW_MIN_OPPORTUNITY_SCORE",
             "DAILY_LOSS_NOT_TRACKED",
+          "DAILY_LOSS_UNKNOWN",
             "CONFIGURATION_ERROR",
             null
           ]
@@ -1028,6 +1030,7 @@
               "FX_CONVERSION_UNAVAILABLE",
               "BELOW_MIN_OPPORTUNITY_SCORE",
               "DAILY_LOSS_NOT_TRACKED",
+          "DAILY_LOSS_UNKNOWN",
               "CONFIGURATION_ERROR"
             ]
           }
@@ -1255,6 +1258,10 @@
           "type": "boolean"
         },
         "require_daily_loss_tracking": {
+          "type": "boolean"
+        },
+        "block_on_unknown_daily_loss": {
+          "description": "Whether an UNKNOWN daily figure blocks new capital (Milestone 11). Separate from require_daily_loss_tracking and defaulting to true: 'we have never tracked this' and 'we tracked it, positions closed today, and the number is not trustworthy' are different facts, and only the second is evidence that something is wrong.",
           "type": "boolean"
         },
         "allow_currency_conversion": {

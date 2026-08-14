@@ -74,6 +74,13 @@ from trading_system.domain.models import SystemVersions
 from trading_system.infrastructure.clock import Clock, SystemClock
 from trading_system.infrastructure.logging import get_logger
 from trading_system.infrastructure.settings import Settings, SystemConfig, project_root
+from trading_system.observability import metrics as _metrics
+from trading_system.observability.attributes import (
+    TRADING_CONTRACT_ID,
+    TRADING_STATUS,
+    TRADING_STRATEGY_ID,
+)
+from trading_system.observability.instrument import traced
 from trading_system.research.models import MarketResearchReport, ResearchRunResult
 from trading_system.research.store import FilesystemResearchRepository, ResearchRepository
 from trading_system.strategies.context import DataReadinessProbe, build_selection_input
@@ -274,6 +281,16 @@ class StrategyService:
         return self._research_repository.latest()
 
     # --- the run -----------------------------------------------------------
+    @traced(
+        "strategy.selection",
+        count=_metrics.STRATEGY_DECISIONS_TOTAL,
+        duration=_metrics.STRATEGY_DURATION,
+        result_attributes=lambda run: {
+            TRADING_STRATEGY_ID: run.result.run_id,
+            TRADING_STATUS: run.result.status.value,
+        },
+        labels=lambda run: {"status": run.result.status.value},
+    )
     def run(
         self,
         *,
@@ -900,6 +917,16 @@ class ContractSelectionService:
         return self._strategy_repository.latest()
 
     # --- the run -----------------------------------------------------------
+    @traced(
+        "contract.selection",
+        count=_metrics.CONTRACT_SELECTIONS_TOTAL,
+        duration=_metrics.CONTRACT_SELECTION_DURATION,
+        result_attributes=lambda run: {
+            TRADING_CONTRACT_ID: run.result.run_id,
+            TRADING_STATUS: run.result.status.value,
+        },
+        labels=lambda run: {"status": run.result.status.value},
+    )
     def select(
         self,
         *,

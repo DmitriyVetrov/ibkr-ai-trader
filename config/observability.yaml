@@ -1,0 +1,101 @@
+# Telemetry configuration (Milestone 11).
+#
+# Telemetry is an OPERATIONAL SIDE CHANNEL. Nothing in this file may change a
+# trading decision, and nothing that happens to the collector, Tempo,
+# Prometheus, Loki or Grafana may either. If every backend here is down the
+# trading system continues according to its own domain safety rules — that is
+# the milestone's central claim, and tests/observability/test_failure_isolation.py
+# asserts it by running the same operations against a broken exporter and
+# comparing the stored artifacts byte for byte.
+#
+# The application speaks OTLP to a collector and to nothing else. It has no
+# dependency on any backend, and swapping Tempo for another trace store is a
+# change to deploy/otel/collector.yaml, not to this file or to any code.
+#
+# Ships DISABLED. A machine with no collector on it should not spend a
+# millisecond trying to reach one, and "the default is off" is the honest
+# default for an optional stack.
+config_version: "2026.08.14-1"
+
+enabled: false
+
+service_name: trading-system
+# Unset inherits the application version, so telemetry cannot report a version
+# the process is not running.
+service_version: null
+environment: local
+
+exporter:
+  # The collector, never a backend. http/protobuf needs no gRPC dependency.
+  endpoint: "http://localhost:4318"
+  protocol: http/protobuf
+  # Deliberately short. A slow collector must cost a monitoring cycle
+  # milliseconds, not seconds.
+  timeout_seconds: 5.0
+  export_interval_seconds: 15.0
+  max_queue_size: 2048
+  max_export_batch_size: 512
+  # Refused if set: a queue that applies back-pressure would let a dead
+  # collector stall an exit submission.
+  block_on_full_queue: false
+  console: false
+
+sampling:
+  ratio: 1.0
+  # An error is always recorded, whatever the ratio says. A sampled-away
+  # failure is the one trace anybody actually wanted.
+  always_sample_errors: true
+
+metrics:
+  enabled: true
+  export_interval_seconds: 15.0
+  # The cardinality guard. Every name here is a domain identifier, and a domain
+  # identifier as a metric label is one time series per trade. They belong in
+  # traces and logs, which are built for exactly that.
+  forbidden_labels:
+    - trace_id
+    - span_id
+    - campaign_id
+    - universe_selection_id
+    - research_run_id
+    - strategy_decision_id
+    - contract_selection_id
+    - risk_evaluation_id
+    - allocation_id
+    - execution_id
+    - position_id
+    - exit_id
+    - broker_order_id
+    - account
+    - account_id
+    - symbol
+
+logging:
+  correlate_traces: true
+  include_service_context: true
+
+privacy:
+  # Telemetry is not an audit archive. The archive is the immutable domain
+  # artifact; a span carries its id, never its contents.
+  forbidden_attribute_substrings:
+    - password
+    - secret
+    - token
+    - api_key
+    - apikey
+    - credential
+    - prompt
+    - completion
+    - response_text
+    - portfolio
+    - balance
+    - account_number
+  mask_account_identifiers: true
+  max_attribute_length: 256
+  # Counts, durations, statuses and references answer operational questions.
+  # A monetary figure in a trace is financial truth in the wrong system.
+  allow_monetary_attributes: false
+
+# Refused if set to false. An exporter error may never propagate into a
+# trading operation.
+fail_open: true
