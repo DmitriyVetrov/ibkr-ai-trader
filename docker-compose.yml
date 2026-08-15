@@ -27,12 +27,26 @@ services:
       READ_ONLY_API: ${IB_GATEWAY_READ_ONLY:-yes}
       TZ: ${TZ:-Etc/UTC}
     ports:
-      # Host port is configurable; nothing is hard-coded.
-      - "${IBKR_PORT:-4002}:4002"
+      # Host port is configurable; nothing is hard-coded. The CONTAINER side is
+      # 4004, not 4002, and that difference is load-bearing. 4002 is the
+      # gateway's own API port and it enforces jts.ini's TrustedIPs=127.0.0.1:
+      # a host connection to a published 4002 arrives from the bridge gateway
+      # (172.x.0.1), fails that check, and is dropped straight after the TCP
+      # accept -- a handshake that is never answered, which reads as a hang
+      # rather than a refusal. The image runs
+      #   socat TCP-LISTEN:4004,fork TCP:127.0.0.1:4002
+      # for exactly this reason: socat re-originates the connection from
+      # loopback, so the gateway sees a trusted source. Publish the socat port.
+      # Paper: API 4002 / socat 4004.  Live: API 4001 / socat 4003.
+      - "${IBKR_PORT:-4002}:4004"
     healthcheck:
-      # bash's /dev/tcp needs no extra package in the image, unlike nc.
+      # bash's /dev/tcp needs no extra package in the image, unlike nc. Probe
+      # 4004, not 4002: it covers socat as well as the gateway behind it, and
+      # it is the port every external client actually uses. This is still only
+      # a TCP accept -- it does not prove the API layer answers a handshake, so
+      # "healthy" is not evidence that a client can connect.
       test:
-        ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/4002' || exit 1"]
+        ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/4004' || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -51,11 +65,17 @@ services:
     # Shares ib-gateway's network namespace rather than reaching it over the
     # bridge network. The gateway image trusts only 127.0.0.1 for API access
     # (jts.ini's TrustedIPs, not configurable via env in this image) — a
-    # container-to-container connection arrives from a different IP, gets
-    # accepted at the TCP level and then never answered, which looks exactly
-    # like a hang rather than a refusal. Sharing the namespace makes the
-    # runtime appear as 127.0.0.1 to the gateway, satisfying the trust rule
-    # structurally instead of fighting it.
+    # container-to-container connection to the API port 4002 arrives from a
+    # different IP, gets accepted at the TCP level and then dropped, which
+    # looks exactly like a hang rather than a refusal. Sharing the namespace
+    # makes the runtime appear as 127.0.0.1 to the gateway, satisfying the
+    # trust rule structurally instead of fighting it.
+    #
+    # This is not the only way through: the image's socat forwarder on 4004
+    # (see the ports comment above) re-originates from loopback and is what
+    # the published host port now uses. Either satisfies the trust rule.
+    # Namespace sharing is kept here because it needs no forwarder in the
+    # path at all, and 127.0.0.1 below depends on it.
     network_mode: "service:ib-gateway"
     environment:
       TRADING_MODE: ${TRADING_MODE:-PAPER}

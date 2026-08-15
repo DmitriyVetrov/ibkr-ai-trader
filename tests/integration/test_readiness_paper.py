@@ -10,11 +10,14 @@ is explicit that READY_FOR_PAPER cannot be claimed without a reachable gateway.
 
 One known environment constraint, worth stating because it looks like a bug:
 the shipped ``ib-gateway`` image trusts only ``127.0.0.1`` for API access
-(``jts.ini``'s ``TrustedIPs``). A connection from the host to the published port
-arrives from the Docker bridge address, is accepted at the TCP level and then
-never answered — indistinguishable from a hang. ``docker-compose.yml`` solves it
-for the runtime with ``network_mode: "service:ib-gateway"``; a developer running
-these tests on the host needs the gateway reachable as loopback.
+(``jts.ini``'s ``TrustedIPs``). A connection to the gateway's own API port
+(paper 4002) from anywhere but loopback is accepted at the TCP level and then
+dropped without an API answer — indistinguishable from a hang. The image runs
+``socat TCP-LISTEN:4004,fork TCP:127.0.0.1:4002`` for exactly this reason, and
+``docker-compose.yml`` publishes that socat port (``${IBKR_PORT:-4002}:4004``),
+so a developer running these tests on the host connects to ``127.0.0.1:4002``
+as usual and socat re-originates from loopback. The runtime container solves
+the same problem the other way, with ``network_mode: "service:ib-gateway"``.
 """
 
 from __future__ import annotations

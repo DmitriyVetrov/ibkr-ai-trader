@@ -1870,13 +1870,26 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   the run succeeds, writes where nobody looks, and the next reader sees an empty store.
   Found by running the readiness gate in a container and finding the reconciliation results
   missing.
-- **The `ib-gateway` image trusts only `127.0.0.1` (`jts.ini`'s `TrustedIPs`).** A
-  connection from the **host** to the published port arrives from the Docker bridge address,
-  is accepted at the TCP level and then never answered — indistinguishable from a hang, and
-  it survives a container restart, so it looks exactly like a broken gateway. It is not:
-  from inside the gateway's network namespace the same connection succeeds immediately.
-  `docker-compose.yml` already solves it for `trading-runtime` with
-  `network_mode: "service:ib-gateway"`; anything else that needs the API must do the same.
+- **The `ib-gateway` image trusts only `127.0.0.1` (`jts.ini`'s `TrustedIPs`), and the
+  image ships a `socat` forwarder specifically to satisfy that rule — publish *its* port.**
+  A connection to the gateway's own API port (paper 4002, live 4001) from anywhere but
+  loopback is accepted at the TCP level and then dropped without an API answer:
+  indistinguishable from a hang, and it survives a container restart, so it looks exactly
+  like a broken gateway. It is not. The image runs
+  `socat TCP-LISTEN:4004,fork TCP:127.0.0.1:4002`, which re-originates the connection from
+  loopback; **4004 is the only externally-bound listener in the container** (paper 4002 →
+  socat 4004, live 4001 → socat 4003). `docker-compose.yml` therefore publishes
+  `${IBKR_PORT:-4002}:4004` — host side unchanged, container side the socat port. It
+  originally published `:4002`, which is the gateway's trust-checked port, and every
+  host-originated `ib_async` connect reported `Connected` then `API connection failed:
+  TimeoutError()`. Diagnose it with a raw handshake (`API\0` + length-prefixed
+  `v100..187`) rather than `nc -zv`: a bare TCP probe passes on both ports and proves
+  nothing, whereas the handshake answers `187\0<time>\0` on the working path and EOFs on
+  the broken one. The container has no `ss`/`netstat` — read `/proc/net/tcp{,6}`, and note
+  the gateway listens on IPv6 `:::4002`, so it does not appear in `/proc/net/tcp` at all.
+  `trading-runtime` solves the same problem a second way, with
+  `network_mode: "service:ib-gateway"`; either satisfies the trust rule, and anything else
+  that needs the API must do one or the other.
 - **Output that is *counted* must not be truncated.** `run_command` tails stdout to twenty
   lines, which is right for a failing suite and wrong for `git status --porcelain`: it made
   `changed_files` report 20 for a tree with 40 changes, understating exactly the fact the
