@@ -78,6 +78,13 @@ __all__ = [
     "PositionLifecycleState",
     "PositionState",
     "PriceSource",
+    "ReadinessCriterionId",
+    "ReadinessDomain",
+    "ReadinessEvidenceKind",
+    "ReadinessLevel",
+    "ReadinessReasonCode",
+    "ReadinessRunStatus",
+    "ReadinessStatus",
     "ReconciliationEventType",
     "ReconciliationFindingType",
     "ReconciliationRunStatus",
@@ -100,6 +107,7 @@ __all__ = [
     "SelectionMethod",
     "SettlementBlockReason",
     "SettlementStatus",
+    "SignoffStatus",
     "SourceTier",
     "StrategyAction",
     "StrategySelectionReason",
@@ -2690,6 +2698,361 @@ class ExitRunStatus(StrEnum):
     #: An internal ledger could not be read.
     INTERNAL_DATA_UNAVAILABLE = "INTERNAL_DATA_UNAVAILABLE"
     CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
+
+
+# ---------------------------------------------------------------------------
+# Live-trading readiness (Milestone 12)
+# ---------------------------------------------------------------------------
+@unique
+class ReadinessLevel(StrEnum):
+    """How far this system has been proven ready to operate (Milestone 12).
+
+    There are exactly three members and there is deliberately **no
+    ``READY_FOR_LIVE``**. The last step from a machine-checkable conclusion to
+    an authorisation to spend real money is a human one, expressed through the
+    live guards that already exist; a level with that name would eventually be
+    read as the authorisation itself.
+
+    The levels are ordered, and the ordering is what
+    :data:`READINESS_LEVEL_ORDER` encodes so it can be compared rather than
+    reasoned about at each call site.
+    """
+
+    #: At least one blocking criterion is not satisfied at the paper gate.
+    NOT_READY = "NOT_READY"
+    #: Safe and operationally complete enough to run against IBKR Paper. This
+    #: is **not** an authorisation to submit orders: ``execution.enabled`` and
+    #: ``--confirm`` remain separate, and readiness never touches either.
+    READY_FOR_PAPER = "READY_FOR_PAPER"
+    #: Every machine-checkable live prerequisite is satisfied. Live trading is
+    #: still off, and only a human sign-off plus the existing live guards can
+    #: change that.
+    READY_FOR_LIVE_REVIEW = "READY_FOR_LIVE_REVIEW"
+
+
+@unique
+class ReadinessStatus(StrEnum):
+    """What one criterion's evidence actually established (Milestone 12).
+
+    Five members, and the four that are not ``PASS`` are the reason this
+    vocabulary exists at all. A readiness framework whose criteria were
+    booleans would have to render "we never looked" and "we looked and it was
+    fine" identically, which is precisely the failure the milestone is shaped
+    to prevent.
+
+    ``UNKNOWN`` is neither ``PASS`` nor ``FAIL``: it is evidence that exists
+    and could not be reduced to a verdict. It never satisfies a blocking
+    criterion, and it is never silently downgraded to ``FAIL`` either, because
+    a question and a defect call for different work.
+    """
+
+    #: Evidence exists, is fresh, and supports the criterion.
+    PASS = "PASS"
+    #: Evidence exists and contradicts the criterion.
+    FAIL = "FAIL"
+    #: No evidence was collected. Never rendered as a pass.
+    NOT_TESTED = "NOT_TESTED"
+    #: Evidence exists but falls outside its configured freshness window, or
+    #: was gathered at a different git revision than the one being assessed.
+    STALE = "STALE"
+    #: Evidence exists and does not settle the question.
+    UNKNOWN = "UNKNOWN"
+
+
+@unique
+class ReadinessDomain(StrEnum):
+    """Which area of the system a readiness criterion interrogates."""
+
+    SOFTWARE_QUALITY = "SOFTWARE_QUALITY"
+    CONFIGURATION_SAFETY = "CONFIGURATION_SAFETY"
+    TEST_ISOLATION = "TEST_ISOLATION"
+    BROKER = "BROKER"
+    RECONCILIATION = "RECONCILIATION"
+    EXECUTION_SAFETY = "EXECUTION_SAFETY"
+    POSITION_LIFECYCLE = "POSITION_LIFECYCLE"
+    CAPITAL = "CAPITAL"
+    SCHEDULER = "SCHEDULER"
+    OBSERVABILITY = "OBSERVABILITY"
+    AI_AGENTS = "AI_AGENTS"
+    DATA = "DATA"
+    SECURITY = "SECURITY"
+    OPERATIONAL_HISTORY = "OPERATIONAL_HISTORY"
+    SOURCE_CONTROL = "SOURCE_CONTROL"
+
+
+@unique
+class ReadinessCriterionId(StrEnum):
+    """The closed catalogue of readiness criteria (Milestone 12).
+
+    One member per question the gate asks. Kept here rather than as strings in
+    ``readiness/criteria.py`` for the same reason every other vocabulary in
+    this file is here: these values are persisted into immutable assessments
+    and enumerated in ``schemas/readiness_criterion.json``, so renaming one is
+    a breaking change to a stored audit record rather than a refactor.
+    """
+
+    # --- software quality --------------------------------------------------
+    TEST_SUITE_PASSES = "TEST_SUITE_PASSES"
+    LINT_CLEAN = "LINT_CLEAN"
+    FORMAT_CLEAN = "FORMAT_CLEAN"
+    TYPECHECK_CLEAN = "TYPECHECK_CLEAN"
+
+    # --- configuration safety ---------------------------------------------
+    CONFIGURATION_LOADS = "CONFIGURATION_LOADS"
+    TRADING_MODE_SAFE = "TRADING_MODE_SAFE"
+    LIVE_GUARDS_CONSISTENT = "LIVE_GUARDS_CONSISTENT"
+    EXECUTION_SWITCH_SAFE = "EXECUTION_SWITCH_SAFE"
+    BROKER_READ_ONLY = "BROKER_READ_ONLY"
+
+    # --- test isolation ----------------------------------------------------
+    SUITE_RUNS_WITHOUT_GATEWAY = "SUITE_RUNS_WITHOUT_GATEWAY"
+    LIVE_SUITES_GATED = "LIVE_SUITES_GATED"
+    PAPER_EXECUTION_SUITE_GATED = "PAPER_EXECUTION_SUITE_GATED"
+
+    # --- broker ------------------------------------------------------------
+    PAPER_BROKER_REACHABLE = "PAPER_BROKER_REACHABLE"
+    ACCOUNT_READABLE = "ACCOUNT_READABLE"
+    POSITIONS_READABLE = "POSITIONS_READABLE"
+    ORDERS_READABLE = "ORDERS_READABLE"
+    FILLS_READABLE = "FILLS_READABLE"
+
+    # --- reconciliation ----------------------------------------------------
+    RECONCILIATION_RUNS = "RECONCILIATION_RUNS"
+    NO_CRITICAL_FINDINGS = "NO_CRITICAL_FINDINGS"
+    NO_UNRESOLVED_UNKNOWN_EXECUTIONS = "NO_UNRESOLVED_UNKNOWN_EXECUTIONS"
+
+    # --- execution safety --------------------------------------------------
+    EXECUTION_SAFETY_GATES = "EXECUTION_SAFETY_GATES"
+    ZERO_ORDERS_IN_SUITE = "ZERO_ORDERS_IN_SUITE"
+
+    # --- position lifecycle ------------------------------------------------
+    POSITION_LIFECYCLE_VERIFIED = "POSITION_LIFECYCLE_VERIFIED"
+    EXIT_MANAGEMENT_VERIFIED = "EXIT_MANAGEMENT_VERIFIED"
+
+    # --- capital -----------------------------------------------------------
+    PNL_FROM_CONFIRMED_FILLS = "PNL_FROM_CONFIRMED_FILLS"
+    SETTLEMENT_IDEMPOTENT = "SETTLEMENT_IDEMPOTENT"
+    DAILY_LOSS_STATE_KNOWN = "DAILY_LOSS_STATE_KNOWN"
+
+    # --- scheduler ---------------------------------------------------------
+    SCHEDULER_RUNS = "SCHEDULER_RUNS"
+    SCHEDULER_JOBS_HEALTHY = "SCHEDULER_JOBS_HEALTHY"
+
+    # --- observability -----------------------------------------------------
+    OBSERVABILITY_STACK_RUNNING = "OBSERVABILITY_STACK_RUNNING"
+    COLLECTOR_RECEIVES_TELEMETRY = "COLLECTOR_RECEIVES_TELEMETRY"
+    TEMPO_HAS_TRACE = "TEMPO_HAS_TRACE"
+    PROMETHEUS_HAS_METRIC = "PROMETHEUS_HAS_METRIC"
+    LOKI_HAS_LOG = "LOKI_HAS_LOG"
+    GRAFANA_RUNNING = "GRAFANA_RUNNING"
+    GRAFANA_DATASOURCES_PROVISIONED = "GRAFANA_DATASOURCES_PROVISIONED"
+    GRAFANA_DASHBOARDS_PROVISIONED = "GRAFANA_DASHBOARDS_PROVISIONED"
+    TRACE_LOG_CORRELATION = "TRACE_LOG_CORRELATION"
+    METRIC_CARDINALITY_SAFE = "METRIC_CARDINALITY_SAFE"
+
+    # --- agents ------------------------------------------------------------
+    AGENT_CONTRACTS_VALIDATED = "AGENT_CONTRACTS_VALIDATED"
+    AGENT_BOUNDARIES_ENFORCED = "AGENT_BOUNDARIES_ENFORCED"
+
+    # --- data --------------------------------------------------------------
+    DATA_POINT_IN_TIME_ENFORCED = "DATA_POINT_IN_TIME_ENFORCED"
+    DATA_QUALITY_ENFORCED = "DATA_QUALITY_ENFORCED"
+
+    # --- security ----------------------------------------------------------
+    SECRETS_NOT_TRACKED = "SECRETS_NOT_TRACKED"
+    TELEMETRY_PRIVACY_ENFORCED = "TELEMETRY_PRIVACY_ENFORCED"
+    ACCOUNT_IDENTIFIERS_MASKED = "ACCOUNT_IDENTIFIERS_MASKED"
+
+    # --- operational history -----------------------------------------------
+    OPERATIONAL_HISTORY_SUFFICIENT = "OPERATIONAL_HISTORY_SUFFICIENT"
+
+    # --- source control ----------------------------------------------------
+    GIT_REVISION_RECORDED = "GIT_REVISION_RECORDED"
+    WORKING_TREE_CLEAN = "WORKING_TREE_CLEAN"
+
+
+@unique
+class ReadinessEvidenceKind(StrEnum):
+    """Where one piece of readiness evidence came from (Milestone 12).
+
+    Recorded on every evidence record so a reader can tell a command that was
+    actually executed from a stored domain artifact that was merely read. Both
+    are legitimate; conflating them is not.
+    """
+
+    #: A command was run and its exit code captured.
+    COMMAND = "COMMAND"
+    #: An immutable domain artifact already on disk was read by id.
+    ARTIFACT = "ARTIFACT"
+    #: Loaded configuration and environment settings were inspected.
+    CONFIGURATION = "CONFIGURATION"
+    #: A read-only broker observation.
+    BROKER_READ = "BROKER_READ"
+    #: An HTTP probe against an operational service.
+    SERVICE_PROBE = "SERVICE_PROBE"
+    #: A repository fact: revision, working-tree state, tracked files.
+    SOURCE_CONTROL = "SOURCE_CONTROL"
+    #: A scan of a filesystem store.
+    STORE_SCAN = "STORE_SCAN"
+
+
+@unique
+class ReadinessReasonCode(StrEnum):
+    """The closed vocabulary explaining one criterion's status (Milestone 12).
+
+    Every non-``PASS`` status carries one. "Not ready" is not something anybody
+    can act on; ``OBSERVABILITY_STACK_NOT_STARTED`` is.
+    """
+
+    # --- satisfied ---------------------------------------------------------
+    SATISFIED = "SATISFIED"
+
+    # --- absence of evidence ----------------------------------------------
+    NO_EVIDENCE = "NO_EVIDENCE"
+    EVIDENCE_STALE = "EVIDENCE_STALE"
+    EVIDENCE_FROM_OTHER_REVISION = "EVIDENCE_FROM_OTHER_REVISION"
+    NOT_COLLECTED = "NOT_COLLECTED"
+
+    # --- software quality --------------------------------------------------
+    TESTS_FAILED = "TESTS_FAILED"
+    LINT_FAILED = "LINT_FAILED"
+    FORMAT_FAILED = "FORMAT_FAILED"
+    TYPECHECK_FAILED = "TYPECHECK_FAILED"
+
+    # --- configuration safety ---------------------------------------------
+    CONFIGURATION_INVALID = "CONFIGURATION_INVALID"
+    UNSAFE_MODE = "UNSAFE_MODE"
+    LIVE_GUARDS_INCONSISTENT = "LIVE_GUARDS_INCONSISTENT"
+    EXECUTION_ENABLED_WITHOUT_POLICY = "EXECUTION_ENABLED_WITHOUT_POLICY"
+    BROKER_WRITABLE = "BROKER_WRITABLE"
+
+    # --- test isolation ----------------------------------------------------
+    SUITE_REQUIRES_GATEWAY = "SUITE_REQUIRES_GATEWAY"
+    SAFETY_CLAMP_MISSING = "SAFETY_CLAMP_MISSING"
+
+    # --- broker ------------------------------------------------------------
+    BROKER_UNREACHABLE = "BROKER_UNREACHABLE"
+    BROKER_READ_FAILED = "BROKER_READ_FAILED"
+    ACCOUNT_UNREADABLE = "ACCOUNT_UNREADABLE"
+    PAPER_GATEWAY_UNAVAILABLE = "PAPER_GATEWAY_UNAVAILABLE"
+
+    # --- reconciliation ----------------------------------------------------
+    RECONCILIATION_MISMATCH = "RECONCILIATION_MISMATCH"
+    RECONCILIATION_UNKNOWN = "RECONCILIATION_UNKNOWN"
+    ORPHAN_BROKER_POSITION = "ORPHAN_BROKER_POSITION"
+    CRITICAL_FINDING_OPEN = "CRITICAL_FINDING_OPEN"
+
+    # --- execution safety --------------------------------------------------
+    SAFETY_GATE_BROKEN = "SAFETY_GATE_BROKEN"
+    ORDERS_SUBMITTED_UNEXPECTEDLY = "ORDERS_SUBMITTED_UNEXPECTEDLY"
+    UNRESOLVED_UNKNOWN_EXECUTION = "UNRESOLVED_UNKNOWN_EXECUTION"
+
+    # --- capital -----------------------------------------------------------
+    DAILY_LOSS_UNKNOWN = "DAILY_LOSS_UNKNOWN"
+    DAILY_LOSS_NOT_TRACKED = "DAILY_LOSS_NOT_TRACKED"
+    SETTLEMENT_BLOCKED = "SETTLEMENT_BLOCKED"
+
+    # --- scheduler ---------------------------------------------------------
+    SCHEDULER_NEVER_RAN = "SCHEDULER_NEVER_RAN"
+    SCHEDULER_JOB_FAILED = "SCHEDULER_JOB_FAILED"
+    SCHEDULER_JOB_UNKNOWN = "SCHEDULER_JOB_UNKNOWN"
+
+    # --- observability -----------------------------------------------------
+    OBSERVABILITY_STACK_NOT_STARTED = "OBSERVABILITY_STACK_NOT_STARTED"
+    SERVICE_UNHEALTHY = "SERVICE_UNHEALTHY"
+    TELEMETRY_NOT_RECEIVED = "TELEMETRY_NOT_RECEIVED"
+    TRACE_NOT_FOUND = "TRACE_NOT_FOUND"
+    METRIC_NOT_FOUND = "METRIC_NOT_FOUND"
+    LOG_NOT_FOUND = "LOG_NOT_FOUND"
+    DATASOURCE_NOT_PROVISIONED = "DATASOURCE_NOT_PROVISIONED"
+    DASHBOARD_NOT_PROVISIONED = "DASHBOARD_NOT_PROVISIONED"
+    CORRELATION_NOT_DEMONSTRATED = "CORRELATION_NOT_DEMONSTRATED"
+    FORBIDDEN_METRIC_LABEL = "FORBIDDEN_METRIC_LABEL"
+    DOCKER_UNAVAILABLE = "DOCKER_UNAVAILABLE"
+
+    # --- agents / data -----------------------------------------------------
+    AGENT_VALIDATION_FAILED = "AGENT_VALIDATION_FAILED"
+    DATA_QUALITY_FAILED = "DATA_QUALITY_FAILED"
+
+    # --- security ----------------------------------------------------------
+    SECRET_EXPOSED = "SECRET_EXPOSED"
+    SECRET_TRACKED_IN_GIT = "SECRET_TRACKED_IN_GIT"
+
+    # --- operational history ----------------------------------------------
+    INSUFFICIENT_OPERATIONAL_HISTORY = "INSUFFICIENT_OPERATIONAL_HISTORY"
+
+    # --- source control ----------------------------------------------------
+    WORKING_TREE_DIRTY = "WORKING_TREE_DIRTY"
+    REVISION_UNAVAILABLE = "REVISION_UNAVAILABLE"
+
+
+@unique
+class ReadinessRunStatus(StrEnum):
+    """What one readiness evaluation run managed to do (Milestone 12).
+
+    Separate from :class:`ReadinessLevel`, deliberately. The level is the
+    system's verdict about itself; this is a statement about the *run* — an
+    evaluation that could not load its own configuration reached no verdict at
+    all, and reporting that as ``NOT_READY`` would conflate a broken assessor
+    with an unready system.
+    """
+
+    #: The evaluation completed and the assessment stands.
+    COMPLETE = "COMPLETE"
+    #: The evaluation completed with some collectors deliberately not run.
+    PARTIAL = "PARTIAL"
+    #: Nothing was collected, so nothing was evaluated.
+    NO_EVIDENCE = "NO_EVIDENCE"
+    #: Evaluated but nothing was persisted.
+    DRY_RUN = "DRY_RUN"
+    #: The assessor itself could not run.
+    CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
+
+
+@unique
+class SignoffStatus(StrEnum):
+    """Whether a human has signed the live-readiness checklist (Milestone 12).
+
+    Signing records a human decision against a specific readiness run at a
+    specific revision. It **enables nothing**: ``TRADING_MODE``,
+    ``LIVE_TRADING_CONFIRMED``, ``LIVE_READINESS_CHECKLIST_SIGNED_OFF``,
+    ``execution.enabled`` and ``IBKR_READ_ONLY`` are untouched by it, and a
+    boundary test asserts the sign-off module cannot reach any of them.
+    """
+
+    NOT_SIGNED = "NOT_SIGNED"
+    SIGNED = "SIGNED"
+    #: Signed, then explicitly withdrawn. Distinct from never having signed:
+    #: somebody looked and said no, which is worth keeping.
+    REVOKED = "REVOKED"
+
+
+#: The deterministic order in which readiness levels increase.
+#:
+#: Encoded once, so "is this at least paper-ready" is a comparison rather than
+#: a chain of ``or`` clauses that eventually disagree with each other.
+READINESS_LEVEL_ORDER: tuple[ReadinessLevel, ...] = (
+    ReadinessLevel.NOT_READY,
+    ReadinessLevel.READY_FOR_PAPER,
+    ReadinessLevel.READY_FOR_LIVE_REVIEW,
+)
+
+#: Criterion statuses that can satisfy a blocking criterion. Exactly one.
+#:
+#: A frozenset with a single member rather than an ``is PASS`` comparison,
+#: because the interesting property is that ``UNKNOWN``, ``STALE`` and
+#: ``NOT_TESTED`` are *outside* it — and a set makes that assertable in a test
+#: rather than distributed across every call site.
+READINESS_SATISFYING_STATUSES: frozenset[ReadinessStatus] = frozenset({ReadinessStatus.PASS})
+
+#: Statuses meaning evidence was gathered but did not settle the question.
+READINESS_INCONCLUSIVE_STATUSES: frozenset[ReadinessStatus] = frozenset(
+    {
+        ReadinessStatus.UNKNOWN,
+        ReadinessStatus.STALE,
+        ReadinessStatus.NOT_TESTED,
+    }
+)
 
 
 #: The deterministic order in which exit policies are evaluated.

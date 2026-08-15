@@ -1,0 +1,308 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/readiness_criterion.json",
+  "title": "ReadinessCriterion",
+  "description": "One readiness question and what the evidence established (Milestone 12). Every verdict names the observation that produced it: PASS and FAIL both require an evidence_id, and NOT_TESTED requires its ABSENCE. 'We never looked' and 'we looked and it was fine' are different facts about a system, and a schema that let them share a shape would let an unexamined system be certified. UNKNOWN and STALE are evidence that did not settle the question; neither ever satisfies a blocking criterion.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "criterion_id",
+    "domain",
+    "title",
+    "status",
+    "reason_code",
+    "detail"
+  ],
+  "properties": {
+    "criterion_id": {
+      "enum": [
+        "TEST_SUITE_PASSES",
+        "LINT_CLEAN",
+        "FORMAT_CLEAN",
+        "TYPECHECK_CLEAN",
+        "CONFIGURATION_LOADS",
+        "TRADING_MODE_SAFE",
+        "LIVE_GUARDS_CONSISTENT",
+        "EXECUTION_SWITCH_SAFE",
+        "BROKER_READ_ONLY",
+        "SUITE_RUNS_WITHOUT_GATEWAY",
+        "LIVE_SUITES_GATED",
+        "PAPER_EXECUTION_SUITE_GATED",
+        "PAPER_BROKER_REACHABLE",
+        "ACCOUNT_READABLE",
+        "POSITIONS_READABLE",
+        "ORDERS_READABLE",
+        "FILLS_READABLE",
+        "RECONCILIATION_RUNS",
+        "NO_CRITICAL_FINDINGS",
+        "NO_UNRESOLVED_UNKNOWN_EXECUTIONS",
+        "EXECUTION_SAFETY_GATES",
+        "ZERO_ORDERS_IN_SUITE",
+        "POSITION_LIFECYCLE_VERIFIED",
+        "EXIT_MANAGEMENT_VERIFIED",
+        "PNL_FROM_CONFIRMED_FILLS",
+        "SETTLEMENT_IDEMPOTENT",
+        "DAILY_LOSS_STATE_KNOWN",
+        "SCHEDULER_RUNS",
+        "SCHEDULER_JOBS_HEALTHY",
+        "OBSERVABILITY_STACK_RUNNING",
+        "COLLECTOR_RECEIVES_TELEMETRY",
+        "TEMPO_HAS_TRACE",
+        "PROMETHEUS_HAS_METRIC",
+        "LOKI_HAS_LOG",
+        "GRAFANA_RUNNING",
+        "GRAFANA_DATASOURCES_PROVISIONED",
+        "GRAFANA_DASHBOARDS_PROVISIONED",
+        "TRACE_LOG_CORRELATION",
+        "METRIC_CARDINALITY_SAFE",
+        "AGENT_CONTRACTS_VALIDATED",
+        "AGENT_BOUNDARIES_ENFORCED",
+        "DATA_POINT_IN_TIME_ENFORCED",
+        "DATA_QUALITY_ENFORCED",
+        "SECRETS_NOT_TRACKED",
+        "TELEMETRY_PRIVACY_ENFORCED",
+        "ACCOUNT_IDENTIFIERS_MASKED",
+        "OPERATIONAL_HISTORY_SUFFICIENT",
+        "GIT_REVISION_RECORDED",
+        "WORKING_TREE_CLEAN"
+      ]
+    },
+    "domain": {
+      "enum": [
+        "SOFTWARE_QUALITY",
+        "CONFIGURATION_SAFETY",
+        "TEST_ISOLATION",
+        "BROKER",
+        "RECONCILIATION",
+        "EXECUTION_SAFETY",
+        "POSITION_LIFECYCLE",
+        "CAPITAL",
+        "SCHEDULER",
+        "OBSERVABILITY",
+        "AI_AGENTS",
+        "DATA",
+        "SECURITY",
+        "OPERATIONAL_HISTORY",
+        "SOURCE_CONTROL"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "NOT_TESTED",
+        "STALE",
+        "UNKNOWN"
+      ]
+    },
+    "reason_code": {
+      "enum": [
+        "SATISFIED",
+        "NO_EVIDENCE",
+        "EVIDENCE_STALE",
+        "EVIDENCE_FROM_OTHER_REVISION",
+        "NOT_COLLECTED",
+        "TESTS_FAILED",
+        "LINT_FAILED",
+        "FORMAT_FAILED",
+        "TYPECHECK_FAILED",
+        "CONFIGURATION_INVALID",
+        "UNSAFE_MODE",
+        "LIVE_GUARDS_INCONSISTENT",
+        "EXECUTION_ENABLED_WITHOUT_POLICY",
+        "BROKER_WRITABLE",
+        "SUITE_REQUIRES_GATEWAY",
+        "SAFETY_CLAMP_MISSING",
+        "BROKER_UNREACHABLE",
+        "BROKER_READ_FAILED",
+        "ACCOUNT_UNREADABLE",
+        "PAPER_GATEWAY_UNAVAILABLE",
+        "RECONCILIATION_MISMATCH",
+        "RECONCILIATION_UNKNOWN",
+        "ORPHAN_BROKER_POSITION",
+        "CRITICAL_FINDING_OPEN",
+        "SAFETY_GATE_BROKEN",
+        "ORDERS_SUBMITTED_UNEXPECTEDLY",
+        "UNRESOLVED_UNKNOWN_EXECUTION",
+        "DAILY_LOSS_UNKNOWN",
+        "DAILY_LOSS_NOT_TRACKED",
+        "SETTLEMENT_BLOCKED",
+        "SCHEDULER_NEVER_RAN",
+        "SCHEDULER_JOB_FAILED",
+        "SCHEDULER_JOB_UNKNOWN",
+        "OBSERVABILITY_STACK_NOT_STARTED",
+        "SERVICE_UNHEALTHY",
+        "TELEMETRY_NOT_RECEIVED",
+        "TRACE_NOT_FOUND",
+        "METRIC_NOT_FOUND",
+        "LOG_NOT_FOUND",
+        "DATASOURCE_NOT_PROVISIONED",
+        "DASHBOARD_NOT_PROVISIONED",
+        "CORRELATION_NOT_DEMONSTRATED",
+        "FORBIDDEN_METRIC_LABEL",
+        "DOCKER_UNAVAILABLE",
+        "AGENT_VALIDATION_FAILED",
+        "DATA_QUALITY_FAILED",
+        "SECRET_EXPOSED",
+        "SECRET_TRACKED_IN_GIT",
+        "INSUFFICIENT_OPERATIONAL_HISTORY",
+        "WORKING_TREE_DIRTY",
+        "REVISION_UNAVAILABLE"
+      ]
+    },
+    "detail": {
+      "description": "A sentence a reader can act on. Never merely 'not ready'.",
+      "type": "string",
+      "minLength": 1
+    },
+    "blocking_for": {
+      "description": "Which levels this criterion holds shut while unsatisfied.",
+      "type": "array",
+      "items": {
+        "enum": [
+          "NOT_READY",
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "evidence_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "evidence_kind": {
+      "oneOf": [
+        {
+          "enum": [
+            "COMMAND",
+            "ARTIFACT",
+            "CONFIGURATION",
+            "BROKER_READ",
+            "SERVICE_PROBE",
+            "SOURCE_CONTROL",
+            "STORE_SCAN"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "evidence_source": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "observed_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "evidence_age_seconds": {
+      "description": "Null for revision-bound evidence, which does not age with a clock.",
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "artifact_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "allOf": [
+    {
+      "title": "A verdict requires evidence",
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "PASS",
+              "FAIL",
+              "UNKNOWN",
+              "STALE"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "evidence_id"
+        ],
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "title": "NOT_TESTED means nothing was collected",
+      "if": {
+        "properties": {
+          "status": {
+            "const": "NOT_TESTED"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "evidence_id": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "title": "Only a PASS is SATISFIED",
+      "if": {
+        "properties": {
+          "status": {
+            "const": "PASS"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reason_code": {
+            "const": "SATISFIED"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "reason_code": {
+            "not": {
+              "const": "SATISFIED"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

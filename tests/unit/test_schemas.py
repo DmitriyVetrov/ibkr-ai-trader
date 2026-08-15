@@ -122,6 +122,23 @@ REQUIRED_SCHEMAS = (
     "scheduler_run",
     "operational_health",
     "alert",
+    # Milestone 12 adds the readiness boundaries. `readiness_criterion` is one
+    # question and what the evidence established — and it is the only schema
+    # here whose conditionals encode a *safety* claim rather than a shape: PASS
+    # and FAIL both require an evidence id, NOT_TESTED requires its absence, and
+    # only a PASS may read SATISFIED. `readiness_assessment` is every criterion
+    # plus the derived level, `readiness_run` one evaluation (with
+    # orders_submitted pinned to 0), and `live_readiness_signoff` a human
+    # decision whose `enables_trading` is const false.
+    #
+    # There is deliberately no schema naming a READY_FOR_LIVE level: the final
+    # authorisation is a human control expressed through the existing live
+    # guards, and a vocabulary containing that value would eventually be read as
+    # the authorisation itself.
+    "readiness_criterion",
+    "readiness_assessment",
+    "readiness_run",
+    "live_readiness_signoff",
     "trade_snapshot",
 )
 

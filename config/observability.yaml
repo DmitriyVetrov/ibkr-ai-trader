@@ -73,6 +73,18 @@ metrics:
 logging:
   correlate_traces: true
   include_service_context: true
+  # Export structured logs over OTLP as well as to stdout, so they reach the
+  # collector's `logs` pipeline and from there a log backend.
+  #
+  # Milestone 11 shipped deploy/otel/collector.yaml with a logs pipeline wired
+  # to Loki and NO application-side log exporter, so the pipeline was correct
+  # and permanently unfed. Milestone 12's acceptance gate found it by asking
+  # Loki whether a line had actually arrived, which is the whole reason that
+  # gate asks the backend rather than inspecting the config file.
+  #
+  # Ships OFF, like every other telemetry switch. Logs go to stdout either way,
+  # carrying their trace ids.
+  export_otlp: false
 
 privacy:
   # Telemetry is not an audit archive. The archive is the immutable domain

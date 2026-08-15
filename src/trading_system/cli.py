@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from trading_system import __version__
@@ -50,6 +51,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from trading_system.operations.service import OperationsService
     from trading_system.pnl.service import PnLService
     from trading_system.positions.service import PositionService
+    from trading_system.readiness.service import ReadinessService
     from trading_system.reconciliation.service import ReconciliationService
     from trading_system.research.service import ResearchService
     from trading_system.reservations.service import ReservationService
@@ -207,6 +209,16 @@ pnl_app = typer.Typer(
     no_args_is_help=True,
 )
 
+readiness_app = typer.Typer(
+    help=(
+        "Live-trading readiness: the acceptance gate, and the evidence behind it. "
+        "REPORTS ONLY — nothing here changes TRADING_MODE, execution.enabled, "
+        "IBKR_READ_ONLY or either live guard. "
+        "(read-only, except 'paper' which SUBMITS a real paper order)"
+    ),
+    no_args_is_help=True,
+)
+
 app.add_typer(run_app, name="run")
 app.add_typer(test_app, name="test")
 app.add_typer(data_app, name="data")
@@ -224,6 +236,7 @@ app.add_typer(reconciliation_app, name="reconciliation")
 app.add_typer(reports_app, name="reports")
 app.add_typer(ops_app, name="ops")
 app.add_typer(pnl_app, name="pnl")
+app.add_typer(readiness_app, name="readiness")
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +369,7 @@ def _bootstrap_telemetry() -> None:
                 service_name=observability.service_name,
                 trading_mode=settings.trading_mode.value,
                 include_service_context=observability.logging.include_service_context,
+                export_otlp=observability.logging.export_otlp,
             )
     except Exception:
         return
@@ -5299,6 +5313,442 @@ def pnl_settle(
     if dry_run:
         console.print("\n[yellow]DRY RUN[/yellow]  nothing was written and no capital moved.")
     console.print(f"\nOrders submitted : [green]{run.orders_submitted}[/green]")
+
+
+# ---------------------------------------------------------------------------
+# Readiness (Milestone 12)
+#
+# The acceptance gate. Everything in this group REPORTS: no command here can
+# change TRADING_MODE, LIVE_TRADING_CONFIRMED, LIVE_READINESS_CHECKLIST_SIGNED_OFF,
+# execution.enabled or IBKR_READ_ONLY, and there is no
+# "readiness == true -> enable execution" path anywhere in the package.
+#
+# The one exception is `readiness paper`, which submits a real paper order and
+# is behind four independent gates — see its docstring. It is separated from
+# everything else in this group by more than a flag.
+# ---------------------------------------------------------------------------
+def _readiness_service() -> ReadinessService:
+    """Build the Milestone 12 composition root.
+
+    Tolerates a configuration that will not load: an assessor that could not
+    start because the configuration is broken would be unable to report the one
+    thing it most needs to.
+    """
+    from trading_system.readiness.service import ReadinessService
+
+    return ReadinessService.build(settings=_load_settings())
+
+
+@readiness_app.command("validate")
+def readiness_validate() -> None:
+    """Show the readiness policy in force. Collects nothing. (read-only)
+
+    What "ready" *means* — which criteria block which level, how long each kind
+    of evidence stays usable — without gathering any evidence or reaching any
+    conclusion.
+    """
+    from trading_system.readiness.criteria import READINESS_CRITERIA
+
+    service = _readiness_service()
+    policy = service.policy
+    if policy is None:
+        _fail("configuration did not load; the readiness policy cannot be shown")
+        return
+
+    console.print(f"\n[bold]Readiness policy[/bold]  version {policy.config_version}")
+    console.print(f"Criteria defined : {len(READINESS_CRITERIA)}")
+    console.print(f"Blocking paper   : {len(policy.paper_blocking)}")
+    console.print(f"Blocking review  : {len(policy.live_review_blocking)}")
+    console.print(f"Revision-bound   : {len(policy.revision_bound)}")
+
+    unknown = policy.unknown_criteria()
+    if unknown:
+        console.print(
+            "\n[red]CONFIGURATION PROBLEM[/red]  config/readiness.yaml names criteria that "
+            "no definition covers. They can never be satisfied, so the level they block can "
+            "never open:"
+        )
+        for criterion in unknown:
+            console.print(f"  - {criterion.value}")
+        raise typer.Exit(code=EXIT_ERROR)
+
+    table = Table(title="Readiness criteria", expand=True)
+    table.add_column("Criterion", width=36)
+    table.add_column("Domain", width=22)
+    table.add_column("Blocks", width=12)
+    table.add_column("Freshness", width=24)
+    for definition in READINESS_CRITERIA:
+        levels = policy.blocking_levels(definition.criterion_id)
+        blocks = (
+            "+".join("paper" if "PAPER" in level.value else "live" for level in levels)
+            if levels
+            else "advisory"
+        )
+        if policy.is_revision_bound(definition.criterion_id):
+            freshness = "git revision"
+        elif definition.window:
+            seconds = policy.window_seconds(definition.window)
+            freshness = f"{definition.window} ({seconds:.0f}s)" if seconds else definition.window
+        else:
+            freshness = "-"
+        table.add_row(definition.criterion_id.value, definition.domain.value, blocks, freshness)
+    console.print(table)
+    console.print(
+        "\n[dim]Readiness reports. Nothing in this package can change TRADING_MODE, "
+        "LIVE_TRADING_CONFIRMED, LIVE_READINESS_CHECKLIST_SIGNED_OFF, execution.enabled "
+        "or IBKR_READ_ONLY.[/dim]"
+    )
+
+
+@readiness_app.command("check")
+def readiness_check(
+    full: Annotated[
+        bool,
+        typer.Option("--full", help="Run every collector: toolchain, broker, observability."),
+    ] = False,
+    toolchain: Annotated[
+        bool, typer.Option("--toolchain", help="Run pytest, ruff and mypy. Takes minutes.")
+    ] = False,
+    suites: Annotated[
+        bool, typer.Option("--suites", help="Run the targeted safety suites.")
+    ] = False,
+    broker: Annotated[
+        bool, typer.Option("--broker", help="One short-lived READ-ONLY broker connection.")
+    ] = False,
+    reconciliation: Annotated[
+        bool, typer.Option("--reconciliation", help="Run reconciliation against the broker.")
+    ] = False,
+    observability: Annotated[
+        bool,
+        typer.Option("--observability", help="Probe a running observability stack over HTTP."),
+    ] = False,
+    simulated: SimulatedOption = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Evaluate and store nothing.")] = False,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", help="Show NOT_TESTED criteria too.")
+    ] = False,
+) -> None:
+    """Assess readiness from evidence. Submits 0 orders. (mutates state)
+
+    With no flags this is the **offline** scope: configuration, git, test
+    isolation, secrets, masking, the stores. Seconds, no subprocess, no
+    network. Everything not collected is reported ``NOT_TESTED`` rather than
+    passing — "we never looked" and "we looked and it was fine" are different
+    facts, and the cheap default deliberately cannot certify anything.
+
+    The result is immutable and content-addressed: re-running over unchanged
+    evidence records a re-observation rather than a second, contradictory copy.
+    """
+    from trading_system.readiness.report import render_run
+    from trading_system.readiness.service import CheckScope
+
+    scope = (
+        CheckScope.full(simulated=simulated)
+        if full
+        else CheckScope(
+            toolchain=toolchain,
+            safety_suites=suites,
+            broker=broker,
+            reconciliation=reconciliation,
+            observability=observability,
+            simulated=simulated,
+        )
+    )
+
+    service = _readiness_service()
+    if scope.toolchain or scope.safety_suites:
+        console.print("[dim]Running the toolchain and suites. This takes minutes.[/dim]")
+
+    result = service.check(scope, store=not dry_run)
+    console.print()
+    render_run(console, result.run, verbose=verbose)
+
+    for warning in result.warnings:
+        console.print(f"[yellow]WARNING[/yellow]  {warning}")
+
+    if dry_run:
+        console.print("\n[yellow]DRY RUN[/yellow]  nothing was stored.")
+    elif result.stored:
+        state = "recorded" if result.is_new else "re-observed (identical to a stored run)"
+        console.print(f"\nStored: {result.run.readiness_run_id} — {state}")
+
+    console.print(f"Orders submitted : [green]{result.run.orders_submitted}[/green]")
+
+
+@readiness_app.command("show")
+def readiness_show(
+    run_id: Annotated[
+        str | None, typer.Option("--run-id", help="A specific readiness run.")
+    ] = None,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", help="Show NOT_TESTED criteria too.")
+    ] = False,
+) -> None:
+    """Show a stored readiness run, latest by default. (read-only)"""
+    from trading_system.readiness.report import render_run, render_signoff
+
+    service = _readiness_service()
+    run = service.get(run_id) if run_id else service.latest()
+    if run is None:
+        _fail(
+            f"no readiness run {'with id ' + run_id + ' ' if run_id else ''}is stored. "
+            f"Run `readiness check` first."
+        )
+        return
+
+    console.print()
+    render_run(console, run, verbose=verbose)
+    render_signoff(console, service.repository.latest_signoff())
+
+
+@readiness_app.command("history")
+def readiness_history(
+    limit: Annotated[int, typer.Option("--limit", help="How many runs to list.")] = 20,
+) -> None:
+    """List stored readiness runs, newest first. (read-only)"""
+    service = _readiness_service()
+    entries = service.history(limit)
+    if not entries:
+        console.print("No readiness runs are stored. Run `readiness check` first.")
+        return
+
+    table = Table(title="Readiness history", expand=True)
+    table.add_column("Evaluated", width=22)
+    table.add_column("Level", width=22)
+    table.add_column("Status", width=12)
+    table.add_column("Revision", width=14)
+    table.add_column("Tree", width=7)
+    table.add_column("Run id", overflow="fold")
+    for entry in entries:
+        table.add_row(
+            entry.evaluated_at.isoformat(timespec="seconds"),
+            entry.level,
+            entry.status,
+            (entry.git_revision or "-")[:12],
+            "clean" if entry.working_tree_clean else "dirty",
+            entry.readiness_run_id,
+        )
+    console.print(table)
+
+
+@readiness_app.command("explain")
+def readiness_explain(
+    criterion: Annotated[str | None, typer.Option("--criterion", help="One criterion id.")] = None,
+    run_id: Annotated[str | None, typer.Option("--run-id", help="A specific run.")] = None,
+) -> None:
+    """Explain one criterion, or everything holding the next level shut. (read-only)"""
+    from trading_system.domain.enums import ReadinessCriterionId
+    from trading_system.readiness.report import STATUS_STYLE
+
+    service = _readiness_service()
+    run = service.get(run_id) if run_id else service.latest()
+    if run is None or run.assessment is None:
+        _fail("no readiness assessment is stored. Run `readiness check` first.")
+        return
+
+    criteria = list(run.assessment.criteria)
+    if criterion:
+        try:
+            wanted = ReadinessCriterionId(criterion.upper())
+        except ValueError:
+            _fail(f"{criterion!r} is not a readiness criterion. See `readiness validate`.")
+            return
+        criteria = [item for item in criteria if item.criterion_id is wanted]
+
+    for item in criteria:
+        if not criterion and item.satisfied:
+            continue
+        console.print(
+            f"\n[{STATUS_STYLE[item.status]}]{item.status.value}[/]  "
+            f"[bold]{item.criterion_id.value}[/bold]  ({item.domain.value})"
+        )
+        console.print(f"  Asserts   : {item.title}")
+        console.print(f"  Reason    : {item.reason_code.value}")
+        console.print(f"  Detail    : {item.detail}")
+        console.print(f"  Evidence  : {item.evidence_id or 'none collected'}")
+        if item.evidence_source:
+            console.print(f"  Source    : {item.evidence_source}")
+        if item.observed_at:
+            console.print(f"  Observed  : {item.observed_at.isoformat()}")
+        if item.evidence_age_seconds is not None:
+            console.print(f"  Age       : {item.evidence_age_seconds:.0f}s")
+        if item.artifact_ids:
+            console.print(f"  Artifacts : {', '.join(item.artifact_ids)}")
+        if item.blocking_for:
+            console.print(f"  Blocks    : {', '.join(level.value for level in item.blocking_for)}")
+
+
+@readiness_app.command("signoff")
+def readiness_signoff(
+    signed_by: Annotated[
+        str | None,
+        typer.Option("--signed-by", help="Who is signing. Never inferred from the environment."),
+    ] = None,
+    run_id: Annotated[str | None, typer.Option("--run-id", help="The run being signed.")] = None,
+    note: Annotated[str | None, typer.Option("--note", help="Free text from the signer.")] = None,
+    revoke: Annotated[bool, typer.Option("--revoke", help="Withdraw a previous sign-off.")] = False,
+    confirm: Annotated[
+        bool, typer.Option("--confirm", help="Required. Records the decision.")
+    ] = False,
+) -> None:
+    """Record a human live-readiness sign-off. ENABLES NOTHING. (mutates state)
+
+    Signing records that a named person reviewed specific evidence at a
+    specific revision. It does **not** set ``TRADING_MODE``,
+    ``LIVE_TRADING_CONFIRMED``, ``LIVE_READINESS_CHECKLIST_SIGNED_OFF``,
+    ``execution.enabled`` or ``IBKR_READ_ONLY`` — those stay in the
+    environment, where a human sets them deliberately and a reviewer sees the
+    diff. There is no automatic transition from READY_FOR_LIVE_REVIEW to LIVE.
+
+    The signer is required and is never inferred: ``$USER`` is whoever ran the
+    process and a git ``user.name`` is a string anybody can set.
+    """
+    from trading_system.domain.enums import SignoffStatus
+    from trading_system.readiness.report import render_signoff
+    from trading_system.readiness.signoff import (
+        SignoffRefusedError,
+        SignoffRequest,
+        build_signoff,
+    )
+
+    service = _readiness_service()
+    if service.config is None:
+        _fail("configuration did not load; refusing to record a sign-off against it")
+        return
+
+    run = service.get(run_id) if run_id else service.latest()
+    if run is None:
+        _fail("no readiness run is stored. Run `readiness check` first.")
+        return
+
+    if not confirm:
+        console.print(
+            "\n[yellow]Not recorded.[/yellow] Pass --confirm to record the sign-off.\n"
+            f"Would sign readiness run [bold]{run.readiness_run_id}[/bold] "
+            f"({run.level.value}) at revision {(run.git_revision or 'unknown')[:12]}.\n"
+            "[dim]A sign-off records a human decision. It enables no trading.[/dim]"
+        )
+        return
+
+    try:
+        signoff = build_signoff(
+            SignoffRequest(
+                run=run,
+                signed_by=(signed_by or "").strip(),
+                signed_at=service.now(),
+                note=note,
+                status=SignoffStatus.REVOKED if revoke else SignoffStatus.SIGNED,
+            ),
+            service.config.readiness.signoff,
+        )
+    except SignoffRefusedError as exc:
+        _fail(str(exc))
+        return
+
+    service.repository.save_signoff(signoff)
+    console.print()
+    render_signoff(console, signoff)
+
+
+@readiness_app.command("paper")
+def readiness_paper(
+    i_understand_this_submits_a_real_paper_order: Annotated[
+        bool,
+        typer.Option(
+            "--i-understand-this-submits-a-real-paper-order",
+            help="Required. Deliberately NOT --confirm.",
+        ),
+    ] = False,
+) -> None:
+    """Authorise the real-paper-order validation. Submits 0 orders. (read-only)
+
+    Checks every gate that guards a real paper submission and reports which one
+    refused. It **sends nothing itself**: the audited order path runs through
+    `execution/service.py`, the only caller of `build_execution_broker`, and a
+    second path here would weaken a Milestone 8 invariant that two boundary
+    suites assert.
+
+    Every gate must be satisfied and none implies another:
+
+    \b
+      1. readiness.paper_execution.enabled   config/readiness.yaml, ships false
+      2. ALLOW_LIVE_TESTS=true               environment
+      3. RUN_PAPER_EXECUTION_TESTS=true      environment
+      4. --i-understand-this-submits-a-real-paper-order
+
+    The fourth is deliberately not `--confirm`: that flag already authorises an
+    ordinary execution run, and one word must not authorise two actions.
+    """
+    from trading_system.readiness.paper_gate import (
+        WARNING_TEXT,
+        PaperGateRefusedError,
+        authorize_paper_validation,
+    )
+
+    console.print(Panel(WARNING_TEXT, border_style="red", title="[red]PAPER ORDER[/red]"))
+
+    # The same settings and configuration the readiness runs are assessed
+    # against. Building a second pair here would let the gates be checked
+    # against a configuration nobody had assessed.
+    service = _readiness_service()
+    config = service.config
+    if config is None:
+        _fail("configuration did not load. Nothing was authorised.")
+        return
+
+    try:
+        authorization = authorize_paper_validation(
+            settings=service.settings,
+            config=config,
+            authorized=i_understand_this_submits_a_real_paper_order,
+        )
+    except PaperGateRefusedError as exc:
+        console.print(f"\n[yellow]REFUSED[/yellow]  {exc}")
+        raise typer.Exit(code=EXIT_ERROR) from exc
+
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold")
+    table.add_column()
+    table.add_row("MODE", authorization.mode)
+    table.add_row("AUTHORIZED", "YES")
+    table.add_row("ORDERS_SUBMITTED", str(authorization.orders_submitted))
+    for gate, satisfied in authorization.gates.items():
+        table.add_row(gate, "[green]ok[/green]" if satisfied else "[red]no[/red]")
+    console.print(Panel(table, title="Paper validation authorisation"))
+
+    console.print(f"\n[dim]{authorization.detail}[/dim]")
+    console.print("\nRun the validation with:\n")
+    console.print(f"  {authorization.next_command}")
+
+
+@test_app.command("readiness")
+def test_readiness() -> None:
+    """Readiness diagnostic: the policy, and the latest verdict. (read-only)
+
+    Submits nothing, collects nothing and opens no connection — it reads what
+    is already stored. Use `readiness check` to gather fresh evidence.
+    """
+    from trading_system.readiness.criteria import READINESS_CRITERIA
+    from trading_system.readiness.report import render_summary
+
+    service = _readiness_service()
+    policy = service.policy
+    console.print("\n[bold]Readiness diagnostic[/bold]")
+    console.print(f"Criteria defined : {len(READINESS_CRITERIA)}")
+    if policy is None:
+        console.print("[red]Configuration did not load.[/red]")
+        raise typer.Exit(code=EXIT_ERROR)
+    console.print(f"Policy version   : {policy.config_version}")
+    console.print(f"Blocking paper   : {len(policy.paper_blocking)}")
+    console.print(f"Blocking review  : {len(policy.live_review_blocking)}")
+
+    run = service.latest()
+    if run is None:
+        console.print("\nNo readiness run is stored yet. Run `readiness check`.")
+        return
+    console.print()
+    render_summary(console, run)
+    console.print(f"Orders submitted : [green]{run.orders_submitted}[/green]")
 
 
 def main() -> None:

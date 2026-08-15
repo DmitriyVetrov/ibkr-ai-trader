@@ -27,7 +27,9 @@ Install with ``pip install -e '.[observability]'``.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 from trading_system.infrastructure.logging import get_logger
@@ -39,6 +41,28 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = ["OpenTelemetryProvider", "build_provider", "sdk_available"]
 
 _logger = get_logger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _severity_map() -> dict[str, Any]:
+    """Map structlog level names onto OTLP severity numbers.
+
+    Built lazily and cached: the import lives inside the function so this
+    module still imports cleanly without the SDK installed, which is the
+    property that lets ``sdk_available()`` answer honestly rather than by
+    raising at import time.
+    """
+    from opentelemetry._logs import SeverityNumber
+
+    return {
+        "DEBUG": SeverityNumber.DEBUG,
+        "INFO": SeverityNumber.INFO,
+        "WARNING": SeverityNumber.WARN,
+        "WARN": SeverityNumber.WARN,
+        "ERROR": SeverityNumber.ERROR,
+        "CRITICAL": SeverityNumber.FATAL,
+        "EXCEPTION": SeverityNumber.ERROR,
+    }
 
 
 def sdk_available() -> bool:
@@ -110,10 +134,17 @@ class OpenTelemetryProvider:
     ``deploy/otel/collector.yaml``, not to this file.
     """
 
-    def __init__(self, tracer: Any, meter: Any, providers: tuple[Any, ...]) -> None:
+    def __init__(
+        self,
+        tracer: Any,
+        meter: Any,
+        providers: tuple[Any, ...],
+        logger: Any = None,
+    ) -> None:
         self._tracer = tracer
         self._meter = meter
         self._providers = providers
+        self._logger = logger
         self._counters: dict[str, Any] = {}
         self._histograms: dict[str, Any] = {}
 
@@ -162,6 +193,40 @@ class OpenTelemetryProvider:
         if not context.is_valid:
             return None, None
         return format(context.trace_id, "032x"), format(context.span_id, "016x")
+
+    def emit_log(
+        self, level: str, message: str, *, attributes: Mapping[str, Any] | None = None
+    ) -> None:
+        """Export one structured log line over OTLP.
+
+        Added in Milestone 12 to close a gap Milestone 11 left: the collector
+        shipped with a ``logs`` pipeline wired to Loki and the application had
+        no OTLP log exporter at all, so nothing could ever arrive there. The
+        pipeline was correct and unfed.
+
+        The record is emitted **inside the current span's context**, so the SDK
+        stamps it with the active trace and span ids. That is what makes
+        trace-to-log navigation work in Grafana: the operator follows a trace to
+        its logs on the trace id, and the id has to be on the log record for
+        that to find anything.
+        """
+        if self._logger is None:
+            return
+        severities = _severity_map()
+        # The keyword form of ``Logger.emit`` rather than a constructed
+        # ``LogRecord``: the record class lives under ``_internal`` and is not
+        # part of the SDK's exported surface, and this adapter exists precisely
+        # so an SDK detail cannot leak into the rest of the system. Passing no
+        # ``context`` lets the SDK read the *current* one, which is what stamps
+        # the active trace and span ids onto the record.
+        self._logger.emit(
+            timestamp=time.time_ns(),
+            observed_timestamp=time.time_ns(),
+            severity_text=level.upper(),
+            severity_number=severities.get(level.upper(), severities["INFO"]),
+            body=message,
+            attributes=dict(attributes or {}),
+        )
 
     def shutdown(self) -> None:
         """Flush and stop. Bounded, and never raises.
@@ -247,6 +312,13 @@ def build_provider(
             )
             providers.append(meter_provider)
 
+        logger = None
+        if config.logging.export_otlp and not config.exporter.console:
+            logger_provider = _logger_provider(config, resource)
+            if logger_provider is not None:
+                providers.append(logger_provider)
+                logger = logger_provider.get_logger("trading_system")
+
         trace.set_tracer_provider(tracer_provider)
         if meter_provider is not None:
             metrics.set_meter_provider(meter_provider)
@@ -259,6 +331,7 @@ def build_provider(
                 else metrics.get_meter("trading_system")
             ),
             providers=tuple(providers),
+            logger=logger,
         )
     except Exception as exc:
         _logger.warning(
@@ -267,6 +340,58 @@ def build_provider(
             detail=(
                 "telemetry could not be initialised. The trading system continues with "
                 "telemetry disabled; no trading behaviour changes"
+            ),
+        )
+        return None
+
+
+def _logger_provider(config: ObservabilityConfig, resource: Any) -> Any | None:
+    """An OTLP log pipeline, or ``None`` if one cannot be built.
+
+    Separate from :func:`_exporters` and separately optional, because logs are
+    the one signal the collector was already configured to forward and the
+    application never produced. Failing to build one must not cost the traces
+    and metrics that *do* work — a partially-working side channel is strictly
+    better than none, and telemetry may never raise into the caller anyway.
+    """
+    try:
+        from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+        from opentelemetry.sdk._logs import LoggerProvider
+        from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+
+        endpoint = config.exporter.endpoint.rstrip("/")
+        if config.exporter.protocol == "grpc":
+            from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
+                OTLPLogExporter as GrpcLogExporter,
+            )
+
+            exporter: Any = GrpcLogExporter(
+                endpoint=endpoint, timeout=int(config.exporter.timeout_seconds)
+            )
+        else:
+            exporter = OTLPLogExporter(
+                endpoint=f"{endpoint}/v1/logs",
+                timeout=int(config.exporter.timeout_seconds),
+            )
+
+        provider = LoggerProvider(resource=resource)
+        provider.add_log_record_processor(
+            BatchLogRecordProcessor(
+                exporter,
+                max_queue_size=config.exporter.max_queue_size,
+                max_export_batch_size=config.exporter.max_export_batch_size,
+                schedule_delay_millis=int(config.exporter.export_interval_seconds * 1000),
+            )
+        )
+        return provider
+    except Exception as exc:
+        _logger.info(
+            "observability.log_export_unavailable",
+            error=str(exc),
+            detail=(
+                "OTLP log export could not be initialised. Traces and metrics are "
+                "unaffected and the trading system runs unchanged; structured logs still "
+                "go to stdout with their trace ids on them"
             ),
         )
         return None

@@ -42,6 +42,11 @@ __all__ = ["install_correlation", "trace_context_processor"]
 #: replaces rather than stacks.
 _service_context: dict[str, str] = {}
 
+#: Whether records are also offered to the telemetry side channel. Off unless
+#: ``observability.logging.export_otlp`` says otherwise, so the default costs a
+#: boolean check per log line and nothing else.
+_export_otlp: bool = False
+
 
 def trace_context_processor(
     logger: Any, method_name: str, event_dict: dict[str, Any]
@@ -64,9 +69,36 @@ def trace_context_processor(
             event_dict["trace_id"] = trace_id
         if span_id:
             event_dict["span_id"] = span_id
+
+        if _export_otlp:
+            _forward(method_name, event_dict)
     except Exception:  # pragma: no cover - a log call must never fail
         return event_dict
     return event_dict
+
+
+def _forward(method_name: str, event_dict: dict[str, Any]) -> None:
+    """Offer the record to the telemetry side channel as well as to stdout.
+
+    Deliberately *as well as*, never instead of. stdout is where an operator
+    with no observability stack reads what happened, and a log path that
+    depended on a collector being up would fail exactly when somebody needed it
+    most.
+
+    Attribute values are stringified because OTLP accepts scalars and this
+    processor is handed arbitrary Python objects; a record that failed to
+    serialise would be dropped by the exporter, silently, at the point where
+    ``never raises`` means nobody finds out.
+    """
+    from trading_system.observability.tracing import emit_log
+
+    message = str(event_dict.get("event", ""))
+    attributes = {
+        key: value if isinstance(value, str | int | float | bool) else str(value)
+        for key, value in event_dict.items()
+        if key != "event" and value is not None
+    }
+    emit_log(method_name.upper(), message, attributes=attributes)
 
 
 def install_correlation(
@@ -74,6 +106,7 @@ def install_correlation(
     service_name: str = "trading-system",
     trading_mode: str = "PAPER",
     include_service_context: bool = True,
+    export_otlp: bool = False,
 ) -> None:
     """Register the processor with ``structlog``. Idempotent, and never raises.
 
@@ -82,10 +115,11 @@ def install_correlation(
     calling it twice replaces the service context rather than adding a second
     processor.
     """
-    global _service_context
+    global _service_context, _export_otlp
     _service_context = (
         {"service": service_name, "trading_mode": trading_mode} if include_service_context else {}
     )
+    _export_otlp = export_otlp
 
     try:
         import structlog
@@ -117,7 +151,13 @@ def service_context() -> dict[str, str]:
     return dict(_service_context)
 
 
+def otlp_export_enabled() -> bool:
+    """Whether records are also offered to the telemetry side channel."""
+    return _export_otlp
+
+
 def reset_correlation() -> None:
     """Forget the service context. Used by tests between cases."""
-    global _service_context
+    global _service_context, _export_otlp
     _service_context = {}
+    _export_otlp = False

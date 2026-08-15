@@ -154,4 +154,8 @@ OPERATION_NAMES: Final = (
     "pnl.settle",
     "ops.health",
     "llm.generate",
+    #: The Milestone 12 observability acceptance gate. Not a business
+    #: operation — it exists to prove the telemetry pipeline works end to end,
+    #: which is why it carries no domain identifier of any kind.
+    "readiness.acceptance",
 )

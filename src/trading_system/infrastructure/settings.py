@@ -44,6 +44,7 @@ from trading_system.domain.enums import (
     OptionRight,
     OrderType,
     PriceSource,
+    ReadinessCriterionId,
     ReconciliationFindingType,
     ReconciliationSeverity,
     SecurityType,
@@ -93,12 +94,14 @@ __all__ = [
     "MarketCalendarConfig",
     "MarketContextConfig",
     "NotificationChannelConfig",
+    "ObservabilityAcceptanceConfig",
     "ObservabilityConfig",
     "ObservabilityExporterConfig",
     "ObservabilityLoggingConfig",
     "ObservabilityMetricsConfig",
     "ObservabilityPrivacyConfig",
     "ObservabilitySamplingConfig",
+    "OperationalHistoryConfig",
     "OptionabilityPolicy",
     "PlausibilityConfig",
     "PnLConfig",
@@ -109,6 +112,13 @@ __all__ = [
     "PositionSnapshotConfig",
     "PositionsConfig",
     "ProvidersConfig",
+    "ReadinessConfig",
+    "ReadinessFreshnessConfig",
+    "ReadinessFreshnessWindows",
+    "ReadinessLevelConfig",
+    "ReadinessLevelsConfig",
+    "ReadinessPaperExecutionConfig",
+    "ReadinessSignoffConfig",
     "ReconciliationConfig",
     "ReferencePriceField",
     "ResearchAgentConfig",
@@ -923,6 +933,18 @@ class ObservabilityLoggingConfig(_ConfigModel):
     correlate_traces: bool = True
     #: Bind ``service`` and ``trading_mode`` onto every record.
     include_service_context: bool = True
+    #: Also export structured logs over OTLP, so they reach the collector's
+    #: ``logs`` pipeline and from there a log backend.
+    #:
+    #: Added in Milestone 12. Milestone 11 shipped ``deploy/otel/collector.yaml``
+    #: with a logs pipeline wired to Loki and no application-side log exporter
+    #: at all, so the pipeline was correct and permanently unfed — a gap the M12
+    #: acceptance gate found by asking Loki whether a line had actually arrived.
+    #:
+    #: Ships **off**, like every other telemetry switch: logs go to stdout
+    #: regardless, carrying their trace ids, and a machine with no collector
+    #: should not spend a millisecond trying to reach one.
+    export_otlp: bool = False
 
 
 class ObservabilityPrivacyConfig(_ConfigModel):
@@ -2500,6 +2522,213 @@ class ExitConfig(_ConfigModel):
         return EXIT_POLICY_PRECEDENCE
 
 
+# ---------------------------------------------------------------------------
+# Readiness (Milestone 12)
+# ---------------------------------------------------------------------------
+class ReadinessFreshnessWindows(_ConfigModel):
+    """Time-bounded freshness windows, in seconds.
+
+    Every one of these describes something that can change without a commit,
+    which is exactly what distinguishes them from the revision-bound evidence
+    alongside. There is deliberately no single global window: a broker probe
+    and a realised daily figure go stale on completely different timescales,
+    and one number would be wrong for both.
+    """
+
+    broker_seconds: float = Field(default=900.0, gt=0)
+    health_seconds: float = Field(default=3600.0, gt=0)
+    reconciliation_seconds: float = Field(default=21600.0, gt=0)
+    pnl_seconds: float = Field(default=86400.0, gt=0)
+    scheduler_seconds: float = Field(default=86400.0, gt=0)
+    observability_seconds: float = Field(default=3600.0, gt=0)
+    configuration_seconds: float = Field(default=3600.0, gt=0)
+
+
+class ReadinessFreshnessConfig(_ConfigModel):
+    """How long each kind of readiness evidence stays usable.
+
+    Two mechanisms, because evidence goes stale in two different ways. Most of
+    it expires with the *clock*: a broker probe from an hour ago says nothing
+    about now. Some of it expires with the *working tree*: a test result
+    belongs to the commit it ran against, and no amount of elapsed time makes
+    it wrong while the code is unchanged — nor does any amount of freshness
+    make it right once the code has moved.
+    """
+
+    revision_bound: tuple[ReadinessCriterionId, ...] = ()
+    windows: ReadinessFreshnessWindows = Field(default_factory=ReadinessFreshnessWindows)
+
+    def is_revision_bound(self, criterion: ReadinessCriterionId) -> bool:
+        """Whether this criterion's evidence expires with the code, not the clock."""
+        return criterion in self.revision_bound
+
+
+class ReadinessLevelConfig(_ConfigModel):
+    """Which criteria block one readiness level."""
+
+    blocking: tuple[ReadinessCriterionId, ...] = ()
+    #: Whether this level also requires everything the paper gate requires.
+    #: Live review inherits; expressing it as an extension means a criterion
+    #: added to the paper gate cannot go missing from the live one.
+    inherits_paper: bool = False
+
+
+class ReadinessLevelsConfig(_ConfigModel):
+    paper: ReadinessLevelConfig = Field(default_factory=ReadinessLevelConfig)
+    live_review: ReadinessLevelConfig = Field(default_factory=ReadinessLevelConfig)
+
+
+class OperationalHistoryConfig(_ConfigModel):
+    """The floor on accumulated evidence for live review (brief section 21).
+
+    "The system works" and "the system has been operated" are different
+    claims, and a single green run establishes only the first.
+    """
+
+    min_readiness_runs: int = Field(default=3, ge=0)
+    min_distinct_days: int = Field(default=2, ge=0)
+    min_reconciliation_runs: int = Field(default=3, ge=0)
+    min_scheduler_ticks: int = Field(default=1, ge=0)
+    min_history_days: int = Field(default=2, ge=0)
+
+
+class ReadinessPaperExecutionConfig(_ConfigModel):
+    """The one readiness path that can send a real order.
+
+    Ships disabled, and every widening below is refused at load rather than
+    clamped. A clamped limit is a limit nobody can see.
+    """
+
+    enabled: bool = False
+    submit_on_check: bool = False
+    allow_live: bool = False
+    max_orders: int = Field(default=1, ge=0, le=1)
+    cancel_if_working: bool = True
+    observation_seconds: float = Field(default=5.0, ge=0)
+
+    @model_validator(mode="after")
+    def _no_configuration_makes_a_check_submit(self) -> ReadinessPaperExecutionConfig:
+        if self.submit_on_check:
+            raise ValueError(
+                "readiness.paper_execution.submit_on_check is set. There is no supported "
+                "configuration in which evaluating readiness places an order as a side "
+                "effect: reporting on a system and trading with it are different acts, and "
+                "the whole point of this milestone is the first one."
+            )
+        if self.allow_live:
+            raise ValueError(
+                "readiness.paper_execution.allow_live is set. The readiness gate submits to "
+                "PAPER or to nothing. LIVE is refused here, in the broker factory and in the "
+                "adapter — three refusals for the one irreversible action this system can take."
+            )
+        if self.max_orders > 1:
+            raise ValueError(
+                f"readiness.paper_execution.max_orders is {self.max_orders}. The gate submits "
+                f"exactly one controlled order; an uncontrolled sequence of orders is the "
+                f"failure mode it exists to prevent (brief section 34)."
+            )
+        return self
+
+
+class ObservabilityAcceptanceConfig(_ConfigModel):
+    """Where the readiness collector looks for a running telemetry stack.
+
+    Deployment facts, matching ``docker-compose.yml``. Nothing here can move a
+    trading verdict: ``operations/health.py`` keeps the trading and
+    observability domains disjoint and this inherits that split.
+    """
+
+    collector_metrics_url: str = "http://localhost:8888/metrics"
+    collector_exporter_url: str = "http://localhost:8889/metrics"
+    tempo_url: str = "http://localhost:3200"
+    prometheus_url: str = "http://localhost:9090"
+    loki_url: str = "http://localhost:3100"
+    grafana_url: str = "http://localhost:3000"
+    probe_timeout_seconds: float = Field(default=5.0, gt=0)
+    propagation_timeout_seconds: float = Field(default=90.0, gt=0)
+    propagation_poll_seconds: float = Field(default=3.0, gt=0)
+    required_datasources: tuple[str, ...] = ("prometheus", "tempo", "loki")
+    required_dashboards: tuple[str, ...] = ()
+
+
+class ReadinessSignoffConfig(_ConfigModel):
+    """Rules for the human live-readiness sign-off (brief section 22)."""
+
+    require_explicit_identity: bool = True
+    require_live_review: bool = True
+    require_clean_working_tree: bool = True
+    #: Refused if set. Signing records a decision; it never flips a guard.
+    enables_trading: bool = False
+
+    @model_validator(mode="after")
+    def _signing_enables_nothing(self) -> ReadinessSignoffConfig:
+        if self.enables_trading:
+            raise ValueError(
+                "readiness.signoff.enables_trading is set. A sign-off records that a human "
+                "reviewed the evidence; it may never set TRADING_MODE, LIVE_TRADING_CONFIRMED, "
+                "LIVE_READINESS_CHECKLIST_SIGNED_OFF, execution.enabled or IBKR_READ_ONLY. "
+                "Those stay in the environment, where a person sets them deliberately."
+            )
+        return self
+
+
+class ReadinessConfig(_ConfigModel):
+    """Live-trading readiness policy (``config/readiness.yaml``, Milestone 12).
+
+    This file decides what *ready* means. It never decides whether the system
+    trades — the readiness package holds no writable broker, has no path to an
+    order, and cannot change a mode or a guard.
+    """
+
+    config_version: str = "2026.08.15-1"
+    freshness: ReadinessFreshnessConfig = Field(default_factory=ReadinessFreshnessConfig)
+    levels: ReadinessLevelsConfig = Field(default_factory=ReadinessLevelsConfig)
+    operational_history: OperationalHistoryConfig = Field(default_factory=OperationalHistoryConfig)
+    paper_execution: ReadinessPaperExecutionConfig = Field(
+        default_factory=ReadinessPaperExecutionConfig
+    )
+    observability_acceptance: ObservabilityAcceptanceConfig = Field(
+        default_factory=ObservabilityAcceptanceConfig
+    )
+    signoff: ReadinessSignoffConfig = Field(default_factory=ReadinessSignoffConfig)
+
+    def blocking_for_paper(self) -> frozenset[ReadinessCriterionId]:
+        """Criteria that must PASS before the paper gate opens."""
+        return frozenset(self.levels.paper.blocking)
+
+    def blocking_for_live_review(self) -> frozenset[ReadinessCriterionId]:
+        """Criteria that must PASS before live review may be recommended.
+
+        A strict superset of the paper set when ``inherits_paper`` is on, which
+        is the shipped configuration: a live review that did not require
+        everything paper does would be the weaker gate wearing the stronger
+        name.
+        """
+        blocking = set(self.levels.live_review.blocking)
+        if self.levels.live_review.inherits_paper:
+            blocking |= set(self.levels.paper.blocking)
+        return frozenset(blocking)
+
+    @model_validator(mode="after")
+    def _live_review_never_narrows_the_paper_gate(self) -> ReadinessConfig:
+        if not self.levels.live_review.inherits_paper:
+            missing = sorted(
+                criterion.value
+                for criterion in set(self.levels.paper.blocking)
+                - set(self.levels.live_review.blocking)
+            )
+            if missing:
+                raise ValueError(
+                    "readiness.levels.live_review does not require "
+                    + ", ".join(missing)
+                    + ", which the paper gate does. Live review is a stricter question than "
+                    "paper readiness; a live gate that dropped a paper requirement would let "
+                    "a system be recommended for live review that is not fit for paper. Set "
+                    "inherits_paper: true, or list the criteria explicitly."
+                )
+        return self
+
+
 class SystemConfig(_ConfigModel):
     """All YAML configuration, loaded and validated together."""
 
@@ -2513,6 +2742,7 @@ class SystemConfig(_ConfigModel):
     observability: ObservabilityConfig
     pnl: PnLConfig
     positions: PositionsConfig
+    readiness: ReadinessConfig
     reconciliation: ReconciliationConfig
     research: ResearchConfig
     risk: RiskConfig
@@ -2736,6 +2966,7 @@ def load_config(config_dir: Path | str | None = None) -> SystemConfig:
         "observability": _read_yaml(directory / "observability.yaml"),
         "pnl": _read_yaml(directory / "pnl.yaml"),
         "positions": _read_yaml(directory / "positions.yaml"),
+        "readiness": _read_yaml(directory / "readiness.yaml"),
         "reconciliation": _read_yaml(directory / "reconciliation.yaml"),
         "research": _read_yaml(directory / "research.yaml"),
         "risk": _read_yaml(directory / "risk.yaml"),

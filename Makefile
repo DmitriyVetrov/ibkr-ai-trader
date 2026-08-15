@@ -15,7 +15,9 @@ CLI := $(PYTHON) -m trading_system.cli
         test-operations-integration \
         ops-health ops-scheduler-plan ops-jobs ops-alerts ops-metrics \
         pnl-show pnl-history pnl-settle \
-        observability-up observability-down observability-validate \
+        observability-up observability-down observability-validate observability-test \
+        test-readiness readiness-validate readiness-check readiness-full \
+        readiness-show readiness-history readiness-paper \
         test-broker test-data test-integration \
         test-e2e universe-validate universe-run universe-show research-validate \
         research-run research-show strategy-validate strategy-run strategy-show \
@@ -342,6 +344,41 @@ observability-up:  ## Start the OPTIONAL telemetry stack. Trading runs without i
 
 observability-down:  ## Stop the telemetry stack. Trading is unaffected
 	docker compose --profile observability down
+
+observability-test:  ## ACCEPTANCE: probe the RUNNING stack and emit real telemetry
+	@echo "Requires the stack to be up: make observability-up"
+	$(CLI) readiness check --observability
+
+# --- readiness (Milestone 12) ----------------------------------------------
+#
+# `readiness check` REPORTS. It cannot change TRADING_MODE, execution.enabled,
+# IBKR_READ_ONLY or either live guard, and every run prints 0 orders submitted.
+#
+# `readiness-paper` is the exception and is not reachable by accident: it needs
+# config/readiness.yaml's own switch, two environment variables, and a
+# dedicated authorisation flag that is deliberately NOT --confirm.
+test-readiness:  ## Readiness framework tests. Offline; no gateway, no Docker
+	$(PYTEST) tests/readiness
+
+readiness-validate:  ## Show what "ready" means. Collects nothing (read-only)
+	$(CLI) readiness validate
+
+readiness-check:  ## Offline readiness assessment. Seconds, no subprocess (read-only broker)
+	$(CLI) readiness check
+
+readiness-full:  ## FULL assessment: toolchain, suites, broker, observability. Minutes
+	$(CLI) readiness check --full
+
+readiness-show:  ## The latest stored readiness assessment (read-only)
+	$(CLI) readiness show
+
+readiness-history:  ## Every stored readiness run, newest first (read-only)
+	$(CLI) readiness history
+
+readiness-paper:  ## SUBMITS A REAL PAPER ORDER. Four independent gates
+	@echo "This target submits a REAL order to IBKR PAPER."
+	ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true IBKR_READ_ONLY=false \
+	  $(CLI) readiness paper --i-understand-this-submits-a-real-paper-order
 
 ibkr-connection:  ## Read-only IBKR connection test (Milestone 2)
 	$(CLI) test ibkr-connection

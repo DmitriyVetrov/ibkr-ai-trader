@@ -125,6 +125,14 @@ services:
       # OTLP in. The application talks to this and to nothing else.
       - "${OTLP_HTTP_PORT:-4318}:4318"
       - "${OTLP_GRPC_PORT:-4317}:4317"
+      # The collector's OWN telemetry, and the application metrics it exports
+      # for Prometheus to scrape. Published to the host for the Milestone 12
+      # acceptance gate, which asks the collector how many spans it actually
+      # ACCEPTED — the one question that distinguishes "the collector is up"
+      # from "the collector is receiving telemetry from this application", and
+      # the distinction M11's NOT_TESTED status turned on.
+      - "${OTEL_COLLECTOR_TELEMETRY_PORT:-8888}:8888"
+      - "${OTEL_COLLECTOR_EXPORTER_PORT:-8889}:8889"
     depends_on:
       - tempo
       - loki

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Milestones 1–11 of 12 are complete.** Built and tested: the domain layer (models, enums,
+**Milestones 1–12 of 12 are complete.** Built and tested: the domain layer (models, enums,
 events, state machine), YAML configuration, the 30 JSON workflow schemas, the CLI surface,
 structured logging, an injectable clock, the `Broker` abstraction with `SimulatedBroker` and
 `IBKRBroker`, the read-only broker diagnostics, the reconciliation foundation, the
@@ -32,8 +32,11 @@ realised profit and loss from broker-confirmed fills, reservation settlement tha
 returns capital to the campaign, daily loss tracking, the operational scheduler that runs
 the monitoring loop on a cadence, OpenTelemetry instrumentation behind a vendor-free seam,
 operational health that separates trading from observability, alerting that cannot trade,
-and an optional Collector/Tempo/Prometheus/Loki/Grafana stack.
-4867 passing tests; ruff, ruff format and mypy clean.
+and an optional Collector/Tempo/Prometheus/Loki/Grafana stack — and **live-trading
+readiness**: a deterministic acceptance gate that assembles immutable evidence, judges 49
+criteria against it with a pure evaluator, derives one of three readiness levels, and
+records the whole thing as an immutable run.
+5197 passing tests; ruff, ruff format and mypy clean.
 
 **Not built, by design:** autonomous opportunity discovery on a cadence, the separate thesis
 monitor, live trading. The scheduler exists and runs, but `opportunity_scan` and
@@ -44,19 +47,16 @@ UNKNOWN` verdict needs a judgement no milestone has made, and the job records
 `SKIPPED / NOT_IMPLEMENTED` rather than fabricating one. `run thesis-monitor` still exits
 `3`. Follow that pattern for anything still pending.
 
-**Milestone 12 is next: live-trading readiness** — the signed-off checklist, and the
-operational history that justifies signing it. Everything Milestone 12 needs to observe now
-exists: a realised result per closed trade, a daily figure the risk engine actually reads, a
-health model that separates trading from observability, and an alert vocabulary that names
-every safety condition.
+**Live trading is still off, and Milestone 12 did not turn it on.** The strongest
+conclusion the gate can reach is `READY_FOR_LIVE_REVIEW`, which is a request for a person to
+look; there is deliberately no `READY_FOR_LIVE` in the vocabulary. `TRADING_MODE`,
+`LIVE_TRADING_CONFIRMED`, `LIVE_READINESS_CHECKLIST_SIGNED_OFF`, `execution.enabled` and
+`IBKR_READ_ONLY` remain exactly what they were: separate controls a human sets deliberately.
 
-One thing earlier milestones left open remains open, and one is now closed. An
-`ORPHAN_BROKER_POSITION` is still reported and never adopted, so a controlled onboarding
-workflow for pre-existing holdings belongs to a later milestone. Realised profit and loss is
-**now tracked**: an exit's proceeds settle the reservation behind the position, capital
-returns to the campaign, and `DAILY_LOSS_NOT_TRACKED` now means "no ledger was consulted"
-rather than "no ledger exists" — with `DAILY_LOSS_UNKNOWN` as the distinct, more alarming
-case where the ledger was consulted and could not produce a figure.
+One thing earlier milestones left open remains open. An `ORPHAN_BROKER_POSITION` is still
+reported and never adopted, so a controlled onboarding workflow for pre-existing holdings
+belongs to a later milestone — and the paper account this was validated against has four of
+them, which is precisely why reconciliation reports `MISMATCH` there and is right to.
 
 [CLOUD_CODE_IMPLEMENTATION_SPEC.md](CLOUD_CODE_IMPLEMENTATION_SPEC.md) remains the source of
 truth for module layout, CLI surface, schemas, testing layers, and milestone order. Read the
@@ -220,6 +220,14 @@ full tree; the boundaries that matter:
   `otel.py`. That layering is what lets the agents, the risk engine and the exit engine be
   instrumented at all — their boundary tests forbid `socket`, `urllib` and `http`, and the
   OTLP exporter imports all three.
+- `readiness/` — the acceptance gate: `models · criteria · evidence · policy · evaluator ·
+  collectors · observability_probe · telemetry_emission · store · service · report ·
+  signoff · paper_gate`. The split is the milestone: **collectors** run commands, read git,
+  open a read-only broker and probe HTTP; **`evaluator.py` is a pure function** of captured
+  evidence and resolved policy — no broker, no LLM, no Docker, no socket, no clock, and a
+  boundary test walks the transitive graph to keep it that way. Nothing here can change a
+  mode, a guard or an execution switch, and `ReadinessRun` refuses a non-zero
+  `orders_submitted` outright.
 - `monitoring/` — the specification's separate thesis monitor. Still a docstring: the
   scheduler moved to `operations/`, and a `VALID / WEAKENING / INVALIDATED / UNKNOWN`
   verdict is a judgement no milestone has made.
@@ -852,6 +860,94 @@ failure mode or a settlement condition — is in
 agent**, so there is deliberately no `.claude/agents/` entry for it, exactly as in
 Milestones 7, 8, 9 and 10.
 
+## Live-trading readiness (Milestone 12)
+
+> **Readiness reports; it never enables. Every PASS names its evidence. There is
+> no `READY_FOR_LIVE`.**
+
+The acceptance gate. It answers *is this system safe and operationally complete enough to
+proceed to the next trading mode?* — and answers with an immutable, auditable artifact
+rather than with a boolean:
+
+```
+COLLECTORS  (impure: git, toolchain, config, stores, broker, HTTP probes)
+      |
+      v
+EvidenceBundle          frozen, captured, content-addressed
+      |
+      v
+evaluate()              PURE: no broker, no LLM, no docker, no socket, no clock
+      |
+      v
+ReadinessAssessment     49 criteria, each with its evidence and freshness
+      |
+      v
+NOT_READY / READY_FOR_PAPER / READY_FOR_LIVE_REVIEW
+```
+
+Nine rules govern it, each with tests that fail loudly:
+
+- **There is no `READY_FOR_LIVE`, and that is a design decision.** The strongest
+  conclusion available is `READY_FOR_LIVE_REVIEW`, which is a request for a person to look.
+  A level with the other name would eventually be read as the authorisation itself. There is
+  no `readiness == true -> enable execution` path anywhere; a boundary test walks the
+  transitive import graph to prove the evaluator cannot reach one.
+- **Every `PASS` names its evidence, and so does every `FAIL`.** `ReadinessCriterion`
+  *cannot be constructed* with a verdict and no `evidence_id`, and `NOT_TESTED` cannot be
+  constructed *with* one. A failure nobody can go and look at is as unaccountable as a pass
+  nobody can check.
+- **`UNKNOWN` is neither `FAILED` nor `SAFE`.** `READINESS_SATISFYING_STATUSES` has exactly
+  one member, so `UNKNOWN`, `STALE` and `NOT_TESTED` all leave a blocking criterion
+  unsatisfied — and none of them is ever quietly relabelled `FAIL`, because a question and a
+  defect call for different work.
+- **The level is derived, never asserted.** It is the highest level no unsatisfied blocking
+  criterion holds shut, and a model validator recomputes it from the criteria it was stored
+  with. An assessment claiming `READY_FOR_PAPER` while carrying an unsatisfied
+  paper-blocking criterion fails to construct.
+- **Freshness has two mechanisms because evidence goes stale two ways.** Most expires with
+  the *clock*; a test result expires with the *working tree*. Freshness is checked **before**
+  the predicate, so evidence from another revision never gets to say `PASS` and be marked
+  stale afterwards — a stale pass is exactly the artifact §29 exists to prevent.
+- **The evaluator is a pure function, so a stored assessment is checkable.** The instant
+  comes from the bundle, not from a clock; re-evaluating stored evidence reproduces the
+  record byte for byte, id included. `tests/integration/test_readiness_offline.py` asserts it
+  against a real run.
+- **A validated compose file is not proof that a stack is running.** Every observability
+  criterion is an HTTP request to a live service, and arrival is established by asking the
+  *backend* — the collector's own accepted-span counter, a trace fetched from Tempo **by
+  id**, a metric queried from Prometheus, a log line found in Loki carrying that same trace
+  id. "The collector is up" and "the collector is receiving telemetry" are different facts,
+  and only the second closes Milestone 11's `NOT_TESTED`.
+- **A sign-off records a decision and enables nothing.** `enables_trading` is `const false`
+  in the schema and refused by a validator; `readiness.signoff.enables_trading: true` fails
+  to load. The signer is required and **never inferred** — `$USER` is whoever ran the process
+  and a git `user.name` is a string anybody can set, so an inferred signer is worse than
+  none because it looks like accountability.
+- **"It works" and "it has been operated" are different claims.** Live review additionally
+  requires accumulated history — distinct days, reconciliation runs, scheduler ticks — and a
+  **clean working tree**, because the reviewed code would otherwise not be the code that
+  runs.
+
+**The paper gate authorises; it does not submit.** Its first shape built a writable broker
+and sent its own controlled order, which made it a *second* caller of
+`build_execution_broker` and broke a Milestone 8 invariant that `tests/execution/` and
+`tests/positions/` both assert. Brief §2 forbids weakening an existing gate, so
+`readiness paper` now checks four independent authorisations — `readiness.paper_execution.enabled`
+(ships false), `ALLOW_LIVE_TESTS`, `RUN_PAPER_EXECUTION_TESTS`, and a dedicated flag that is
+deliberately **not** `--confirm` — and then points at the one audited order path,
+`tests/integration/test_paper_execution.py`, which runs through `execution/service.py`.
+
+`data/readiness/` holds immutable `runs/` and `signoffs/` with their own append-only
+indices. A run id derives from the evidence **and the conclusion**, for the fourth time this
+repository has learned that lesson: two runs over similar inputs reaching different verdicts
+are different facts, and an id derived from inputs alone collides them.
+
+Development guidance — what to do when adding a criterion, a collector or a freshness
+window, and what this milestone deliberately does not do — is in
+[skills/readiness/README.md](skills/readiness/README.md). Milestone 12 introduces **no
+agent**, so there is deliberately no `.claude/agents/` entry for it, exactly as in
+Milestones 7 through 11.
+
 **Configuration over hardcoding.** Schedules live in `config/schedules.yaml`, risk in `risk.yaml`,
 strategies in `config/strategies/*.yaml`, data policy in `data.yaml`, the candidate pool,
 eligibility filters and ranking policy in `universe.yaml`, the research horizon, data
@@ -1136,6 +1232,27 @@ python -m trading_system.cli pnl history [--daily]
 python -m trading_system.cli pnl settle --dry-run        # what would move, moving nothing
 python -m trading_system.cli pnl settle                  # returns capital on confirmed closure
 
+# Readiness. REPORTS ONLY: no command here changes TRADING_MODE, execution.enabled,
+# IBKR_READ_ONLY or either live guard, and every run prints 0 orders submitted.
+python -m trading_system.cli readiness validate          # what "ready" means. Collects nothing
+python -m trading_system.cli readiness check             # offline: config, git, stores. Seconds
+python -m trading_system.cli readiness check --toolchain # + pytest, ruff, mypy. Minutes
+python -m trading_system.cli readiness check --broker --reconciliation   # one read-only session
+python -m trading_system.cli readiness check --observability  # probes a RUNNING stack over HTTP
+python -m trading_system.cli readiness check --full      # everything. Minutes
+python -m trading_system.cli readiness check --dry-run   # evaluates, stores nothing
+python -m trading_system.cli readiness show [--run-id <ID>] [--verbose]
+python -m trading_system.cli readiness history
+python -m trading_system.cli readiness explain [--criterion TEST_SUITE_PASSES]
+python -m trading_system.cli readiness signoff --signed-by "Name" --confirm   # ENABLES NOTHING
+python -m trading_system.cli readiness paper --i-understand-this-submits-a-real-paper-order
+python -m trading_system.cli test readiness              # diagnostic; collects nothing
+
+# The observability acceptance stack. OPTIONAL, and the trading system runs without it.
+make observability-up                           # collector, Tempo, Prometheus, Loki, Grafana
+make observability-test                         # emit REAL telemetry and ask each backend
+make observability-down
+
 pytest -m "not ibkr and not llm"                # default: no gateway, no API key needed
 make test-safety                                # the order-submission gates; no gateway
 pytest tests/execution/test_execution_safety.py # the gate hierarchy, gate by gate
@@ -1154,12 +1271,16 @@ pytest tests/exit                               # precedence, trailing, expirati
 pytest tests/pnl                                # arithmetic, settlement, daily loss
 pytest tests/operations                         # cron, scheduler, alerts, boundaries
 pytest tests/observability                      # spans, privacy, cardinality, isolation
+pytest tests/readiness                          # criteria, freshness, evaluator, boundaries
 pytest tests/integration/test_research_to_allocation.py   # the whole chain; 0 orders
 pytest tests/integration/test_research_to_execution.py    # the chain through execution
 pytest tests/integration/test_execution_to_position.py   # execution -> fill -> position
 pytest tests/integration/test_reconciliation_workflow.py # the whole loop, id by id
 pytest tests/integration/test_exit_to_execution_to_reconciliation.py  # M10 -> M8 -> M9
 pytest tests/integration/test_operations_lifecycle.py     # exit -> P&L -> settlement -> daily loss
+pytest tests/integration/test_readiness_offline.py        # the gate, offline; 0 orders
+pytest tests/integration/test_observability_stack.py      # needs a RUNNING stack; else skips
+ALLOW_LIVE_TESTS=true pytest tests/integration/test_readiness_paper.py  # read-only paper gate
 pytest tests/agents/test_universe_selector.py   # agent contract; needs no API key
 pytest tests/agents/test_research_agent.py      # agent contract; needs no API key
 pytest tests/agents/test_strategy_selector.py   # agent contract; needs no API key
@@ -1600,6 +1721,46 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   both broker constructors, records every request and raises an `AssertionError`
   (deliberately not a `BrokerError`, which the execution service would catch and turn into
   a tidy status line). The claim is `never_called`, not "returned a refusal".
+- **`get_logger` must resolve its processor chain per call, not at import.**
+  `structlog`'s lazy proxy is only lazy until something binds to it:
+  `BoundLoggerLazyProxy.bind()` *assembles* a bound logger and snapshots
+  `_CONFIG.default_processors` into it. So a module-level `_logger = get_logger(__name__)`
+  froze the chain as it stood at **import** time — before Milestone 11's trace-correlation
+  processor is installed at start-up — and every one of those loggers emitted lines with no
+  `trace_id` and no `span_id`. The lines still appeared and still looked right, which is why
+  it survived a whole milestone. `_DeferredLogger` re-resolves per call;
+  `tests/observability/test_log_export.py` pins it.
+- **A test that reconfigures `structlog` must restore it.** `configure_logging` binds a
+  `PrintLoggerFactory` to whatever `sys.stderr` is at that instant, and `capsys` replaces
+  that stream for one test. Leaving the global configuration pointing at a closed capture
+  buffer made **66 unrelated tests** in `tests/universe` fail with `ValueError: I/O
+  operation on closed file` — and only once `get_logger` stopped freezing the chain, because
+  until then every module logger held a working configuration of its own. The leak was
+  latent for a milestone; the fixture that closes it is in `tests/unit/test_logging.py`.
+- **`build_execution_broker` still has exactly one caller, and Milestone 12 did not become
+  the second.** The readiness paper gate originally submitted its own controlled order,
+  which broke the invariant `tests/execution/test_boundaries.py` and
+  `tests/positions/test_boundaries.py` both assert. Two order paths is one more than this
+  system should have; the gate now checks authorisations and defers to
+  `tests/integration/test_paper_execution.py`.
+- **A service's `root` is the PROJECT root, not the data root.** Every service resolves
+  `data.storage.root` beneath the root it is given, so handing one an already-resolved data
+  root nests the tree a second time — `data/data/reconciliation/` — and fails *silently*:
+  the run succeeds, writes where nobody looks, and the next reader sees an empty store.
+  Found by running the readiness gate in a container and finding the reconciliation results
+  missing.
+- **The `ib-gateway` image trusts only `127.0.0.1` (`jts.ini`'s `TrustedIPs`).** A
+  connection from the **host** to the published port arrives from the Docker bridge address,
+  is accepted at the TCP level and then never answered — indistinguishable from a hang, and
+  it survives a container restart, so it looks exactly like a broken gateway. It is not:
+  from inside the gateway's network namespace the same connection succeeds immediately.
+  `docker-compose.yml` already solves it for `trading-runtime` with
+  `network_mode: "service:ib-gateway"`; anything else that needs the API must do the same.
+- **Output that is *counted* must not be truncated.** `run_command` tails stdout to twenty
+  lines, which is right for a failing suite and wrong for `git status --porcelain`: it made
+  `changed_files` report 20 for a tree with 40 changes, understating exactly the fact the
+  criterion exists to surface. `full_output=True` is for output whose *length* is the
+  measurement.
 
 This directory is its own git repository (`git init`-ed, one commit: the specification). The
 enclosing `/home/dmytro/git/` is a separate repo full of unrelated projects; nothing here should

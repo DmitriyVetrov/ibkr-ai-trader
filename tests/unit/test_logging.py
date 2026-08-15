@@ -17,6 +17,32 @@ from trading_system.infrastructure.logging import configure_logging, get_logger
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _restore_logging_configuration():
+    """Put the global ``structlog`` configuration back after every test here.
+
+    ``configure_logging`` installs a ``PrintLoggerFactory`` bound to whatever
+    ``sys.stderr`` is at that instant, and every test below calls it while
+    pytest's ``capsys`` owns that stream. Without this restore the global
+    configuration keeps a handle on a capture buffer that is closed at
+    teardown, and any later test that logs dies with ``ValueError: I/O
+    operation on closed file``.
+
+    The leak predates this fixture and was invisible while ``get_logger``
+    returned an *eagerly bound* logger: a module-level ``_logger`` froze the
+    working configuration at import time and never consulted the broken global
+    one. Milestone 12 made ``get_logger`` resolve per call — so that trace
+    correlation installed at start-up reaches module-level loggers at all — and
+    the latent leak became 66 failures in unrelated suites. Fixing it here is
+    the correct place: a test that reconfigures a global must restore it.
+    """
+    import structlog
+
+    saved = structlog.get_config()
+    yield
+    structlog.configure(**saved)
+
+
 def test_logging_a_structured_event_does_not_raise(capsys: pytest.CaptureFixture[str]) -> None:
     configure_logging(level="INFO", log_format="json")
     logger = get_logger("trading_system.tests")

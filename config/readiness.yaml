@@ -1,0 +1,277 @@
+# Live-trading readiness policy (Milestone 12).
+#
+# This file decides what "ready" MEANS. It never decides whether the system
+# trades: `readiness check` reports, and nothing in the readiness package can
+# change TRADING_MODE, LIVE_TRADING_CONFIRMED,
+# LIVE_READINESS_CHECKLIST_SIGNED_OFF, execution.enabled or IBKR_READ_ONLY. A
+# boundary test walks the transitive import graph to prove there is no path.
+#
+# Three ideas run through everything below.
+#
+#   1. EVIDENCE FIRST. A criterion may only read PASS when a piece of evidence
+#      says so. No evidence is NOT_TESTED, never PASS — "we never looked" and
+#      "we looked and it was fine" are different facts, and a gate that
+#      rendered them identically would certify a system nobody had examined.
+#
+#   2. UNKNOWN IS NOT SAFE, AND IT IS NOT FAILURE EITHER. It never satisfies a
+#      blocking criterion, and it is never quietly relabelled FAIL. A question
+#      and a defect call for different work.
+#
+#   3. FRESHNESS IS PER-CRITERION. A test result is bound to a git revision; a
+#      broker probe goes stale in minutes; a reconciliation in hours. One
+#      global window would be wrong for every one of them, so there isn't one.
+config_version: "2026.08.15-1"
+
+# ---------------------------------------------------------------------------
+# Freshness windows (brief section 28)
+#
+# How long a piece of evidence stays usable, measured against the instant the
+# assessment is made. Evidence outside its window is STALE, which is a
+# distinct status from FAIL: the system may well be fine, but this run did not
+# establish it.
+#
+# `revision_bound` evidence is different in kind. It goes stale not with time
+# but with the working tree: a test result belongs to the commit it ran
+# against, and claiming "tests passed" for a revision they never ran against
+# is the specific lie section 29 exists to prevent.
+# ---------------------------------------------------------------------------
+freshness:
+  # Bound to the git revision rather than to a clock.
+  revision_bound:
+    - TEST_SUITE_PASSES
+    - LINT_CLEAN
+    - FORMAT_CLEAN
+    - TYPECHECK_CLEAN
+    - EXECUTION_SAFETY_GATES
+    - ZERO_ORDERS_IN_SUITE
+    - AGENT_CONTRACTS_VALIDATED
+    - AGENT_BOUNDARIES_ENFORCED
+    - DATA_POINT_IN_TIME_ENFORCED
+    - DATA_QUALITY_ENFORCED
+    - POSITION_LIFECYCLE_VERIFIED
+    - EXIT_MANAGEMENT_VERIFIED
+    - PNL_FROM_CONFIRMED_FILLS
+    - SETTLEMENT_IDEMPOTENT
+    - TELEMETRY_PRIVACY_ENFORCED
+    - SUITE_RUNS_WITHOUT_GATEWAY
+    - LIVE_SUITES_GATED
+    - PAPER_EXECUTION_SUITE_GATED
+
+  # Time-bounded evidence, in seconds. Every one of these describes something
+  # that can change without a commit.
+  windows:
+    # A gateway that answered ten minutes ago may be down now.
+    broker_seconds: 900
+    # Operational health is a current statement about a running system.
+    health_seconds: 3600
+    # Reconciliation compares against a broker account that moves.
+    reconciliation_seconds: 21600
+    # A trading day. A realised figure from yesterday says nothing about today.
+    pnl_seconds: 86400
+    # The scheduler ticks on a cadence; a day without one is worth noticing.
+    scheduler_seconds: 86400
+    # Telemetry belongs to the running deployment, not to the commit.
+    observability_seconds: 3600
+    # Configuration is read at assessment time; the window is a safety net.
+    configuration_seconds: 3600
+
+# ---------------------------------------------------------------------------
+# What blocks what (brief sections 5 and 30)
+#
+# Paper readiness asks: can this system safely operate against IBKR Paper?
+# Live review asks: has it accumulated enough evidence to be REVIEWED for live
+# authorisation? Those are different questions, so they have different blocking
+# sets, and the live set is a strict superset of the paper one.
+#
+# A criterion that appears in neither list is advisory: it is still evaluated,
+# still recorded and still shown, and it cannot by itself hold the gate shut.
+# ---------------------------------------------------------------------------
+levels:
+  paper:
+    blocking:
+      # Software quality. A suite that fails is not a readiness question.
+      - TEST_SUITE_PASSES
+      - LINT_CLEAN
+      - FORMAT_CLEAN
+      - TYPECHECK_CLEAN
+      # Configuration safety.
+      - CONFIGURATION_LOADS
+      - TRADING_MODE_SAFE
+      - LIVE_GUARDS_CONSISTENT
+      - EXECUTION_SWITCH_SAFE
+      # Test isolation. An ordinary pytest that needs a gateway is a suite
+      # nobody can trust when the gateway is down.
+      - SUITE_RUNS_WITHOUT_GATEWAY
+      - LIVE_SUITES_GATED
+      - PAPER_EXECUTION_SUITE_GATED
+      # Execution safety. The gates are the reason this system is allowed to
+      # exist at all.
+      - EXECUTION_SAFETY_GATES
+      - ZERO_ORDERS_IN_SUITE
+      # The paper gate itself (brief section 32). Without a reachable paper
+      # gateway there is no READY_FOR_PAPER to claim, and the offline suite
+      # passing does not substitute for it.
+      - PAPER_BROKER_REACHABLE
+      - ACCOUNT_READABLE
+      - POSITIONS_READABLE
+      - ORDERS_READABLE
+      - FILLS_READABLE
+      # Reconciliation. An inability to observe is never a MATCH.
+      - RECONCILIATION_RUNS
+      - NO_CRITICAL_FINDINGS
+      - NO_UNRESOLVED_UNKNOWN_EXECUTIONS
+      # Capital and lifecycle.
+      - PNL_FROM_CONFIRMED_FILLS
+      - SETTLEMENT_IDEMPOTENT
+      - POSITION_LIFECYCLE_VERIFIED
+      - EXIT_MANAGEMENT_VERIFIED
+      # Agents and data.
+      - AGENT_CONTRACTS_VALIDATED
+      - AGENT_BOUNDARIES_ENFORCED
+      - DATA_POINT_IN_TIME_ENFORCED
+      - DATA_QUALITY_ENFORCED
+      # Security.
+      - SECRETS_NOT_TRACKED
+      - TELEMETRY_PRIVACY_ENFORCED
+      - ACCOUNT_IDENTIFIERS_MASKED
+      - METRIC_CARDINALITY_SAFE
+      # Source control. A result has to belong to a revision.
+      - GIT_REVISION_RECORDED
+      # The observability stack (brief section 31). M11 shipped every backend
+      # NOT_TESTED; closing that is a named M12 acceptance gate, so it blocks
+      # rather than merely being reported.
+      - OBSERVABILITY_STACK_RUNNING
+      - COLLECTOR_RECEIVES_TELEMETRY
+      - TEMPO_HAS_TRACE
+      - PROMETHEUS_HAS_METRIC
+      - LOKI_HAS_LOG
+      - GRAFANA_RUNNING
+      - GRAFANA_DATASOURCES_PROVISIONED
+      - GRAFANA_DASHBOARDS_PROVISIONED
+      - TRACE_LOG_CORRELATION
+
+  live_review:
+    # Everything the paper gate requires, plus the following. Expressed as an
+    # extension rather than as a second full list, so a criterion added to the
+    # paper gate cannot be silently absent from the live one.
+    inherits_paper: true
+    blocking:
+      - BROKER_READ_ONLY
+      # A dirty tree is blocking for live review (brief section 29): the
+      # evidence would describe code that is not what would run.
+      - WORKING_TREE_CLEAN
+      - SCHEDULER_RUNS
+      - SCHEDULER_JOBS_HEALTHY
+      - DAILY_LOSS_STATE_KNOWN
+      # "It worked once" is not operational history.
+      - OPERATIONAL_HISTORY_SUFFICIENT
+
+# ---------------------------------------------------------------------------
+# Operational history (brief section 21)
+#
+# The distinction this section exists to draw is between "the system works" and
+# "the system has been operated". A single green run demonstrates the first and
+# says nothing about the second, so live review requires accumulated evidence
+# over days rather than a snapshot.
+#
+# These are deliberately modest. They are a floor on evidence, not a claim that
+# meeting them makes live trading wise — that judgement is the human sign-off's.
+# ---------------------------------------------------------------------------
+operational_history:
+  # Distinct days on which a readiness assessment was recorded.
+  min_readiness_runs: 3
+  min_distinct_days: 2
+  # Reconciliation runs that actually compared against a broker.
+  min_reconciliation_runs: 3
+  # Scheduler ticks recorded.
+  min_scheduler_ticks: 1
+  # Days of history the store must span before live review is considered.
+  min_history_days: 2
+
+# ---------------------------------------------------------------------------
+# The paper execution gate (brief sections 9, 33, 34)
+#
+# A command that submits a real order to a real broker. It ships DISABLED, it
+# requires its own environment unlocks on top of this flag, and it requires a
+# dedicated authorisation flag that is deliberately NOT the `--confirm` used by
+# ordinary execution — a developer who typed `--confirm` for an entry must not
+# thereby have authorised the readiness gate to send one too.
+# ---------------------------------------------------------------------------
+paper_execution:
+  enabled: false
+  # Refused if set true. There is no configuration in which running the
+  # readiness check submits an order as a side effect.
+  submit_on_check: false
+  # PAPER only, refused everywhere else. LIVE is refused here, in the broker
+  # factory and in the adapter; three refusals for one irreversible action.
+  allow_live: false
+  # Exactly one order. There is no batch mode and no retry: an uncontrolled
+  # sequence of orders is the failure mode this whole gate guards against.
+  max_orders: 1
+  # Cancel a still-working order before finishing. A fill is handled by
+  # RECORDING it and invoking the existing position lifecycle — never by
+  # sending an opposite order, which would be a second uncontrolled trade.
+  cancel_if_working: true
+  # Seconds to observe the order before cancelling.
+  observation_seconds: 5.0
+
+# ---------------------------------------------------------------------------
+# Observability acceptance endpoints (brief sections 11, 31)
+#
+# Where the readiness collector looks for a running stack. These are
+# DEPLOYMENT facts, so they carry environment-overridable defaults matching
+# docker-compose.yml. Nothing here can affect a trading decision: the whole
+# observability domain is a side channel, and a health verdict computed from it
+# cannot move the trading verdict — operations/health.py enforces that split
+# and this file inherits it.
+# ---------------------------------------------------------------------------
+observability_acceptance:
+  # The collector's own Prometheus-format self-telemetry, used to prove it
+  # actually RECEIVED spans rather than merely being up.
+  collector_metrics_url: "http://localhost:8888/metrics"
+  # The collector's exported application metrics, scraped by Prometheus.
+  collector_exporter_url: "http://localhost:8889/metrics"
+  tempo_url: "http://localhost:3200"
+  prometheus_url: "http://localhost:9090"
+  loki_url: "http://localhost:3100"
+  grafana_url: "http://localhost:3000"
+  # Every probe is bounded. An unreachable backend must cost seconds, not a
+  # hung readiness run.
+  probe_timeout_seconds: 5.0
+  # How long to wait for a signal to traverse application -> collector ->
+  # backend before concluding it did not arrive. The collector batches on a 5s
+  # timeout and Prometheus scrapes every 15s, so a shorter window would report
+  # a working pipeline as broken.
+  propagation_timeout_seconds: 90.0
+  propagation_poll_seconds: 3.0
+  # Datasources that must be provisioned, by Grafana uid.
+  required_datasources:
+    - prometheus
+    - tempo
+    - loki
+  # Dashboards that must have loaded, by Grafana uid. Uid rather than title
+  # deliberately: a title is display text somebody will eventually reword, and
+  # a readiness gate that failed because a dashboard was renamed would teach
+  # people to loosen the gate.
+  required_dashboards:
+    - trading-system-overview
+    - trading-workflow-funnel
+    - trading-trade-view
+
+# ---------------------------------------------------------------------------
+# Human sign-off (brief section 22)
+#
+# Signing records a decision. It enables nothing.
+# ---------------------------------------------------------------------------
+signoff:
+  # An identity the environment cannot establish is NOT_AVAILABLE, never
+  # guessed from $USER or a git config that anybody can set. A sign-off whose
+  # signer was inferred is not a sign-off.
+  require_explicit_identity: true
+  # Signing requires a readiness run that actually reached live review.
+  require_live_review: true
+  # A dirty tree cannot be signed: the reviewed code would not be the code.
+  require_clean_working_tree: true
+  # Refused if set true. Signing must never flip a live guard; the guards stay
+  # in the environment where a human sets them deliberately.
+  enables_trading: false

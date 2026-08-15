@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-system.local/schemas/live_readiness_signoff.json",
+  "title": "LiveReadinessSignoff",
+  "description": "A human decision about a readiness run (Milestone 12). IT ENABLES NOTHING: TRADING_MODE, LIVE_TRADING_CONFIRMED, LIVE_READINESS_CHECKLIST_SIGNED_OFF, execution.enabled and IBKR_READ_ONLY are separate controls a person sets deliberately, and enables_trading is const false so a record claiming otherwise cannot exist. The signer is required and never inferred: $USER is whoever ran the process and a git user.name is a string anybody can set, so recording either as an accountable decision would be a fiction that looks exactly like accountability.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "signoff_id",
+    "status",
+    "readiness_run_id",
+    "readiness_level",
+    "signed_by",
+    "signed_at"
+  ],
+  "properties": {
+    "signoff_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schema_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "NOT_SIGNED",
+        "SIGNED",
+        "REVOKED"
+      ]
+    },
+    "readiness_run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "assessment_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "readiness_level": {
+      "enum": [
+        "NOT_READY",
+        "READY_FOR_PAPER",
+        "READY_FOR_LIVE_REVIEW"
+      ]
+    },
+    "signed_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "signed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "git_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "working_tree_clean": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "enables_trading": {
+      "description": "Always false. Restated on the record so a printed sign-off carries its own disclaimer and cannot be quoted as an authorisation.",
+      "type": "boolean",
+      "const": false
+    }
+  },
+  "allOf": [
+    {
+      "title": "A SIGNED record names an accountable person",
+      "if": {
+        "properties": {
+          "status": {
+            "const": "SIGNED"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "signed_by": {
+            "not": {
+              "const": "NOT_AVAILABLE"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

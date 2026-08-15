@@ -40,6 +40,7 @@ from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
+    "LogRecord",
     "NullTelemetry",
     "RecordingSpan",
     "RecordingTelemetry",
@@ -99,6 +100,18 @@ class TelemetryProvider(Protocol):
         """``(trace_id, span_id)`` of the active span, or ``(None, None)``."""
 
     def shutdown(self) -> None: ...
+
+
+#: ``emit_log`` is an **optional** provider capability, reached through
+#: ``getattr`` in :func:`trading_system.observability.tracing.emit_log` rather
+#: than declared on the protocol above.
+#:
+#: Optional rather than required because adding a method to a protocol every
+#: existing implementation would have to grow is a change to a completed
+#: milestone's contract, and Milestone 12 exists to *find* gaps in Milestone 11
+#: rather than to redesign it. A provider that does not implement it simply
+#: emits no logs over OTLP, which is what every provider did before.
+OPTIONAL_PROVIDER_CAPABILITIES: tuple[str, ...] = ("emit_log",)
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +182,11 @@ class NullTelemetry:
     def current_trace_context(self) -> tuple[str | None, str | None]:
         return None, None
 
+    def emit_log(
+        self, level: str, message: str, *, attributes: Mapping[str, Any] | None = None
+    ) -> None:
+        return None
+
     def shutdown(self) -> None:
         return None
 
@@ -225,6 +243,20 @@ class Measurement:
     labels: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class LogRecord:
+    """One log line offered to the telemetry side channel.
+
+    Recorded so a test can assert that a line carrying a trace id was actually
+    emitted, without standing up a collector — the same reason
+    :class:`RecordingSpan` exists.
+    """
+
+    level: str
+    message: str
+    attributes: dict[str, Any] = field(default_factory=dict)
+
+
 class RecordingTelemetry:
     """Keeps everything in memory. For tests, never for a deployment.
 
@@ -238,6 +270,7 @@ class RecordingTelemetry:
         self.spans: list[RecordingSpan] = []
         self.counts: list[Measurement] = []
         self.durations: list[Measurement] = []
+        self.logs: list[LogRecord] = []
         self.shutdown_calls = 0
         self._trace_id = trace_id
         self._span_id = span_id
@@ -276,6 +309,11 @@ class RecordingTelemetry:
         if not self._stack:
             return None, None
         return self._trace_id, self._span_id
+
+    def emit_log(
+        self, level: str, message: str, *, attributes: Mapping[str, Any] | None = None
+    ) -> None:
+        self.logs.append(LogRecord(level=level, message=message, attributes=dict(attributes or {})))
 
     def shutdown(self) -> None:
         self.shutdown_calls += 1

@@ -92,6 +92,21 @@ service:
   telemetry:
     logs:
       level: info
+    metrics:
+      # Bound to all interfaces rather than the default loopback, so the
+      # collector's own counters are readable from outside the container.
+      #
+      # This is what the Milestone 12 acceptance gate reads to answer "did the
+      # collector actually RECEIVE anything", which is a different question
+      # from "is the collector up" and the only one that closes M11's
+      # NOT_TESTED status honestly. A loopback binding would leave the gate
+      # unable to tell a working pipeline from a silent one.
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
   pipelines:
     traces:
       receivers: [otlp]

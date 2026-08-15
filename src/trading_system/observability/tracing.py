@@ -49,6 +49,7 @@ from trading_system.observability.provider import (
 
 __all__ = [
     "current_trace_context",
+    "emit_log",
     "get_provider",
     "operation",
     "reset_provider",
@@ -177,6 +178,26 @@ def record_duration(
     if not _is_enabled(provider):
         return
     _safely(lambda: provider.record_duration(instrument, seconds, labels=labels))
+
+
+def emit_log(level: str, message: str, *, attributes: Mapping[str, Any] | None = None) -> None:
+    """Offer one log line to the telemetry side channel. Never raises.
+
+    Reached through ``getattr`` because ``emit_log`` is an *optional* provider
+    capability: a provider that predates it simply does not export logs, which
+    is what every provider did before Milestone 12 added the OTLP log path.
+
+    Attributes go through the same privacy filter spans do. A log line is not
+    an audit archive either — the immutable domain artifact is, and this
+    carries its id.
+    """
+    provider = _provider
+    if not _is_enabled(provider):
+        return
+    sink = getattr(provider, "emit_log", None)
+    if sink is None:
+        return
+    _safely(lambda: sink(level, message, attributes=sanitize(attributes, _privacy)))
 
 
 # ---------------------------------------------------------------------------
