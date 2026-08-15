@@ -68,6 +68,7 @@ from trading_system.domain.enums import (
     LegAction,
     OrderType,
     TimeInForce,
+    TradingMode,
 )
 from trading_system.domain.models import (
     OptionLeg,
@@ -81,16 +82,19 @@ from trading_system.domain.models import (
 from trading_system.execution.execution_engine import ExecutionEngine, SubmissionOutcome
 from trading_system.execution.models import (
     EXECUTION_SCHEMA_VERSION,
+    ExecutionLeg,
     ExecutionRecord,
     ExecutionRequest,
     ExecutionRunCounts,
     ExecutionRunResult,
+    cleanup_execution_request_identifier,
     execution_identifier,
     execution_request_identifier,
     execution_run_identifier,
 )
 from trading_system.execution.order_builder import (
     OrderBuildError,
+    build_cleanup_order_intent,
     build_exit_order_intent,
     build_order_intent,
     reference_quote_of,
@@ -114,6 +118,7 @@ from trading_system.infrastructure.logging import get_logger
 from trading_system.infrastructure.settings import Settings, SystemConfig, project_root
 from trading_system.observability import metrics as _metrics
 from trading_system.observability.attributes import (
+    TRADING_CONTRACT_ID,
     TRADING_EXECUTION_ID,
     TRADING_POSITION_ID,
     TRADING_STATUS,
@@ -126,10 +131,16 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Iterator
 
     from trading_system.broker.base import Broker
-    from trading_system.execution.models import ExecutionLeg
+    from trading_system.cleanup.models import CleanupTarget
     from trading_system.exit.models import ExitRequest
 
-__all__ = ["ExecutionPlan", "ExecutionRun", "ExecutionService", "ExitSubmission"]
+__all__ = [
+    "CleanupSubmission",
+    "ExecutionPlan",
+    "ExecutionRun",
+    "ExecutionService",
+    "ExitSubmission",
+]
 
 _logger = get_logger(__name__)
 
@@ -188,6 +199,57 @@ class ExitSubmission:
     @property
     def refused(self) -> bool:
         return self.record is None or bool(self.reason_codes)
+
+
+@dataclass(frozen=True, slots=True)
+class CleanupSubmission:
+    """What one orphan-cleanup submission attempt produced.
+
+    The same shape as :class:`ExitSubmission`, deliberately: the two are
+    different *authorisations* for the same act, and a caller that can report
+    one can report the other.
+    """
+
+    target_key: str
+    record: ExecutionRecord | None = None
+    intent: OrderIntent | None = None
+    reason_codes: tuple[ExecutionReasonCode, ...] = ()
+    detail: str | None = None
+    #: An attempt already on file that blocked this one.
+    existing: ExecutionRecord | None = None
+    orders_submitted: int = 0
+    dry_run: bool = False
+
+    @property
+    def submitted(self) -> bool:
+        return self.record is not None and self.record.submitted and not self.dry_run
+
+    @property
+    def refused(self) -> bool:
+        return self.record is None or bool(self.reason_codes)
+
+
+def _reached_the_broker(records: Sequence[ExecutionRecord]) -> ExecutionRecord | None:
+    """Any earlier attempt under this identity that may have reached a broker.
+
+    Stricter than :func:`~trading_system.execution.store.has_live_attempt`, and
+    the extra strictness is the whole idempotency guarantee for a cleanup.
+    ``has_live_attempt`` asks *is an order in flight* — so a ``FILLED`` record
+    does not block, which is right for an entry (the position exists; nothing
+    would re-submit it) and wrong here. A cleanup whose fill has not yet
+    propagated to the position list would otherwise be sent a second time, and
+    a second sale of a holding of one contract is a short position of one.
+
+    What does *not* block: an attempt that provably never left the process.
+    ``FAILED`` and ``REJECTED`` with nothing at the broker are exactly that,
+    and blocking on them would make a transient refusal permanent.
+    """
+    for record in sorted(records, key=lambda item: item.created_at):
+        if record.dry_run:
+            continue
+        if record.submitted or record.broker_order_id or record.filled_quantity:
+            return record
+    return None
 
 
 def _closing_execution_leg(leg: ExecutionLeg) -> ExecutionLeg:
@@ -663,6 +725,24 @@ class ExecutionService:
         now = at or self._clock.now()
         policy = self._config.execution
 
+        if not entry.intent.carries_an_authorisation:
+            # Only an OPEN execution establishes a position, so only an OPEN
+            # execution can be exited. An orphan cleanup has no authorisation
+            # to inherit and no structure to close; conflating the two would
+            # let Milestone 10's exit path act on a holding it never opened.
+            return ExitSubmission(
+                request=request,
+                reason_codes=(ExecutionReasonCode.PROVENANCE_UNAVAILABLE,),
+                detail=(
+                    f"execution {entry.execution_id} is a {entry.intent.value}, not a position "
+                    f"this system opened. An exit inherits the entry's purchase card and risk "
+                    f"decision, and there are none behind a holding we never acquired"
+                ),
+            )
+        entry_card = entry.purchase_card_id
+        entry_risk = entry.risk_decision_id
+        assert entry_card is not None and entry_risk is not None  # guaranteed by the validator
+
         if not dry_run and not authorized:
             return ExitSubmission(
                 request=request,
@@ -711,8 +791,8 @@ class ExecutionService:
             intent = build_exit_order_intent(
                 position_id=request.position_id,
                 exit_request_id=request.exit_request_id,
-                purchase_card_id=request.purchase_card_id or entry.purchase_card_id,
-                risk_decision_id=request.risk_decision_id or entry.risk_decision_id,
+                purchase_card_id=request.purchase_card_id or entry_card,
+                risk_decision_id=request.risk_decision_id or entry_risk,
                 underlying=request.underlying,
                 strategy_type=request.strategy,
                 legs=[_option_leg_of(leg) for leg in entry.legs],
@@ -800,6 +880,245 @@ class ExecutionService:
 
         return ExitSubmission(
             request=request,
+            record=outcome.record,
+            intent=intent,
+            orders_submitted=submitted,
+        )
+
+    # --- closing a pre-existing broker holding (orphan cleanup) -------------
+    @traced(
+        "execution.cleanup",
+        attributes=lambda self, target, **kwargs: {
+            TRADING_CONTRACT_ID: str(target.contract_id),
+        },
+        count=_metrics.EXECUTION_SUBMISSIONS_TOTAL,
+        duration=_metrics.BROKER_SUBMISSION_DURATION,
+        result_attributes=lambda submission: (
+            {TRADING_EXECUTION_ID: submission.record.execution_id}
+            if submission.record is not None
+            else {}
+        ),
+        labels=lambda submission: {
+            "execution_type": "CLEANUP",
+            "status": (
+                submission.record.state.value if submission.record is not None else "NOT_SUBMITTED"
+            ),
+        },
+    )
+    def submit_cleanup(
+        self,
+        target: CleanupTarget,
+        *,
+        cleanup_request_id: str,
+        campaign_id: str,
+        authorized: bool = False,
+        dry_run: bool = False,
+        broker: Broker | None = None,
+        at: datetime | None = None,
+    ) -> CleanupSubmission:
+        """Submit a closing order for one pre-existing broker holding.
+
+        The **only** way an orphan cleanup order reaches a broker, and a
+        sibling of :meth:`submit_exit` rather than a variant of it — the two
+        differ in what authorises them, not in how an order is sent.
+
+        Every safeguard the other two paths have applies here unchanged:
+
+        * two switches, and neither implies the other. ``execution.enabled``
+          *and* an explicit ``authorized=True``. (``cleanup.enabled`` is a
+          third, checked by the caller before this is reached);
+        * a dry run never constructs a broker at all, so "a dry run cannot
+          place an order" stays structural rather than a flag to check;
+        * one holding, one order. The identity is checked against the ledger
+          and an attempt that may have reached a broker — *including a filled
+          one* — refuses a second;
+        * the record is written before the send, so a process that dies
+          mid-submission leaves evidence rather than silence;
+        * an ``UNKNOWN`` outcome is never retried. It is resolved by observing
+          the broker, exactly as everywhere else.
+
+        What is different is what the record does **not** carry. There is no
+        allocation, purchase card, risk decision, opportunity or strategy
+        behind it, the record model refuses to let one be attached, and
+        ``ExecutionIntent.CLEANUP`` keeps its fills out of the internal
+        position ledger. This system did not open the holding and records
+        nothing claiming it did.
+        """
+        from trading_system.domain.enums import ExecutionIntent
+
+        now = at or self._clock.now()
+        policy = self._config.execution
+        cleanup_policy = self._config.cleanup
+
+        if not dry_run and not authorized:
+            return CleanupSubmission(
+                target_key=target.key,
+                reason_codes=(ExecutionReasonCode.EXECUTION_NOT_AUTHORIZED,),
+                detail=(
+                    "no cleanup authorisation was given. Listing the orphan holdings in an "
+                    "account is not permission to sell out of them: pass --confirm to "
+                    "authorise, or run without it to inspect what would be sent"
+                ),
+            )
+        if not dry_run and not policy.enabled:
+            return CleanupSubmission(
+                target_key=target.key,
+                reason_codes=(ExecutionReasonCode.EXECUTION_DISABLED,),
+                detail=(
+                    "execution.enabled is false in config/execution.yaml. Submission is "
+                    "switched off at the system level, for a cleanup exactly as for a trade"
+                ),
+            )
+        if not dry_run and self._settings.trading_mode is not TradingMode.PAPER:
+            # Restated here, at the last point before a broker could be built,
+            # even though the caller's gates already refused. Two checks in two
+            # places is the right number for the one thing on this path that
+            # cannot be undone.
+            return CleanupSubmission(
+                target_key=target.key,
+                reason_codes=(ExecutionReasonCode.PAPER_MODE_REQUIRED,),
+                detail=(
+                    f"TRADING_MODE={self._settings.trading_mode.value}. An orphan cleanup "
+                    f"submits orders in PAPER and in nothing else"
+                ),
+            )
+
+        request_id = cleanup_execution_request_identifier(
+            account_reference=target.account_reference,
+            contract_key=target.key,
+            trading_mode=self._settings.trading_mode,
+            order_type=cleanup_policy.order.order_type,
+            time_in_force=cleanup_policy.order.time_in_force,
+            policy_version=self._config.application.config_version,
+        )
+        existing = self._repository.for_request(request_id)
+        prior = _reached_the_broker(existing)
+        if prior is not None:
+            return CleanupSubmission(
+                target_key=target.key,
+                reason_codes=(ExecutionReasonCode.ALREADY_SUBMITTED,),
+                detail=(
+                    f"cleanup execution {prior.execution_id} for {target.key} is already in "
+                    f"{prior.state.value}. An order for this holding has reached the broker "
+                    f"once; a second would sell {target.quantity} contract(s) twice, and the "
+                    f"account holds {target.quantity}"
+                ),
+                existing=prior,
+            )
+
+        session_refusal = self._session_refusal(now)
+        if session_refusal is not None and not dry_run:
+            return CleanupSubmission(
+                target_key=target.key,
+                reason_codes=(ExecutionReasonCode.MARKET_CLOSED,),
+                detail=session_refusal,
+            )
+
+        try:
+            intent = build_cleanup_order_intent(
+                cleanup_request_id=cleanup_request_id,
+                contract_key=target.key,
+                underlying=target.underlying,
+                contract_id=target.contract_id,
+                right=target.right,
+                strike=target.strike,
+                expiration=target.expiration,
+                multiplier=target.multiplier,
+                quantity=target.quantity,
+                reference_quote=target.market_price,
+                local_symbol=target.local_symbol,
+                config=cleanup_policy.order,
+                trading_mode=self._settings.trading_mode,
+                created_at=now,
+                versions=self.versions(),
+            )
+        except OrderBuildError as exc:
+            return CleanupSubmission(
+                target_key=target.key, reason_codes=(exc.reason_code,), detail=str(exc)
+            )
+
+        leg = intent.legs[0]
+        record = ExecutionRecord(
+            execution_id=execution_identifier(
+                execution_request_id=request_id, attempt=len(existing)
+            ),
+            execution_request_id=request_id,
+            # No allocation, card, risk decision, opportunity or strategy. Not
+            # omitted for tidiness: the record model *refuses* them on a
+            # CLEANUP, which is what makes "this system did not open the
+            # holding" a property of the artifact rather than a promise.
+            order_intent_id=intent.intent_id,
+            campaign_id=campaign_id,
+            created_at=now,
+            updated_at=now,
+            underlying=target.underlying,
+            intent=ExecutionIntent.CLEANUP,
+            legs=[
+                ExecutionLeg(
+                    leg_index=0,
+                    contract_id=target.contract_id,
+                    action=leg.action,
+                    right=leg.right,
+                    underlying=target.underlying,
+                    expiration=leg.expiration,
+                    strike=leg.strike,
+                    multiplier=leg.multiplier,
+                    ratio=1,
+                    # Whatever the broker reported, including nothing. It
+                    # cannot be derived from the symbol and is not guessed.
+                    trading_class=target.trading_class,
+                    exchange=target.exchange,
+                    local_symbol=target.local_symbol,
+                    currency=target.currency,
+                )
+            ],
+            quantity=intent.quantity,
+            multiplier=leg.multiplier,
+            order_type=intent.order_type,
+            time_in_force=intent.time_in_force,
+            # The broker's own reported price for the holding, in quoted terms.
+            # There is no structure cost to convert: nothing here was purchased
+            # by this system, so there is no authorised figure to restate.
+            reference_quote=target.market_price,
+            submitted_price=intent.limit_price,
+            # Zero, and validated as zero. Selling a holding the campaign never
+            # funded commits none of its capital and removes none of its risk.
+            capital_commitment=Decimal("0"),
+            maximum_loss=Decimal("0"),
+            currency=target.currency,
+            trading_mode=self._settings.trading_mode,
+            dry_run=dry_run,
+            broker="NONE",
+            state=ExecutionState.VALIDATED if dry_run else ExecutionState.SUBMISSION_PENDING,
+            reason_codes=[ExecutionReasonCode.DRY_RUN] if dry_run else [],
+            cleanup_request_id=cleanup_request_id,
+            broker_position_key=target.key,
+            policy_version=self._config.application.config_version,
+            versions=self.versions(),
+        )
+
+        if dry_run:
+            return CleanupSubmission(
+                target_key=target.key, record=record, intent=intent, dry_run=True
+            )
+
+        with self._execution_broker(broker) as (connection, broker_failure):
+            if connection is None:
+                return CleanupSubmission(
+                    target_key=target.key,
+                    reason_codes=(ExecutionReasonCode.BROKER_DISCONNECTED,),
+                    detail=broker_failure or "no broker could be opened for this cleanup",
+                )
+            self._verify_account(connection)
+            engine = ExecutionEngine(
+                broker=connection, repository=self._repository, clock=self._clock
+            )
+            before = connection.orders_submitted
+            outcome = engine.submit(record.model_copy(update={"broker": connection.name}), intent)
+            submitted = connection.orders_submitted - before
+
+        return CleanupSubmission(
+            target_key=target.key,
             record=outcome.record,
             intent=intent,
             orders_submitted=submitted,

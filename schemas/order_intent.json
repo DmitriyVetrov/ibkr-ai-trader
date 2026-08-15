@@ -2,16 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://trading-system.local/schemas/order_intent.json",
   "title": "OrderIntent",
-  "description": "A risk-approved instruction for the execution engine. Only produced downstream of an APPROVED RiskDecision; an agent may never construct one directly.",
+  "description": "A risk-approved instruction for the execution engine. Only produced downstream of an APPROVED RiskDecision; an agent may never construct one directly. The single exception is intent=CLEANUP, which closes a pre-existing broker holding this system never opened: there is no purchase card, risk decision or strategy behind such an order, and the conditionals below refuse them rather than letting one be invented.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "intent_id",
-    "purchase_card_id",
-    "risk_decision_id",
     "created_at",
     "underlying",
-    "strategy_type",
     "legs",
     "quantity",
     "order_type",
@@ -20,11 +17,17 @@
   ],
   "properties": {
     "intent_id": { "type": "string", "minLength": 1 },
-    "purchase_card_id": { "type": "string", "minLength": 1 },
-    "risk_decision_id": { "type": "string", "minLength": 1 },
+    "intent": { "enum": ["OPEN", "CLOSE", "CLEANUP"], "default": "OPEN" },
+    "purchase_card_id": { "type": ["string", "null"], "minLength": 1 },
+    "risk_decision_id": { "type": ["string", "null"], "minLength": 1 },
     "created_at": { "type": "string", "format": "date-time" },
     "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
-    "strategy_type": { "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"] },
+    "strategy_type": {
+      "oneOf": [
+        { "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"] },
+        { "type": "null" }
+      ]
+    },
     "legs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/option_leg" } },
     "quantity": { "type": "integer", "minimum": 1 },
     "order_type": { "enum": ["MARKET", "LIMIT"] },
@@ -45,6 +48,26 @@
     {
       "if": { "properties": { "order_type": { "const": "MARKET" } }, "required": ["order_type"] },
       "then": { "properties": { "limit_price": { "type": "null" } } }
+    },
+    {
+      "if": { "properties": { "intent": { "const": "CLEANUP" } }, "required": ["intent"] },
+      "then": {
+        "description": "A cleanup order has no authorisation behind it, and must not claim one.",
+        "properties": {
+          "purchase_card_id": { "type": "null" },
+          "risk_decision_id": { "type": "null" },
+          "strategy_type": { "type": "null" }
+        }
+      },
+      "else": {
+        "description": "Every other intent is downstream of an APPROVED RiskDecision and names it.",
+        "required": ["purchase_card_id", "risk_decision_id", "strategy_type"],
+        "properties": {
+          "purchase_card_id": { "type": "string", "minLength": 1 },
+          "risk_decision_id": { "type": "string", "minLength": 1 },
+          "strategy_type": { "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"] }
+        }
+      }
     }
   ],
   "$defs": {

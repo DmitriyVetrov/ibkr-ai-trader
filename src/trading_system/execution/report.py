@@ -83,10 +83,13 @@ def render_execution(record: ExecutionRecord) -> str:
     lines = [
         f"Execution   : {record.execution_id}",
         f"Request     : {record.execution_request_id}",
-        f"Allocation  : {record.allocation_id}",
-        f"Card        : {record.purchase_card_id}",
+        f"Intent      : {record.intent.value}",
+        # A dash rather than "None" for the four an orphan cleanup genuinely
+        # does not have. The absence is the fact worth showing.
+        f"Allocation  : {_or_dash(record.allocation_id)}",
+        f"Card        : {_or_dash(record.purchase_card_id)}",
         f"Underlying  : {record.underlying}",
-        f"Strategy    : {record.strategy.value}",
+        f"Strategy    : {record.strategy.value if record.strategy else '(none — cleanup)'}",
         f"State       : {record.state.value}{'  (DRY RUN)' if record.dry_run else ''}",
         f"Mode        : {record.trading_mode.value}",
         f"Broker      : {record.broker}",

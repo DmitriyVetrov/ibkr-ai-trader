@@ -140,6 +140,11 @@ OPERATION_NAMES: Final = (
     "allocation.calculate",
     "execution.open",
     "execution.close",
+    #: Closing a PRE-EXISTING broker holding this system never opened. A third
+    #: name rather than a label on ``execution.close``, because the two are
+    #: different acts with different authorisations, and a query for "how many
+    #: of our positions did we exit" must not return orphan cleanups.
+    "execution.cleanup",
     "execution.validate",
     "order.build",
     "broker.submit",
@@ -150,6 +155,10 @@ OPERATION_NAMES: Final = (
     "exit.execute",
     "exit.confirm",
     "reconciliation.run",
+    #: The whole orphan-cleanup workflow: the observation before, the gates,
+    #: every submission, the observation after and the reconciliation that
+    #: confirms it. One trace an operator can open and read end to end.
+    "orphan.cleanup",
     "pnl.compute",
     "pnl.settle",
     "ops.health",

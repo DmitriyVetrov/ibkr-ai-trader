@@ -1,0 +1,101 @@
+# Orphan-position cleanup policy.
+#
+# The controlled, PAPER-only closure of `ORPHAN_BROKER_POSITION` holdings — the
+# ones a real account already held before this system ever saw it, which
+# reconciliation correctly reports and correctly refuses to adopt.
+#
+# This is the narrowest order path in the system and it ships closed. Reaching a
+# broker from here needs FOUR independent things, and no two of them are the
+# same decision:
+#
+#   1. `enabled: true` below                — this operation exists at all;
+#   2. `execution.enabled: true`            — the system-level order switch;
+#   3. `reconciliation cleanup-orphans --confirm`  — this run, deliberately;
+#   4. TRADING_MODE=PAPER with both live guards off, verified against the
+#      connected account's own identity.
+#
+# What this operation deliberately CANNOT do, in configuration or in code:
+# adopt a holding, invent an acquisition, charge the campaign budget, produce a
+# profit-and-loss figure, retry an uncertain submission, reprice, or close
+# anything reconciliation did not report as an orphan.
+#
+# Monetary values are quoted strings or integers so they parse as exact
+# decimals. An unquoted 0.01 would be a binary float and is rejected.
+
+# Master switch. Ships OFF. With this false, `reconciliation cleanup-orphans`
+# still selects targets, evaluates every gate and prints exactly what it would
+# send — it simply never reaches a broker. Flip it locally to run a paper
+# cleanup; do not commit the flip.
+enabled: false
+
+# LIVE is refused here on top of the execution config, the broker factory, the
+# adapter and the Milestone 1 environment guards. Selling a position is not
+# less irreversible than buying one.
+allow_live: false
+paper_only: true
+
+# A cleanup run must carry an explicit authorisation. There is no supported
+# configuration in which listing the orphans closes them.
+require_explicit_authorization: true
+
+# --- what may be targeted ---------------------------------------------------
+#
+# Only a holding a stored reconciliation result actually reported as
+# ORPHAN_BROKER_POSITION. Note what this is NOT: it is not "every position not
+# known internally". The two differ exactly when the internal ledger could not
+# be read, and in that case everything looks unknown — which is the one moment
+# a "sell what we don't recognise" rule would sell the whole account.
+require_orphan_finding: true
+
+# How old the reconciliation naming the targets may be. An orphan list from
+# last week describes an account that has since traded.
+max_reconciliation_age_seconds: 3600
+
+# A ceiling on one run, so a misconfiguration cannot become a liquidation.
+# Four is the number of orphans this deployment actually has; raising it is a
+# deliberate, visible edit.
+max_targets_per_run: 8
+
+# Short holdings are refused outright. Closing a short is a purchase, its cost
+# is unbounded above, and nothing in this system is authorised to decide it.
+allow_short_positions: false
+
+# After a partial fill the remainder is REPORTED and nothing further is sent.
+# A cleanup is not a strategy: there is no reprice loop, no follow-on order and
+# no configuration that adds one.
+allow_partial_continuation: false
+
+# --- the order --------------------------------------------------------------
+order:
+  # LIMIT only, exactly as everywhere else. A market order to sell an option is
+  # an unbounded price in the one direction that cannot be recovered from.
+  order_type: LIMIT
+
+  # DAY, so an unfilled cleanup order does not survive into a session nobody
+  # reviewed. A GTC order to sell would outlive the operator's attention.
+  time_in_force: DAY
+
+  # Where the reference price comes from. MARKET_PRICE is the broker's own
+  # reported price for the holding, read from the fresh position snapshot in
+  # quoted terms (48.77, not 4877.46). It is the only supported value:
+  #
+  #   * there is no stored option quote for a contract nobody selected;
+  #   * fetching one would need a second uncached round trip on the connection,
+  #     which Milestone 2 established is not reliably answered;
+  #   * the broker's figure is a real observation with real provenance.
+  #
+  # A holding for which the broker reports no price is PRICE_UNAVAILABLE and is
+  # refused. Note that with IBKR_MARKET_DATA_TYPE=3 this is a DELAYED figure,
+  # which is exactly why the offset below is not zero.
+  reference_price_field: MARKET_PRICE
+
+  # Applied to the reference. NEGATIVE offers below it, which is what makes a
+  # closing order fill; rounding is always DOWN, so the order can only ever ask
+  # for less than the reference and never more. A cleanup that does not fill is
+  # not a cleanup.
+  limit_price_offset_pct: -3.0
+  price_increment: "0.01"
+
+  # Never substitute one price field for another. A missing market price is not
+  # the average cost, not the last close and not the strike.
+  allow_reference_substitution: false

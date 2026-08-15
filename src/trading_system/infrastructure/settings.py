@@ -2729,10 +2729,144 @@ class ReadinessConfig(_ConfigModel):
         return self
 
 
+class CleanupReferencePriceField(StrEnum):
+    """Where an orphan cleanup's reference price may come from.
+
+    One member, deliberately. There is no stored quote for a contract nobody
+    selected, and fetching one would need a second uncached round trip on the
+    submission connection — which Milestone 2 established is not reliably
+    answered. The broker's own reported price for the holding is a real
+    observation with real provenance, and it is the only one available at the
+    moment the order is built.
+    """
+
+    MARKET_PRICE = "MARKET_PRICE"
+
+
+class CleanupOrderConfig(_ConfigModel):
+    """How an orphan-cleanup order is priced (``cleanup.order``).
+
+    Everything else about sending it — validation, the order intent, the broker
+    call, ``UNKNOWN`` handling, the immutable record — is Milestone 8's and is
+    reused unchanged.
+    """
+
+    order_type: OrderType = OrderType.LIMIT
+    time_in_force: TimeInForce = TimeInForce.DAY
+    reference_price_field: CleanupReferencePriceField = CleanupReferencePriceField.MARKET_PRICE
+    #: Applied to the broker's reported price. **Negative** offers below it,
+    #: which is what makes a closing order fill. Rounding is always down.
+    limit_price_offset_pct: float = Field(default=-3.0, ge=-50.0, le=0.0)
+    price_increment: Money = Field(default=Decimal("0.01"), gt=0)
+    allow_reference_substitution: bool = False
+
+    @model_validator(mode="after")
+    def _the_price_is_never_conjured(self) -> CleanupOrderConfig:
+        if self.order_type is not OrderType.LIMIT:
+            raise ValueError(
+                f"cleanup.order.order_type is {self.order_type.value}. A market order to sell an "
+                f"option is an unbounded price in the one direction that cannot be recovered "
+                f"from; LIMIT only, exactly as everywhere else in this system."
+            )
+        if self.allow_reference_substitution:
+            raise ValueError(
+                "cleanup.order.allow_reference_substitution is set. A missing market price is "
+                "not the average cost, not the last close and not the strike. A holding the "
+                "broker cannot price is PRICE_UNAVAILABLE and is left exactly where it is."
+            )
+        return self
+
+
+class CleanupConfig(_ConfigModel):
+    """Orphan-position cleanup policy (``config/cleanup.yaml``).
+
+    The controlled closure of pre-existing broker holdings this system never
+    opened. Every default ships closed, and the combinations that would make it
+    dangerous **fail to load** rather than being clamped — a clamped safety
+    value is a safety value nobody can see.
+    """
+
+    #: Master switch. Ships OFF. With this false the operation still selects
+    #: targets and evaluates every gate; it simply never reaches a broker.
+    enabled: bool = False
+    allow_live: bool = False
+    paper_only: bool = True
+    require_explicit_authorization: bool = True
+
+    #: Only a holding a stored reconciliation actually reported as an orphan.
+    #: Deliberately *not* "every position not known internally": those two
+    #: differ exactly when the internal ledger could not be read, and that is
+    #: the one moment the weaker rule would sell the whole account.
+    require_orphan_finding: bool = True
+    max_reconciliation_age_seconds: int = Field(default=3600, ge=0)
+    max_targets_per_run: int = Field(default=8, ge=1, le=50)
+    allow_short_positions: bool = False
+    allow_partial_continuation: bool = False
+
+    order: CleanupOrderConfig = Field(default_factory=CleanupOrderConfig)
+
+    @model_validator(mode="after")
+    def _live_is_not_available(self) -> CleanupConfig:
+        if self.allow_live:
+            raise ValueError(
+                "cleanup.allow_live is set. Selling a position is not less irreversible than "
+                "buying one, and no cleanup is a reason to open a live order path."
+            )
+        if not self.paper_only:
+            raise ValueError(
+                "cleanup.paper_only=false is refused: PAPER is the only mode in which this "
+                "operation submits anything."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _authorisation_cannot_be_switched_off(self) -> CleanupConfig:
+        if not self.require_explicit_authorization:
+            raise ValueError(
+                "cleanup.require_explicit_authorization=false would let listing the orphan "
+                "positions close them. Inspecting an account and selling out of it are two "
+                "acts, and there is no configuration that merges them."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _only_a_reported_orphan_may_be_targeted(self) -> CleanupConfig:
+        if not self.require_orphan_finding:
+            raise ValueError(
+                "cleanup.require_orphan_finding=false would let this operation target any "
+                "holding the internal ledger does not recognise. When the ledger cannot be "
+                "read *nothing* is recognised, so that rule liquidates the account precisely "
+                "when the system is least able to tell what it owns."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _short_positions_are_not_unwound_automatically(self) -> CleanupConfig:
+        if self.allow_short_positions:
+            raise ValueError(
+                "cleanup.allow_short_positions is set. Closing a short holding is a purchase "
+                "whose cost is unbounded above, and nothing in this system is authorised to "
+                "decide it. A short orphan is reported and left alone."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _there_is_no_retry_loop(self) -> CleanupConfig:
+        if self.allow_partial_continuation:
+            raise ValueError(
+                "cleanup.allow_partial_continuation is set. A cleanup is not a trading "
+                "strategy: after a partial fill the remainder is reported and nothing further "
+                "is sent. A follow-on order decided by code is how one authorised sale becomes "
+                "an unbounded sequence of them."
+            )
+        return self
+
+
 class SystemConfig(_ConfigModel):
     """All YAML configuration, loaded and validated together."""
 
     alerts: AlertsConfig
+    cleanup: CleanupConfig
     application: ApplicationConfig
     campaign: CampaignConfig
     contract_selection: ContractSelectionConfig
@@ -2959,6 +3093,7 @@ def load_config(config_dir: Path | str | None = None) -> SystemConfig:
         "alerts": _read_yaml(directory / "alerts.yaml"),
         "application": _read_yaml(directory / "application.yaml"),
         "campaign": _read_yaml(directory / "campaign.yaml"),
+        "cleanup": _read_yaml(directory / "cleanup.yaml"),
         "contract_selection": _read_yaml(directory / "contract_selection.yaml"),
         "data": _read_yaml(directory / "data.yaml"),
         "execution": _read_yaml(directory / "execution.yaml"),

@@ -205,16 +205,11 @@
       "required": [
         "execution_id",
         "execution_request_id",
-        "allocation_id",
-        "purchase_card_id",
-        "risk_decision_id",
         "order_intent_id",
         "campaign_id",
-        "opportunity_id",
         "created_at",
         "updated_at",
         "underlying",
-        "strategy",
         "quantity",
         "order_type",
         "time_in_force",
@@ -234,15 +229,24 @@
           "minLength": 1
         },
         "allocation_id": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1
         },
         "purchase_card_id": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1
         },
         "risk_decision_id": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1
         },
         "order_intent_id": {
@@ -254,7 +258,10 @@
           "minLength": 1
         },
         "opportunity_id": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1
         },
         "schema_version": {
@@ -274,18 +281,26 @@
           "pattern": "^[A-Z0-9.\\-]+$"
         },
         "strategy": {
-          "enum": [
-            "LONG_CALL",
-            "LONG_PUT",
-            "LONG_STRADDLE",
-            "LONG_STRANGLE"
+          "oneOf": [
+            {
+              "enum": [
+                "LONG_CALL",
+                "LONG_PUT",
+                "LONG_STRADDLE",
+                "LONG_STRANGLE"
+              ]
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "intent": {
-          "description": "Whether this submission establishes a position or ends one (Milestone 10). Defaulted to OPEN so every record written before it keeps its meaning.",
+          "description": "What this submission is for. OPEN establishes a position and CLOSE ends one this system opened; a CLOSE execution's fills still net into the expected-position arithmetic, which is how a position becomes closed. CLEANUP closes a PRE-EXISTING broker holding this system never opened: it carries no allocation, purchase card, risk decision, opportunity or strategy, and its fills are excluded from the internal position ledger entirely. Defaulted to OPEN so every record written before the field existed keeps its meaning.",
           "enum": [
             "OPEN",
-            "CLOSE"
+            "CLOSE",
+            "CLEANUP"
           ],
           "default": "OPEN"
         },
@@ -525,6 +540,20 @@
         },
         "versions": {
           "$ref": "#/$defs/system_versions"
+        },
+        "cleanup_request_id": {
+          "description": "The immutable authorisation an operator gave for this cleanup. Required on a CLEANUP, absent otherwise.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "broker_position_key": {
+          "description": "The broker's own contract identity for the holding this cleanup targets (cid:<conId>). Required on a CLEANUP, absent otherwise.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "allOf": [
@@ -587,6 +616,59 @@
           }
         },
         {
+          "description": "A CLOSE execution names the position it is ending, and commits no new capital: an exit returns money to the account and adds no new maximum loss. A record that claimed either would let the campaign ledger count the same money twice.",
+          "if": {
+            "properties": {
+              "intent": {
+                "const": "CLOSE"
+              }
+            },
+            "required": [
+              "intent"
+            ]
+          },
+          "then": {
+            "properties": {
+              "position_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "capital_commitment": {
+                "const": "0"
+              },
+              "maximum_loss": {
+                "const": "0"
+              }
+            },
+            "required": [
+              "position_id"
+            ]
+          }
+        },
+        {
+          "description": "Only a CLOSE carries exit provenance. Establishing a position, ending one this system opened and closing one it never opened are three different acts and must not share a record shape.",
+          "if": {
+            "properties": {
+              "intent": {
+                "enum": [
+                  "OPEN",
+                  "CLEANUP"
+                ]
+              }
+            },
+            "required": [
+              "intent"
+            ]
+          },
+          "then": {
+            "properties": {
+              "exit_decision_id": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
           "description": "A refusal names a machine-readable reason.",
           "if": {
             "properties": {
@@ -610,6 +692,98 @@
             "required": [
               "reason_codes"
             ]
+          }
+        },
+        {
+          "description": "A CLEANUP borrows no authorisation. This system did not open the holding it is closing, so pointing any of these at a real artifact would record an acquisition that never happened — and the position would then agree with an internal expectation derived from the broker itself. It commits no campaign capital and removes no campaign risk, because neither was ever the campaign's.",
+          "if": {
+            "properties": {
+              "intent": {
+                "const": "CLEANUP"
+              }
+            },
+            "required": [
+              "intent"
+            ]
+          },
+          "then": {
+            "properties": {
+              "allocation_id": {
+                "type": "null"
+              },
+              "purchase_card_id": {
+                "type": "null"
+              },
+              "risk_decision_id": {
+                "type": "null"
+              },
+              "opportunity_id": {
+                "type": "null"
+              },
+              "strategy": {
+                "type": "null"
+              },
+              "capital_commitment": {
+                "const": "0"
+              },
+              "maximum_loss": {
+                "const": "0"
+              },
+              "cleanup_request_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "broker_position_key": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "cleanup_request_id",
+              "broker_position_key"
+            ]
+          },
+          "else": {
+            "description": "Every other intent is downstream of an APPROVED authorisation.",
+            "required": [
+              "allocation_id",
+              "purchase_card_id",
+              "risk_decision_id",
+              "opportunity_id",
+              "strategy"
+            ],
+            "properties": {
+              "allocation_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "purchase_card_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "risk_decision_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "opportunity_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "strategy": {
+                "enum": [
+                  "LONG_CALL",
+                  "LONG_PUT",
+                  "LONG_STRADDLE",
+                  "LONG_STRANGLE"
+                ]
+              },
+              "cleanup_request_id": {
+                "type": "null"
+              },
+              "broker_position_key": {
+                "type": "null"
+              }
+            }
           }
         }
       ],
@@ -767,6 +941,11 @@
             "ORDER_TYPE_NOT_PERMITTED",
             "MULTI_LEG_UNSUPPORTED",
             "SHORT_LEG_NOT_SUPPORTED",
+            "POSITION_NOT_AT_BROKER",
+            "POSITION_QUANTITY_CHANGED",
+            "SHORT_POSITION_NOT_SUPPORTED",
+            "ORDER_ALREADY_WORKING",
+            "TARGET_NOT_ORPHANED",
             "EXECUTION_WINDOW_EXPIRED",
             "PRICE_REFERENCE_STALE",
             "PRICE_DRIFT",
@@ -851,8 +1030,7 @@
         "underlying",
         "expiration",
         "strike",
-        "multiplier",
-        "trading_class"
+        "multiplier"
       ],
       "properties": {
         "leg_index": {
@@ -897,7 +1075,11 @@
           "minimum": 1
         },
         "trading_class": {
-          "type": "string",
+          "description": "Resolved upstream against a real option chain and never derived from the symbol (real SPY validation returned a 2SPY trading class). Required on every authorised leg; null only on a CLEANUP leg built from a broker position that reported none, where saying so beats guessing.",
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1
         },
         "exchange": {
@@ -981,6 +1163,11 @@
         "ORDER_TYPE_NOT_PERMITTED",
         "MULTI_LEG_UNSUPPORTED",
         "SHORT_LEG_NOT_SUPPORTED",
+        "POSITION_NOT_AT_BROKER",
+        "POSITION_QUANTITY_CHANGED",
+        "SHORT_POSITION_NOT_SUPPORTED",
+        "ORDER_ALREADY_WORKING",
+        "TARGET_NOT_ORPHANED",
         "EXECUTION_WINDOW_EXPIRED",
         "PRICE_REFERENCE_STALE",
         "PRICE_DRIFT",

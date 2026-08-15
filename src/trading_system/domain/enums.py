@@ -1498,14 +1498,51 @@ class ExecutionIntent(StrEnum):
         proceeds of a sale to a campaign budget requires realised profit and
         loss, which is Milestone 11's. Its *fills* still net into the expected
         position ledger, which is precisely how a position becomes closed.
+    ``CLEANUP``
+        A deliberately authorised closing order for a **pre-existing broker
+        holding this system never opened** — an ``ORPHAN_BROKER_POSITION``.
+        Neither of the other two members can express it honestly: ``OPEN``
+        would claim an authorisation that does not exist, and ``CLOSE`` would
+        net its fills into the internal position ledger, producing an
+        *expected* position of minus one for a contract this system never
+        expected to hold.
+
+        So a cleanup carries **no** allocation, purchase card, risk decision,
+        opportunity or strategy — those fields are refused rather than
+        defaulted — and contributes to no ledger at all. It records that we
+        sold something the broker said was there, and nothing more. That is the
+        whole point: we own the cleanup action, never the acquisition.
     """
 
     OPEN = "OPEN"
     CLOSE = "CLOSE"
+    CLEANUP = "CLEANUP"
 
     @property
     def establishes_position(self) -> bool:
         return self is ExecutionIntent.OPEN
+
+    @property
+    def adjusts_expected_positions(self) -> bool:
+        """Whether this submission's fills move the *internal* position ledger.
+
+        ``OPEN`` and ``CLOSE`` both do: one adds the structure the campaign
+        authorised, the other subtracts it. ``CLEANUP`` deliberately does not.
+        The ledger records what *this system* believes it did, and a holding it
+        never acquired is not part of that belief — netting a cleanup sale into
+        it would manufacture a short expected position out of a holding whose
+        acquisition provenance is, and stays, ``UNKNOWN``.
+        """
+        return self is not ExecutionIntent.CLEANUP
+
+    @property
+    def carries_an_authorisation(self) -> bool:
+        """Whether an allocation, card, risk decision and strategy exist for this.
+
+        ``CLEANUP`` is the only member for which they do not, and the execution
+        record refuses to carry them rather than inventing them.
+        """
+        return self is not ExecutionIntent.CLEANUP
 
 
 @unique
@@ -1649,6 +1686,30 @@ class ExecutionReasonCode(StrEnum):
     #: The structure implies a short or uncovered leg, which the shipped
     #: strategy vocabulary does not authorise.
     SHORT_LEG_NOT_SUPPORTED = "SHORT_LEG_NOT_SUPPORTED"
+
+    # --- closing a pre-existing broker holding ------------------------------
+    #
+    # Five codes about an orphan cleanup. Each is a *refusal to send*, and each
+    # names a different fact, because "we could not look", "it is already gone"
+    # and "it is not what we were told" call for different work.
+    #: The broker no longer reports the targeted holding. The ordinary answer on
+    #: a second run, and never a failure: the cleanup already happened, or the
+    #: position left the account some other way.
+    POSITION_NOT_AT_BROKER = "POSITION_NOT_AT_BROKER"
+    #: The broker holds a different quantity than the authorised cleanup names.
+    #: Refused rather than resized — selling more than is held opens a short,
+    #: and selling less silently leaves a holding the operator believes is gone.
+    POSITION_QUANTITY_CHANGED = "POSITION_QUANTITY_CHANGED"
+    #: The holding is short. Buying it back is not the same act as selling a
+    #: long one and nothing here is authorised to decide it.
+    SHORT_POSITION_NOT_SUPPORTED = "SHORT_POSITION_NOT_SUPPORTED"
+    #: An order is already working at the broker for this contract. It may be
+    #: ours or it may not; either way a second one could sell the position twice.
+    ORDER_ALREADY_WORKING = "ORDER_ALREADY_WORKING"
+    #: The contract is not one reconciliation reported as an orphan. Only an
+    #: explicitly identified orphan may be targeted; "not known internally" is
+    #: deliberately not the same test.
+    TARGET_NOT_ORPHANED = "TARGET_NOT_ORPHANED"
 
     # --- time and price validity -------------------------------------------
     #: The authorisation is older than the configured execution window. Not

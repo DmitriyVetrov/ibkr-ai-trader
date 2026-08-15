@@ -26,6 +26,7 @@ from trading_system.domain.enums import (
     DataQuality,
     Direction,
     DiscrepancyType,
+    ExecutionIntent,
     ExitAction,
     ExitReason,
     ExpectedMagnitude,
@@ -407,15 +408,30 @@ class RiskDecision(ImmutableModel):
 class OrderIntent(ImmutableModel):
     """A risk-approved instruction handed to the execution engine.
 
-    Only produced downstream of an APPROVED :class:`RiskDecision`.
+    Only produced downstream of an APPROVED :class:`RiskDecision` — with one
+    deliberate exception named by ``intent``. An ``ExecutionIntent.CLEANUP``
+    order closes a pre-existing broker holding this system never opened, so
+    there *is* no purchase card, risk decision or strategy behind it, and the
+    three fields are refused rather than defaulted. Every other intent still
+    requires all three, which is enforced here rather than assumed: before this
+    field existed nothing stopped an intent from omitting them, and the
+    validator below is what keeps the cleanup shape from widening the ordinary
+    one.
     """
 
     intent_id: Identifier
-    purchase_card_id: Identifier
-    risk_decision_id: Identifier
+    #: What this order is for. Defaults to ``OPEN`` so every intent built
+    #: before the field existed keeps its meaning unchanged.
+    intent: ExecutionIntent = ExecutionIntent.OPEN
+    #: Required for every intent but ``CLEANUP``, where it must be absent.
+    purchase_card_id: Identifier | None = None
+    #: Required for every intent but ``CLEANUP``, where it must be absent.
+    risk_decision_id: Identifier | None = None
     created_at: UtcDatetime
     underlying: Ticker
-    strategy_type: StrategyType
+    #: Required for every intent but ``CLEANUP``. An orphan holding has no
+    #: strategy: naming one would assert this system chose the structure.
+    strategy_type: StrategyType | None = None
     legs: list[OptionLeg] = Field(min_length=1)
     quantity: int = Field(ge=1)
     order_type: OrderType
@@ -431,6 +447,40 @@ class OrderIntent(ImmutableModel):
             raise ValueError("LIMIT order requires a limit_price")
         if self.order_type is OrderType.MARKET and self.limit_price is not None:
             raise ValueError("MARKET order must not carry a limit_price")
+        return self
+
+    @model_validator(mode="after")
+    def _authorisation_matches_the_intent(self) -> OrderIntent:
+        """An authorised order names its authorisation; a cleanup names none.
+
+        Both directions are refused. An ordinary order missing its card or risk
+        decision would be an order nobody approved wearing the shape of one; a
+        cleanup carrying them would claim provenance for a holding whose
+        acquisition is, and stays, unknown.
+        """
+        authorisation = {
+            "purchase_card_id": self.purchase_card_id,
+            "risk_decision_id": self.risk_decision_id,
+            "strategy_type": self.strategy_type,
+        }
+        if self.intent.carries_an_authorisation:
+            missing = sorted(name for name, value in authorisation.items() if value is None)
+            if missing:
+                raise ValueError(
+                    f"an {self.intent.value} order intent must carry {', '.join(missing)}. "
+                    f"Only an ExecutionIntent.CLEANUP order — one closing a pre-existing broker "
+                    f"holding this system never opened — has no authorisation behind it"
+                )
+            return self
+
+        present = sorted(name for name, value in authorisation.items() if value is not None)
+        if present:
+            raise ValueError(
+                f"a CLEANUP order intent carries {', '.join(present)}, but no allocation, "
+                f"purchase card, risk decision or strategy exists for a holding this system "
+                f"never opened. Pointing these at something would fabricate the provenance "
+                f"the cleanup exists to avoid fabricating"
+            )
         return self
 
 

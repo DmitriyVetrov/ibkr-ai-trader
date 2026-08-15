@@ -36,7 +36,11 @@ and an optional Collector/Tempo/Prometheus/Loki/Grafana stack — and **live-tra
 readiness**: a deterministic acceptance gate that assembles immutable evidence, judges 49
 criteria against it with a pure evaluator, derives one of three readiness levels, and
 records the whole thing as an immutable run.
-5197 passing tests; ruff, ruff format and mypy clean.
+Beyond the twelve milestones, **orphan-position cleanup** is built: the controlled,
+PAPER-only closure of pre-existing broker holdings this system never opened, which is
+the other half of what an `ORPHAN_BROKER_POSITION` needs — it closes them without ever
+adopting them.
+5397 passing tests; ruff, ruff format and mypy clean.
 
 **Not built, by design:** autonomous opportunity discovery on a cadence, the separate thesis
 monitor, live trading. The scheduler exists and runs, but `opportunity_scan` and
@@ -53,10 +57,11 @@ look; there is deliberately no `READY_FOR_LIVE` in the vocabulary. `TRADING_MODE
 `LIVE_TRADING_CONFIRMED`, `LIVE_READINESS_CHECKLIST_SIGNED_OFF`, `execution.enabled` and
 `IBKR_READ_ONLY` remain exactly what they were: separate controls a human sets deliberately.
 
-One thing earlier milestones left open remains open. An `ORPHAN_BROKER_POSITION` is still
-reported and never adopted, so a controlled onboarding workflow for pre-existing holdings
-belongs to a later milestone — and the paper account this was validated against has four of
-them, which is precisely why reconciliation reports `MISMATCH` there and is right to.
+An `ORPHAN_BROKER_POSITION` is still reported and **never adopted** — a controlled
+*onboarding* workflow for pre-existing holdings still belongs to a later milestone. What
+now exists is the other resolution: **orphan cleanup**, the controlled PAPER-only closure
+of holdings this system never opened, in `cleanup/`. It closes them; it does not adopt
+them, and nothing in it can. See "Orphan-position cleanup" below.
 
 [CLOUD_CODE_IMPLEMENTATION_SPEC.md](CLOUD_CODE_IMPLEMENTATION_SPEC.md) remains the source of
 truth for module layout, CLI surface, schemas, testing layers, and milestone order. Read the
@@ -228,6 +233,14 @@ full tree; the boundaries that matter:
   boundary test walks the transitive graph to keep it that way. Nothing here can change a
   mode, a guard or an execution switch, and `ReadinessRun` refuses a non-zero
   `orders_submitted` outright.
+- `cleanup/` — the controlled closure of pre-existing broker holdings: `models ·
+  targets · gates · store · service · report`. `targets.py` and `gates.py` are pure
+  functions of captured state — no broker, no repository, no clock — so a stored target
+  list and a stored gate verdict can be re-derived and checked. It holds **no broker**:
+  a cleanup order exists only because `execution/service.py::submit_cleanup` made one,
+  and a boundary test walks the transitive graph to prove there is no other path.
+  `cleanup/__init__.py` defers everything that touches a repository through
+  `__getattr__`, exactly as `exit/__init__.py` does.
 - `monitoring/` — the specification's separate thesis monitor. Still a docstring: the
   scheduler moved to `operations/`, and a `VALID / WEAKENING / INVALIDATED / UNKNOWN`
   verdict is a judgement no milestone has made.
@@ -948,6 +961,98 @@ window, and what this milestone deliberately does not do — is in
 agent**, so there is deliberately no `.claude/agents/` entry for it, exactly as in
 Milestones 7 through 11.
 
+## Orphan-position cleanup
+
+> **We own the cleanup action; we never own the acquisition. Only a broker
+> position read closes a target, and there is no `READY`-style shortcut that
+> makes an orphan finding disappear.**
+
+Reconciliation reports an `ORPHAN_BROKER_POSITION` — a holding the broker really has
+that no execution of ours accounts for — and correctly refuses to adopt it, sell it or
+assign it to a campaign. That leaves a real account in a state only a person can resolve.
+`cleanup/` is that resolution, made auditable:
+
+```
+external / pre-existing broker position
+      ->  observed as ORPHAN_BROKER_POSITION    reconciliation, unmodified
+      ->  explicitly authorised cleanup         one operator, one specific report,
+      |                                         specific broker contract ids
+      ->  cleanup execution                     ExecutionService, the ONE order path
+      ->  broker confirmation                   a POSITION read, not a fill report
+      ->  immutable OrphanCleanupRun + the reconciliation that confirms it
+```
+
+Nine rules govern it, each with tests that fail loudly:
+
+- **It adopts nothing, and that is structural.** `ExecutionIntent.CLEANUP` is a third
+  member alongside `OPEN` and `CLOSE`, and an `ExecutionRecord` carrying it **cannot be
+  constructed** with an allocation, purchase card, risk decision, opportunity or strategy.
+  Its fills are excluded from the expected-position ledger entirely — netting them in
+  would manufacture an expected position of *minus one* for a contract this system never
+  expected to hold, and the next reconciliation would report that invention as a
+  discrepancy against a broker holding of zero.
+- **Only an explicitly reported orphan may be targeted.** Not "everything the ledger does
+  not recognise": when the ledger cannot be read *nothing* is recognised, and that rule
+  liquidates the account precisely when the system is least able to say what it owns.
+  `require_orphan_finding: false` fails to load, and a reconciliation that compared
+  nothing (`BROKER_DATA_UNAVAILABLE` and friends) authorises nothing.
+- **Identity comes from the broker.** A target is addressed by contract id or it is not a
+  target — adjusted contracts share symbol, strike, expiry and right. `--contract-id`
+  narrows the set and can never widen it.
+- **The quantity is what the broker holds.** Equal by construction, re-checked against
+  the snapshot, and both figures recorded so the equality is auditable. A quantity that
+  changed since the reviewed report is refused, not resized. A short holding is refused
+  outright: closing one is a purchase whose cost is unbounded above.
+- **No structure is invented.** Two orphans that look like a straddle may or may not have
+  been bought as one, and nothing recorded which. There is no combo path here at all —
+  one holding, one order — and the builder has no parameter through which a second could
+  be bundled. Every orphan being *long* is what makes that safe: closing one leg of an
+  invented pair cannot leave a short.
+- **Four switches, and no two are the same decision.** `cleanup.enabled` (ships `false`),
+  `execution.enabled` (ships `false`), an explicit `--confirm`, and PAPER with both live
+  guards off *and* the **connected account** proving it — the account the broker
+  reported, never the one in the configuration, because comparing the configuration
+  against itself proves nothing.
+- **A review is structural, not a flag.** Without `--confirm` the code path never reaches
+  the method that can construct a writable broker. The test asserts the factory was
+  *never called*, which is far stronger than asserting it refused.
+- **Nothing is retried, repriced or continued.** A rejection is reported. An `UNKNOWN`
+  submission blocks everything about that holding permanently and is resolved by observing
+  the broker. A partial fill is reported and the remainder left;
+  `allow_partial_continuation: true` fails to load.
+- **Only a position read closes a target.** Not a submitted order, not a reported fill.
+  `CleanupOutcome` refuses `CLOSED` without a broker observation afterwards, and refuses
+  one that disagrees with it. `REFUSED` (nothing left this process), `REJECTED` (the
+  broker turned it down, and its counter records the attempt) and `UNCERTAIN` (we sent
+  something and never learned the outcome) are three different facts.
+
+**It moves no campaign money and fabricates no profit or loss.** No reservation, no
+budget, no realised result — and each of the three ledgers excludes `CLEANUP` itself
+rather than this package remembering to. The broker's `average_cost` is recorded on the
+target for the audit trail and is never used as a price, attributed to the campaign or
+turned into a gain.
+
+**Idempotency has three layers**, and each covers a case the others are blind to: broker
+observation (the holding is gone → `NO_TARGETS`), the execution ledger
+(`cleanup_execution_request_identifier` excludes the clock *and the quantity*, so any
+earlier attempt that reached the broker — including a filled one — refuses a second), and
+the working-order gate (an order at the broker for this contract blocks it, whoever sent
+it).
+
+`cleanup/service.py` is the single composition root and the only module here that even
+transitively reaches the broker library, because it calls
+`ExecutionService.submit_cleanup`. `build_execution_broker` still has **exactly one**
+importer, and `tests/cleanup/test_boundaries.py` restates that for the third time —
+the obvious way to build a cleanup is to give it a broker of its own, which is why.
+`cleanup/__init__.py` defers its service through `__getattr__`, for the same reason
+`exit/__init__.py` does.
+
+Development guidance — what to do when adding a refusal, a configuration value or an
+outcome status, and what this deliberately does not do — is in
+[skills/cleanup/README.md](skills/cleanup/README.md). It introduces **no agent**, so
+there is deliberately no `.claude/agents/` entry for it, exactly as in Milestones 7
+through 12.
+
 **Configuration over hardcoding.** Schedules live in `config/schedules.yaml`, risk in `risk.yaml`,
 strategies in `config/strategies/*.yaml`, data policy in `data.yaml`, the candidate pool,
 eligibility filters and ranking policy in `universe.yaml`, the research horizon, data
@@ -963,7 +1068,8 @@ policy precedence envelope — expiration thresholds, the quote field, trailing,
 maximum loss, thesis and the exit order — in `exit.yaml`, whose safety values every
 `config/strategies/*.yaml` may narrow and none may widen, and the realised-result policy —
 the day boundary, commission handling, currency and settlement — in `pnl.yaml`, the alert
-rules and notification channels in `alerts.yaml`, and telemetry in `observability.yaml`.
+rules and notification channels in `alerts.yaml`, the orphan-cleanup switch, target policy and closing-order price in `cleanup.yaml`,
+and telemetry in `observability.yaml`.
 Note the split there too: `observability.yaml` is *policy* (sampling, privacy, the
 cardinality guard) and is committed; the OTLP endpoint and the alert webhook URL are
 *deployment switches* and live in the environment, because one differs per deployment and
@@ -1183,6 +1289,13 @@ python -m trading_system.cli reconciliation history
 python -m trading_system.cli reconciliation explain [--reconciliation-id <ID>]
 python -m trading_system.cli reconcile                    # the spec's alias for `run`
 
+# Orphan cleanup. The ONE command in this group that can place an order: the
+# controlled, PAPER-only closure of pre-existing holdings this system never
+# opened. Without --confirm it is a review that constructs no writable broker.
+python -m trading_system.cli reconciliation cleanup-orphans            # review; 0 orders
+python -m trading_system.cli reconciliation cleanup-orphans --contract-id 848575117
+python -m trading_system.cli reconciliation cleanup-orphans --confirm  # SUBMITS
+
 # Exit management. Deterministic: no model is consulted anywhere in this group.
 # EVALUATION never submits and constructs no writable broker; only `exit run
 # --confirm` can place an order, and it needs execution.enabled as well.
@@ -1276,6 +1389,7 @@ pytest tests/integration/test_research_to_allocation.py   # the whole chain; 0 o
 pytest tests/integration/test_research_to_execution.py    # the chain through execution
 pytest tests/integration/test_execution_to_position.py   # execution -> fill -> position
 pytest tests/integration/test_reconciliation_workflow.py # the whole loop, id by id
+pytest tests/integration/test_orphan_cleanup.py          # orphan -> cleanup -> gone
 pytest tests/integration/test_exit_to_execution_to_reconciliation.py  # M10 -> M8 -> M9
 pytest tests/integration/test_operations_lifecycle.py     # exit -> P&L -> settlement -> daily loss
 pytest tests/integration/test_readiness_offline.py        # the gate, offline; 0 orders
@@ -1298,6 +1412,13 @@ ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true IBKR_READ_ONLY=false \
 # skips rather than opening a position to have something to close.
 ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true IBKR_READ_ONLY=false \
   pytest tests/integration/test_paper_exit.py -m paper_execution -s   # make test-paper-exit
+
+# SELLS THE ACCOUNT'S PRE-EXISTING HOLDINGS. THREE variables, deliberately:
+# unlocking the suite to buy one contract does not authorise liquidating what
+# the account already had. Without the third, only the read-only half runs.
+ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true \
+  RUN_ORPHAN_CLEANUP_PAPER_TEST=true IBKR_READ_ONLY=false \
+  pytest tests/integration/test_paper_orphan_cleanup.py -m paper_execution -s
 ```
 
 `universe run` reads stored data only — it never collects and never opens a broker connection,

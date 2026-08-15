@@ -79,6 +79,7 @@ __all__ = [
     "ExecutionRequest",
     "ExecutionRunCounts",
     "ExecutionRunResult",
+    "cleanup_execution_request_identifier",
     "execution_identifier",
     "execution_request_identifier",
     "execution_run_identifier",
@@ -169,6 +170,51 @@ def exit_execution_request_identifier(
         ]
     )
     return f"exit-req-{digest[:20]}"
+
+
+def cleanup_execution_request_identifier(
+    *,
+    account_reference: str,
+    contract_key: str,
+    trading_mode: TradingMode,
+    order_type: OrderType,
+    time_in_force: TimeInForce,
+    policy_version: str,
+    schema_version: str = EXECUTION_SCHEMA_VERSION,
+) -> str:
+    """Derive the identity of *cleaning up this holding, this way*.
+
+    A third form alongside the entry and exit identifiers, and it cannot
+    collide with either because the prefixes differ — ``clean-req-``.
+
+    Two omissions are the whole design:
+
+    * **the clock**, for the same reason the other two omit it. An identity that
+      changed with time would make every re-run a new request, and a re-run is
+      exactly when a duplicate sell order would be sent;
+    * **the quantity.** Deliberate, and the less obvious of the two. If a
+      cleanup partially fills and the operator runs the command again, a
+      quantity-derived identity would present the remainder as an unrelated
+      new request and send a second order. Excluding it means the ledger
+      recognises the earlier attempt, refuses, and leaves continuation as a
+      decision a person makes with the evidence in front of them.
+
+    The account is included because the same contract in a different account is
+    a different holding, and cleaning one up says nothing about the other.
+    """
+    digest = stable_hash(
+        [
+            "CLEANUP_EXECUTION_REQUEST",
+            schema_version,
+            account_reference,
+            contract_key,
+            trading_mode.value,
+            order_type.value,
+            time_in_force.value,
+            policy_version,
+        ]
+    )
+    return f"clean-req-{digest[:20]}"
 
 
 def execution_identifier(
@@ -301,7 +347,13 @@ class ExecutionLeg(ImmutableModel):
     #: assumed so would misprice the first one that is not.
     multiplier: int = Field(gt=0)
     ratio: int = Field(default=1, ge=1)
-    trading_class: str = Field(min_length=1)
+    #: Required on every authorised leg — Milestone 6 resolved it against a real
+    #: chain, and it cannot be derived from the symbol (real SPY validation
+    #: returned a ``2SPY`` trading class). Nullable only so that a
+    #: ``CLEANUP`` leg built from a broker position that did not report one can
+    #: say so rather than invent it; :class:`ExecutionRecord` refuses a missing
+    #: trading class for every other intent.
+    trading_class: str | None = Field(default=None, min_length=1)
     exchange: str | None = None
     local_symbol: str | None = None
     currency: str | None = None
@@ -318,12 +370,18 @@ class ExecutionRecord(ImmutableModel):
 
     execution_id: Identifier
     execution_request_id: Identifier
-    allocation_id: Identifier
-    purchase_card_id: Identifier
-    risk_decision_id: Identifier
+    #: The Milestone 7 authorisation this spends, and the artifacts behind it.
+    #: Required for every intent but ``CLEANUP``, where all four are *refused*
+    #: — see :meth:`_a_cleanup_borrows_no_authorisation`.
+    allocation_id: Identifier | None = None
+    purchase_card_id: Identifier | None = None
+    risk_decision_id: Identifier | None = None
+    opportunity_id: Identifier | None = None
     order_intent_id: Identifier
+    #: The operating campaign. Present on a cleanup too: it says which
+    #: deployment performed the act, not that the holding belongs to the
+    #: campaign — no reservation, budget or ledger entry follows from it.
     campaign_id: Identifier
-    opportunity_id: Identifier
     schema_version: Identifier = EXECUTION_SCHEMA_VERSION
 
     created_at: UtcDatetime
@@ -331,7 +389,10 @@ class ExecutionRecord(ImmutableModel):
 
     # --- what -------------------------------------------------------------
     underlying: Ticker
-    strategy: StrategyType
+    #: Required for every intent but ``CLEANUP``. A pre-existing broker holding
+    #: has no strategy this system selected, and naming one would be the first
+    #: line of an invented history.
+    strategy: StrategyType | None = None
     #: Whether this submission establishes a position or ends one. Added by
     #: Milestone 10 and defaulted to ``OPEN``, so every record written before
     #: it keeps its meaning. Three ledgers read this record and two treat the
@@ -429,6 +490,13 @@ class ExecutionRecord(ImmutableModel):
     exit_decision_id: Identifier | None = None
     exit_reason: str | None = None
     entry_execution_id: Identifier | None = None
+    #: Orphan-cleanup provenance, set only on a ``CLEANUP``. The request is the
+    #: immutable authorisation an operator gave; the key is the broker's own
+    #: contract identity for the holding that was sold. Together they are the
+    #: whole of what this record claims to know about the position, and
+    #: deliberately say nothing about where it came from.
+    cleanup_request_id: Identifier | None = None
+    broker_position_key: str | None = None
     policy_version: Identifier
     versions: SystemVersions
 
@@ -445,10 +513,98 @@ class ExecutionRecord(ImmutableModel):
                 "a CLOSE execution must name the position_id it is closing; an exit that "
                 "cannot say what it is exiting cannot be reconciled against one"
             )
-        if self.intent is ExecutionIntent.OPEN and self.exit_decision_id is not None:
+        if self.intent is not ExecutionIntent.CLOSE and self.exit_decision_id is not None:
             raise ValueError(
-                "an OPEN execution cannot carry an exit decision; establishing a position and "
-                "ending one are different acts and must not share a record shape"
+                f"an {self.intent.value} execution cannot carry an exit decision; establishing a "
+                f"position, ending one this system opened and closing one it never opened are "
+                f"three different acts and must not share a record shape"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_cleanup_borrows_no_authorisation(self) -> ExecutionRecord:
+        """The "does not adopt" rule, made structural rather than promised.
+
+        A ``CLEANUP`` closes a holding this system never opened. There is no
+        allocation, no purchase card, no risk decision, no opportunity and no
+        strategy behind it, so this record **cannot be constructed carrying
+        one** — an operator cannot point a cleanup at a real allocation, and a
+        future refactor cannot quietly default the fields to something that
+        parses. That is the difference between a rule and a convention.
+
+        The converse is enforced in the same place, because it is the same
+        invariant read the other way: an ``OPEN`` or ``CLOSE`` record missing
+        its authorisation would be an order nobody approved wearing the shape
+        of one. Before this validator existed the fields were merely required;
+        they still are, for every intent that should have them.
+        """
+        authorisation = {
+            "allocation_id": self.allocation_id,
+            "purchase_card_id": self.purchase_card_id,
+            "risk_decision_id": self.risk_decision_id,
+            "opportunity_id": self.opportunity_id,
+            "strategy": self.strategy,
+        }
+        if self.intent.carries_an_authorisation:
+            missing = sorted(name for name, value in authorisation.items() if value is None)
+            if missing:
+                raise ValueError(
+                    f"an {self.intent.value} execution must carry {', '.join(missing)}. Only a "
+                    f"CLEANUP — a closing order for a pre-existing broker holding this system "
+                    f"never opened — has no authorisation behind it"
+                )
+            return self
+
+        present = sorted(name for name, value in authorisation.items() if value is not None)
+        if present:
+            raise ValueError(
+                f"a CLEANUP execution carries {', '.join(present)}. This system did not open "
+                f"the holding it is closing, so pointing any of these at a real artifact would "
+                f"record an acquisition that never happened — and the position would then agree "
+                f"with an internal expectation derived from the broker itself"
+            )
+        if not self.cleanup_request_id:
+            raise ValueError(
+                "a CLEANUP execution must name the cleanup_request_id that authorised it. An "
+                "order to sell a holding nobody can trace back to a decision is exactly the "
+                "artifact this milestone exists to prevent"
+            )
+        if not self.broker_position_key:
+            raise ValueError(
+                "a CLEANUP execution must name the broker_position_key it targets. A symbol is "
+                "not an identity: adjusted contracts share symbol, strike, expiry and right"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _cleanup_provenance_belongs_to_a_cleanup(self) -> ExecutionRecord:
+        if self.intent is not ExecutionIntent.CLEANUP and (
+            self.cleanup_request_id or self.broker_position_key
+        ):
+            raise ValueError(
+                f"an {self.intent.value} execution carries orphan-cleanup provenance. Closing a "
+                f"position this system opened and closing one it never opened are different "
+                f"acts and must not share a record shape"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _an_authorised_leg_names_its_trading_class(self) -> ExecutionRecord:
+        """Only a cleanup leg may lack a trading class.
+
+        Milestone 6 resolved one against a real chain for every leg it
+        selected, and it cannot be re-derived from the symbol. A leg built from
+        a broker position may honestly have none, and saying so beats guessing
+        ``SMH`` for something the broker called something else.
+        """
+        if self.intent is ExecutionIntent.CLEANUP:
+            return self
+        missing = [leg.leg_index for leg in self.legs if not (leg.trading_class or "").strip()]
+        if missing:
+            raise ValueError(
+                f"leg(s) {missing} of this {self.intent.value} execution carry no trading class. "
+                f"It is resolved upstream against a real option chain and is never derived from "
+                f"the symbol"
             )
         return self
 
@@ -460,6 +616,19 @@ class ExecutionRecord(ImmutableModel):
         capital commitment would be counted by the campaign ledger as a second
         authorisation against the same money.
         """
+        if self.intent is ExecutionIntent.CLEANUP:
+            if self.capital_commitment:
+                raise ValueError(
+                    f"a CLEANUP execution reports a capital commitment of "
+                    f"{self.capital_commitment}. Selling a holding the campaign never funded "
+                    f"commits none of its capital, and recording one would charge the campaign "
+                    f"budget for a position it did not buy"
+                )
+            if self.maximum_loss:
+                raise ValueError(
+                    f"a CLEANUP execution reports a maximum loss of {self.maximum_loss}. The "
+                    f"risk it removes was never the campaign's to carry"
+                )
         if self.intent is ExecutionIntent.CLOSE:
             if self.capital_commitment:
                 raise ValueError(

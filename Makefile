@@ -9,6 +9,7 @@ CLI := $(PYTHON) -m trading_system.cli
         test-safety test-execution test-execution-unit test-execution-integration \
         test-paper-execution \
         test-positions test-reservations test-reconciliation test-position-integration \
+        test-cleanup test-paper-orphan-cleanup \
         test-exit test-exit-unit test-exit-integration test-exit-safety test-exit-cli \
         test-paper-exit \
         test-observability test-scheduler test-pnl test-operations test-alerts \
@@ -116,6 +117,19 @@ test-reservations:  ## Reservation lifecycle tests (Milestone 9). Submits no ord
 
 test-reconciliation:  ## Reconciliation tests (Milestone 9). Submits no orders.
 	$(PYTEST) tests/reconciliation
+
+test-cleanup:  ## Orphan-position cleanup tests. Submits no orders.
+	$(PYTEST) tests/cleanup tests/integration/test_orphan_cleanup.py
+
+test-paper-orphan-cleanup:  ## SELLS THE PAPER ACCOUNT'S PRE-EXISTING HOLDINGS.
+	@echo "This SELLS the orphan holdings in your IBKR PAPER account."
+	@echo "It needs: ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true"
+	@echo "          RUN_ORPHAN_CLEANUP_PAPER_TEST=true IBKR_READ_ONLY=false"
+	@echo "Without the third variable only the read-only half runs."
+	@echo "Press Ctrl-C within 5 seconds to abort."
+	@sleep 5
+	ALLOW_LIVE_TESTS=true RUN_PAPER_EXECUTION_TESTS=true \
+		$(PYTEST) tests/integration/test_paper_orphan_cleanup.py -m paper_execution -s
 
 test-position-integration:  ## Execution to fill to position to reconciliation, simulated
 	$(PYTEST) tests/integration/test_execution_to_position.py \

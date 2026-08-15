@@ -325,6 +325,19 @@ def project_expected_positions(
 
     for record in executions:
         execution_id = str(getattr(record, "execution_id", ""))
+        if not getattr(record, "intent", ExecutionIntent.OPEN).adjusts_expected_positions:
+            # An orphan cleanup. Its fills are real, they are recorded, and
+            # they are deliberately kept out of *this* ledger — which records
+            # what this system believes it did, not everything it has ever
+            # sent. Netting a cleanup sale in would produce an expected
+            # position of minus one for a contract this system never expected
+            # to hold, and the very next reconciliation would report that
+            # invention as a discrepancy against a broker holding of zero.
+            #
+            # Filed under ``contributed_nothing``, which is the truth: it
+            # established nothing and it ended nothing of ours.
+            nothing.append(execution_id)
+            continue
         recorded = fills_by_execution.get(execution_id)
         if recorded:
             contributing.extend(recorded)

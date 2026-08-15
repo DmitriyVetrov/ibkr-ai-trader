@@ -128,7 +128,12 @@ class ClosedPosition:
 
     @property
     def strategy(self) -> StrategyType:
-        return self.entry.strategy if self.entry is not None else StrategyType.LONG_CALL
+        # ``entry`` is always an OPEN execution, whose strategy the record
+        # model requires; only a CLEANUP has none, and a cleanup never appears
+        # here because it belongs to no position lifecycle.
+        if self.entry is not None and self.entry.strategy is not None:
+            return self.entry.strategy
+        return StrategyType.LONG_CALL
 
 
 @dataclass(frozen=True, slots=True)

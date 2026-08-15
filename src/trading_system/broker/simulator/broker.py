@@ -90,6 +90,13 @@ class SimulatedBrokerState:
     #: "this run submitted one order" must not have to subtract the scenery.
     book: SimulatedOrderBook = field(default_factory=SimulatedOrderBook)
 
+    #: Whether ``get_positions`` reports the scenery net of this simulator's
+    #: own fills. Off by default so every pre-existing scenario is unchanged;
+    #: on, it models a broker that updates its position list when an order
+    #: fills, which is the only way a test can tell a *fill report* apart from
+    #: a *position read*.
+    net_fills_into_positions: bool = False
+
     #: Symbols the simulator refuses to quote, for exercising the
     #: "market data unavailable" path without touching a real broker.
     unquotable_symbols: set[str] = field(default_factory=set)
@@ -295,8 +302,52 @@ class SimulatedBroker(Broker):
         }
 
     def get_positions(self) -> list[BrokerPosition]:
+        """The scenery, optionally net of anything this simulator has filled.
+
+        Positions are static scenery by default, which is what every suite
+        before Milestone 9 needs: a test arranges a portfolio and the broker
+        reports it back unchanged.
+
+        ``net_fills_into_positions`` models the other half of a real broker —
+        one that *updates its position list when an order fills*. Without it
+        no test can distinguish "the fill report said one contract traded" from
+        "the account now holds none of it", and that distinction is the entire
+        difference between an order this system sent and a position this system
+        no longer has. It is off by default so no existing scenario changes.
+        """
         self._require_connection()
-        return list(self._state.positions)
+        if not self._state.net_fills_into_positions:
+            return list(self._state.positions)
+        return [
+            position
+            for position in (self._netted(position) for position in self._state.positions)
+            if position is not None
+        ]
+
+    def _netted(self, position: BrokerPosition) -> BrokerPosition | None:
+        """One position, less whatever this simulator has filled against it.
+
+        A holding netted to zero is *absent*, not reported as zero: that is how
+        IBKR reports a closed position, and a simulator that returned a
+        zero-quantity row would let code pass that a real account would break.
+        """
+        traded = sum(
+            (
+                Decimal(order.filled_quantity)
+                * Decimal(leg.ratio)
+                * (Decimal(-1) if leg.action is LegAction.SELL else Decimal(1))
+                for order in self._state.book.orders.values()
+                for leg in order.intent.legs
+                if leg.broker_contract_id == position.contract_id and order.filled_quantity
+            ),
+            Decimal("0"),
+        )
+        if not traded:
+            return position
+        remaining = position.quantity + traded
+        if remaining == 0:
+            return None
+        return position.model_copy(update={"quantity": remaining})
 
     def get_open_orders(self) -> list[BrokerOrder]:
         """Scenery orders plus anything this simulator has actually been sent.

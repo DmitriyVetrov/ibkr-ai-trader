@@ -71,7 +71,10 @@ class ExecutionHistoryEntry:
 
     execution_id: str
     execution_request_id: str
-    allocation_id: str
+    #: ``None`` for an orphan cleanup, which spends no authorisation. Indexing
+    #: it as an empty string would make ``for_allocation("")`` collect every
+    #: cleanup ever run as though they shared one.
+    allocation_id: str | None
     campaign_id: str
     symbol: str
     created_at: datetime
@@ -103,7 +106,9 @@ class ExecutionHistoryEntry:
         return cls(
             execution_id=str(payload["execution_id"]),
             execution_request_id=str(payload["execution_request_id"]),
-            allocation_id=str(payload["allocation_id"]),
+            allocation_id=(
+                str(payload["allocation_id"]) if payload.get("allocation_id") is not None else None
+            ),
             campaign_id=str(payload["campaign_id"]),
             symbol=str(payload["symbol"]),
             created_at=datetime.fromisoformat(str(payload["created_at"])),
@@ -347,7 +352,7 @@ class FilesystemExecutionRepository(ExecutionRepository):
         records = [
             self._load_current(entry)
             for entry in self.history()
-            if entry.allocation_id == allocation_id
+            if entry.allocation_id is not None and entry.allocation_id == allocation_id
         ]
         return sorted(records, key=lambda record: record.created_at)
 

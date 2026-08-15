@@ -503,6 +503,13 @@ class PositionService:
 
         known: dict[str, AcquisitionProvenance] = {}
         for record in self._filled_executions():
+            if not record.intent.establishes_position:
+                # Only an execution that *acquired* something can explain how a
+                # holding got here. A CLOSE names contracts an OPEN already
+                # claimed, so restricting this changes nothing for it — and it
+                # keeps an orphan cleanup from stamping SYSTEM_EXECUTION on a
+                # holding whose acquisition provenance is, and stays, UNKNOWN.
+                continue
             for leg in record.legs:
                 known[leg_key(leg, symbol=record.underlying)] = (
                     AcquisitionProvenance.SYSTEM_EXECUTION
@@ -521,8 +528,13 @@ class PositionService:
             terms.update(terms_from_legs(record.legs))
             if record.broker_order_id:
                 execution_by_order[record.broker_order_id] = record.execution_id
-                allocation_by_order[record.broker_order_id] = record.allocation_id
-                opportunity_by_order[record.broker_order_id] = record.opportunity_id
+                # An orphan cleanup has neither, and must not be given one:
+                # the fill it produces is real and is recorded as ours, but it
+                # belongs to no allocation and no opportunity.
+                if record.allocation_id is not None:
+                    allocation_by_order[record.broker_order_id] = record.allocation_id
+                if record.opportunity_id is not None:
+                    opportunity_by_order[record.broker_order_id] = record.opportunity_id
 
         fills, refused = to_observed_fills(
             state.executions,

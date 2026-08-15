@@ -20,13 +20,15 @@ already proved is shared by every leg.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from decimal import ROUND_FLOOR, Decimal
 
 from trading_system.data.hashing import stable_hash
 from trading_system.domain.enums import (
+    ExecutionIntent,
     ExecutionReasonCode,
     LegAction,
+    OptionRight,
     OrderType,
     StrategyType,
     TimeInForce,
@@ -34,12 +36,18 @@ from trading_system.domain.enums import (
 )
 from trading_system.domain.models import OptionLeg, OrderIntent, PurchaseCard, SystemVersions
 from trading_system.execution.models import EXECUTION_SCHEMA_VERSION
-from trading_system.infrastructure.settings import ExecutionConfig, ExitOrderConfig
+from trading_system.infrastructure.settings import (
+    CleanupOrderConfig,
+    ExecutionConfig,
+    ExitOrderConfig,
+)
 
 __all__ = [
     "OrderBuildError",
+    "build_cleanup_order_intent",
     "build_exit_order_intent",
     "build_order_intent",
+    "cleanup_intent_identifier",
     "exit_intent_identifier",
     "exit_limit_price",
     "limit_price_from_reference",
@@ -421,6 +429,173 @@ def build_exit_order_intent(
         time_in_force=config.time_in_force,
         # Zero, exactly as on the entry side: the limit price *is* the slippage
         # control, and a tolerance here would accept less than the limit says.
+        max_slippage_bps=0,
+        trading_mode=trading_mode,
+        versions=versions,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Closing a pre-existing broker holding (orphan cleanup)
+# ---------------------------------------------------------------------------
+#
+# Structurally simpler than the exit above, and the simplicity is the safety.
+# There is exactly ONE leg, because a broker position is one contract, and this
+# builder has no way to express more than one:
+#
+#   * it never assembles a combo. Two orphan holdings that *look* like a
+#     straddle may or may not have been bought as one, and nothing in this
+#     system recorded which. A combo built from that guess would be a structure
+#     nobody chose, submitted as one order that fills or does not — turning an
+#     invented relationship into a real trade;
+#   * it never nets, never pairs and never groups. One holding, one order,
+#     one quantity, read from the broker.
+#
+# Closing four long holdings as four independent orders cannot create a short
+# leg, which is the failure the multi-leg rule exists to prevent — and a
+# *short* holding is refused outright before this is reached.
+# ---------------------------------------------------------------------------
+def cleanup_intent_identifier(
+    *,
+    cleanup_request_id: str,
+    contract_key: str,
+    schema_version: str = EXECUTION_SCHEMA_VERSION,
+) -> str:
+    """Derive a cleanup intent's identity from the request and the contract."""
+    digest = stable_hash(["CLEANUP_ORDER_INTENT", schema_version, cleanup_request_id, contract_key])
+    return f"intent-cleanup-{digest[:20]}"
+
+
+def build_cleanup_order_intent(
+    *,
+    cleanup_request_id: str,
+    contract_key: str,
+    underlying: str,
+    contract_id: int | None,
+    right: OptionRight | None,
+    strike: Decimal | None,
+    expiration: date | None,
+    multiplier: int | None,
+    quantity: Decimal,
+    reference_quote: Decimal | None,
+    local_symbol: str | None,
+    config: CleanupOrderConfig,
+    trading_mode: TradingMode,
+    created_at: datetime,
+    versions: SystemVersions,
+) -> OrderIntent:
+    """Build the ``OrderIntent`` that closes one pre-existing broker holding.
+
+    Every field comes from what the broker actually reported about the holding.
+    Nothing is derived from a symbol, nothing is defaulted to a convention, and
+    the resulting intent carries no purchase card, no risk decision and no
+    strategy — because none exists.
+
+    Refusals, each a different fact:
+
+    * a **short** holding is ``SHORT_POSITION_NOT_SUPPORTED``. Closing one is a
+      purchase whose cost is unbounded above;
+    * a **fractional** quantity is ``INVALID_QUANTITY``. An option position is
+      whole contracts; a fraction means the snapshot is describing something
+      this builder does not understand;
+    * a missing **contract id** is ``CONTRACT_ID_MISSING``. Rebuilding one from
+      symbol, strike and expiration would send an order for a contract nobody
+      holds — adjusted contracts share all four;
+    * a missing **multiplier** is ``MULTIPLIER_MISSING``. Never assumed to be
+      100 (specification section 18);
+    * a missing **price** is ``PRICE_UNAVAILABLE``. Not the average cost, not
+      the strike, not a midpoint of one side.
+    """
+    if config.order_type is not OrderType.LIMIT:
+        raise OrderBuildError(
+            ExecutionReasonCode.ORDER_TYPE_NOT_PERMITTED,
+            f"cleanup.order.order_type is {config.order_type.value}. A market order to sell an "
+            f"option is an unbounded price in the one direction that cannot be recovered from",
+        )
+    if quantity < 0:
+        raise OrderBuildError(
+            ExecutionReasonCode.SHORT_POSITION_NOT_SUPPORTED,
+            f"{contract_key} is short {abs(quantity)} contract(s). Closing a short holding is a "
+            f"purchase whose cost is unbounded above, and nothing here is authorised to decide "
+            f"it. It is reported and left exactly where it is",
+        )
+    if quantity != quantity.to_integral_value():
+        raise OrderBuildError(
+            ExecutionReasonCode.INVALID_QUANTITY,
+            f"{contract_key} reports a fractional quantity of {quantity}. An option position is "
+            f"whole contracts; this snapshot describes something this builder does not model",
+        )
+    units = int(quantity)
+    if units < 1:
+        raise OrderBuildError(
+            ExecutionReasonCode.POSITION_NOT_AT_BROKER,
+            f"{contract_key} reports a quantity of {quantity}; there is nothing held to close",
+        )
+    if contract_id is None or contract_id <= 0:
+        raise OrderBuildError(
+            ExecutionReasonCode.CONTRACT_ID_MISSING,
+            f"{contract_key} carries no broker contract id. Rebuilding one from symbol, strike "
+            f"and expiration would send a closing order for a contract nobody holds",
+        )
+    if right is None or strike is None or expiration is None:
+        raise OrderBuildError(
+            ExecutionReasonCode.CONTRACT_INVALID,
+            f"{contract_key} is missing part of its option identity "
+            f"(right={right}, strike={strike}, expiration={expiration}); an order cannot be "
+            f"built for a contract this incompletely described",
+        )
+    if multiplier is None or multiplier < 1:
+        raise OrderBuildError(
+            ExecutionReasonCode.MULTIPLIER_MISSING,
+            f"{contract_key} carries no contract multiplier. A standard US equity option is "
+            f"100 and a system that assumed so would misprice the first one that is not",
+        )
+    if reference_quote is None:
+        raise OrderBuildError(
+            ExecutionReasonCode.PRICE_UNAVAILABLE,
+            f"the broker reports no market price for {contract_key}, so no limit price can be "
+            f"derived from one. It is not the average cost, not the strike and not a midpoint "
+            f"conjured from one side: an unpriced holding is left alone",
+        )
+
+    # Reused rather than re-derived: identical arithmetic to the exit side —
+    # negative offset, round down, refuse a non-positive result — because it is
+    # the same question. A second copy would be a second place for the rounding
+    # direction to be got wrong.
+    limit_price = exit_limit_price(
+        reference_quote,
+        offset_pct=config.limit_price_offset_pct,
+        increment=config.price_increment,
+    )
+
+    return OrderIntent(
+        intent_id=cleanup_intent_identifier(
+            cleanup_request_id=cleanup_request_id, contract_key=contract_key
+        ),
+        intent=ExecutionIntent.CLEANUP,
+        purchase_card_id=None,
+        risk_decision_id=None,
+        created_at=created_at,
+        underlying=underlying,
+        strategy_type=None,
+        legs=[
+            OptionLeg(
+                underlying=underlying,
+                right=right,
+                strike=strike,
+                expiration=expiration,
+                # SELL, because the holding is long — proved above, not assumed.
+                action=LegAction.SELL,
+                ratio=1,
+                multiplier=multiplier,
+                occ_symbol=local_symbol,
+                broker_contract_id=contract_id,
+            )
+        ],
+        quantity=units,
+        order_type=OrderType.LIMIT,
+        limit_price=limit_price,
+        time_in_force=config.time_in_force,
         max_slippage_bps=0,
         trading_mode=trading_mode,
         versions=versions,

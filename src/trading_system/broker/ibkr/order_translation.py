@@ -214,6 +214,16 @@ def _combo_request(
     milestone has no shipped strategy to test against, and getting the sign
     wrong would send an order to *receive* a credit where a debit was intended.
     """
+    if intent.strategy_type is None:
+        # Only a CLEANUP intent has no strategy, and a cleanup closes exactly
+        # one broker-observed contract. Reaching the combo path with no
+        # strategy means several legs were bundled into a structure nobody
+        # recorded — precisely the guess this refuses to make.
+        raise OrderTranslationError(
+            f"an order intent with {len(intent.legs)} legs carries no strategy type, so there "
+            f"is no recorded structure to express as a combo. A multi-leg order assembled from "
+            f"holdings whose relationship nobody recorded is an invented structure"
+        )
     actions = sorted({leg.action.value for leg in intent.legs})
     if actions != [LegAction.BUY.value]:
         raise OrderTranslationError(

@@ -43,6 +43,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from datetime import datetime
 
     from trading_system.allocation.service import AllocationService
+    from trading_system.cleanup.service import CleanupService
     from trading_system.data.collectors import CollectionReport
     from trading_system.data.service import DataService
     from trading_system.domain.enums import DataType
@@ -181,9 +182,10 @@ exit_app = typer.Typer(
 reconciliation_app = typer.Typer(
     help=(
         "Compare internal records against broker reality. The broker wins every "
-        "time, and this group REPORTS discrepancies — it never repairs one, "
+        "time, and comparison REPORTS discrepancies — it never repairs one, "
         "adopts a position, cancels an order or places a corrective trade. "
-        "Submits zero orders."
+        "Every command here submits zero orders EXCEPT cleanup-orphans, which "
+        "closes explicitly named pre-existing holdings and needs --confirm."
     ),
     no_args_is_help=True,
 )
@@ -4146,6 +4148,165 @@ def reconciliation_run(
     reservation movement and no result.
     """
     _run_reconciliation(simulated=simulated, dry_run=dry_run)
+
+
+def _cleanup_service(simulated: bool) -> CleanupService:
+    """Build the orphan-cleanup composition root.
+
+    Deliberately reuses :func:`_services`, so the reconciliation this operation
+    reads and the reconciliation ``reconciliation run`` writes are the same
+    service with the same policy. A cleanup that saw a differently-configured
+    comparison would be acting on a different account than the one an operator
+    reviewed.
+    """
+    from trading_system.cleanup.service import CleanupService
+
+    settings, reconciliation = _services(simulated)
+    try:
+        config = load_config(settings.config_dir)
+    except ConfigError as exc:
+        err_console.print(f"[red]CONFIGURATION ERROR[/red]\n{exc}")
+        raise typer.Exit(code=EXIT_ERROR) from exc
+    return CleanupService(settings=settings, config=config, reconciliation_service=reconciliation)
+
+
+@reconciliation_app.command("cleanup-orphans")
+def reconciliation_cleanup_orphans(
+    contract_id: Annotated[
+        list[int] | None,
+        typer.Option(
+            "--contract-id",
+            help="Restrict to these broker contract ids. Repeatable. Narrows only.",
+        ),
+    ] = None,
+    reconciliation_id: Annotated[
+        str | None,
+        typer.Option(
+            "--reconciliation-id",
+            help="Use a stored comparison instead of running a fresh one.",
+        ),
+    ] = None,
+    confirm: Annotated[
+        bool,
+        typer.Option(
+            "--confirm",
+            help="Explicitly authorise submission. Required for any real order.",
+        ),
+    ] = False,
+    simulated: SimulatedOption = False,
+) -> None:
+    """Close pre-existing ORPHAN broker positions. (MUTATES BROKER STATE)
+
+    The controlled, PAPER-only closure of holdings this system never opened —
+    the ones reconciliation reports as ``ORPHAN_BROKER_POSITION`` and correctly
+    refuses to adopt.
+
+    **Without ``--confirm`` this is a review.** It reads the broker, selects
+    the targets, evaluates every safety gate, builds the exact order it would
+    send for each holding and prints all of it — while never constructing a
+    writable broker at all, so "a review cannot place an order" is structural
+    rather than a flag anyone has to check correctly. Ordinary
+    ``reconciliation run`` stays read-only and is unaffected by any of this.
+
+    Nothing here adopts a position. No allocation, purchase card, risk
+    decision, opportunity or strategy is created for a holding this system did
+    not buy, no campaign capital is committed or released, and no profit or
+    loss is attributed. The record it writes says exactly one thing: we sold
+    something the broker said was there, and here is everything about it.
+
+    ``--confirm`` needs ``cleanup.enabled`` and ``execution.enabled`` on top of
+    it, plus ``TRADING_MODE=PAPER`` with both live guards off and a connected
+    account that proves it is a paper account. It is not, and can never be,
+    permission for LIVE trading.
+    """
+    from trading_system.cleanup.models import CleanupRunStatus
+    from trading_system.cleanup.report import (
+        render_confirmation_summary,
+        render_plan,
+        render_run,
+    )
+
+    service = _cleanup_service(simulated)
+    settings = _load_settings()
+
+    console.print()
+    console.print(
+        f"Mode: [bold]{settings.trading_mode.value}[/bold]   "
+        f"cleanup.enabled: [bold]{service.enabled}[/bold]   "
+        f"execution.enabled: [bold]{service.executions.enabled}[/bold]   "
+        f"authorised: [bold]{confirm}[/bold]"
+    )
+
+    if not confirm:
+        # The review path. It never reaches submit_cleanup with authorisation,
+        # so no writable broker is constructed anywhere in this branch.
+        outcome = service.run(
+            authorized=False,
+            contract_ids=list(contract_id) if contract_id else None,
+            reconciliation_id=reconciliation_id,
+        )
+        console.print()
+        console.print(render_plan(outcome.plan))
+        console.print()
+        console.print(
+            "[yellow]REVIEW[/yellow]  No writable broker was constructed, no order was sent "
+            "and no broker state changed."
+        )
+        _print_zero_order_footer(outcome.run.orders_submitted)
+        console.print(
+            "\nTo close these holdings, review the target list above and re-run with "
+            "[bold]--confirm[/bold]."
+        )
+        raise typer.Exit(code=EXIT_OK)
+
+    # The authorised path. The summary is printed before anything is sent.
+    review = service.run(
+        authorized=False,
+        contract_ids=list(contract_id) if contract_id else None,
+        reconciliation_id=reconciliation_id,
+    )
+    console.print()
+    console.print(render_plan(review.plan))
+    if review.plan.request is None:
+        console.print("\n[green]Nothing to close.[/green]")
+        raise typer.Exit(code=EXIT_OK)
+    console.print(
+        render_confirmation_summary(
+            review.plan.request,
+            account_reference=review.run.account_reference,
+            mode=settings.trading_mode,
+        )
+    )
+
+    outcome = service.run(
+        authorized=True,
+        contract_ids=list(contract_id) if contract_id else None,
+        reconciliation_id=reconciliation_id,
+    )
+    console.print()
+    console.print(render_run(outcome))
+    style = "green" if outcome.run.orders_submitted == 0 else "bold cyan"
+    console.print(
+        f"\nOrders submitted (read off the broker): "
+        f"[{style}]{outcome.run.orders_submitted}[/{style}]"
+    )
+    console.print(
+        f"Corrective orders                     : [green]{outcome.run.corrective_orders}[/green]"
+    )
+    if outcome.stored:
+        console.print(f"[green]Stored[/green] cleanup run {outcome.run.run_id}")
+
+    if outcome.run.uncertain:
+        _fail(
+            f"{outcome.run.uncertain} submission(s) are UNCERTAIN. An order may be live at the "
+            f"broker. Do NOT re-run this command: resolve with 'execution explain "
+            f"--execution-id <ID> --resolve', which asks the broker what it actually has."
+        )
+    if outcome.run.status not in (CleanupRunStatus.COMPLETE, CleanupRunStatus.DRY_RUN):
+        _fail(
+            f"cleanup ended as {outcome.run.status.value}. "
+            f"{outcome.run.detail or 'Not every targeted holding is confirmed gone.'}"
+        )
 
 
 @reconciliation_app.command("show")

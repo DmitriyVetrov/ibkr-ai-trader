@@ -243,6 +243,12 @@ class ReservationService:
                 # any realised profit and loss behind the figure — which is
                 # Milestone 11's, not this one's.
                 continue
+            if record.allocation_id is None:
+                # Unreachable for an OPEN record — the execution model requires
+                # an allocation on one — and kept as a refusal rather than an
+                # assertion because the failure mode is a reservation resolved
+                # against an execution that spent none of its capital.
+                continue
             by_allocation.setdefault(record.allocation_id, []).append(record)
 
         updates: list[ReservationUpdate] = []
