@@ -1,0 +1,940 @@
+{
+  "as_of": "2026-08-15T22:27:59.279013Z",
+  "assessment": {
+    "as_of": "2026-08-15T22:27:59.279013Z",
+    "assessment_id": "readiness-e439fac24b50b93eee3b",
+    "config_version": "2026.08.16-1",
+    "criteria": [
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "TEST_SUITE_PASSES",
+        "detail": "not collected: toolchain collectors were not requested for this run",
+        "domain": "SOFTWARE_QUALITY",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "the offline test suite passes at this revision"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "LINT_CLEAN",
+        "detail": "not collected: toolchain collectors were not requested for this run",
+        "domain": "SOFTWARE_QUALITY",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "ruff reports no lint findings"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "FORMAT_CLEAN",
+        "detail": "not collected: toolchain collectors were not requested for this run",
+        "domain": "SOFTWARE_QUALITY",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "the tree is formatted"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "TYPECHECK_CLEAN",
+        "detail": "not collected: toolchain collectors were not requested for this run",
+        "domain": "SOFTWARE_QUALITY",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "mypy reports no type errors"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "CONFIGURATION_LOADS",
+        "detail": "every configuration file loaded and cross-file invariants hold",
+        "domain": "CONFIGURATION_SAFETY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-f291b164db0455d505f5",
+        "evidence_kind": "CONFIGURATION",
+        "evidence_source": "Settings + config/",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "the whole configuration tree loads and validates"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "TRADING_MODE_SAFE",
+        "detail": "TRADING_MODE=PAPER",
+        "domain": "CONFIGURATION_SAFETY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-f291b164db0455d505f5",
+        "evidence_kind": "CONFIGURATION",
+        "evidence_source": "Settings + config/",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "the trading mode is one readiness may be assessed from"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "LIVE_GUARDS_CONSISTENT",
+        "detail": "TRADING_MODE=PAPER, live_trading_confirmed=False, checklist_signed_off=False",
+        "domain": "CONFIGURATION_SAFETY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-f291b164db0455d505f5",
+        "evidence_kind": "CONFIGURATION",
+        "evidence_source": "Settings + config/",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "the live guards agree with the trading mode"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "EXECUTION_SWITCH_SAFE",
+        "detail": "execution.enabled=true under TRADING_MODE=PAPER with explicit authorisation still required. An order additionally needs --confirm",
+        "domain": "CONFIGURATION_SAFETY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-f291b164db0455d505f5",
+        "evidence_kind": "CONFIGURATION",
+        "evidence_source": "Settings + config/",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "execution.enabled is off, or on under an explicit paper policy"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "BROKER_READ_ONLY",
+        "detail": "IBKR_READ_ONLY=false. The connection can place orders. That is required for a deliberate paper submission and is not a state to sit in for live review",
+        "domain": "CONFIGURATION_SAFETY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-f291b164db0455d505f5",
+        "evidence_kind": "CONFIGURATION",
+        "evidence_source": "Settings + config/",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "BROKER_WRITABLE",
+        "status": "FAIL",
+        "title": "the broker connection is read-only"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "SUITE_RUNS_WITHOUT_GATEWAY",
+        "detail": "the suite clamps the safety-critical environment and skips gateway-backed tests by default",
+        "domain": "TEST_ISOLATION",
+        "evidence_age_seconds": null,
+        "evidence_id": "evidence-e123f75f35cb6eb066d6",
+        "evidence_kind": "STORE_SCAN",
+        "evidence_source": "tests/conftest.py",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "an ordinary pytest needs no gateway, credentials or personal .env"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "LIVE_SUITES_GATED",
+        "detail": "live, ibkr and llm markers are skipped without ALLOW_LIVE_TESTS",
+        "domain": "TEST_ISOLATION",
+        "evidence_age_seconds": null,
+        "evidence_id": "evidence-e123f75f35cb6eb066d6",
+        "evidence_kind": "STORE_SCAN",
+        "evidence_source": "tests/conftest.py",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "live and IBKR suites are skipped unless explicitly unlocked"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "PAPER_EXECUTION_SUITE_GATED",
+        "detail": "paper_execution needs ALLOW_LIVE_TESTS and RUN_PAPER_EXECUTION_TESTS, checked independently",
+        "domain": "TEST_ISOLATION",
+        "evidence_age_seconds": null,
+        "evidence_id": "evidence-e123f75f35cb6eb066d6",
+        "evidence_kind": "STORE_SCAN",
+        "evidence_source": "tests/conftest.py",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "order-submitting suites need two separate unlocks"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "PAPER_BROKER_REACHABLE",
+        "detail": "not collected: the broker probe was not requested for this run",
+        "domain": "BROKER",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "the IBKR Paper gateway answers"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "ACCOUNT_READABLE",
+        "detail": "not collected: the broker probe was not requested for this run",
+        "domain": "BROKER",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "the account summary is readable"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "POSITIONS_READABLE",
+        "detail": "not collected: the broker probe was not requested for this run",
+        "domain": "BROKER",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "positions are readable"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "ORDERS_READABLE",
+        "detail": "not collected: the broker probe was not requested for this run",
+        "domain": "BROKER",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "open orders are readable"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "FILLS_READABLE",
+        "detail": "not collected: the broker probe was not requested for this run",
+        "domain": "BROKER",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "executions and fills are readable"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "RECONCILIATION_RUNS",
+        "detail": "not collected: reconciliation was not requested for this run",
+        "domain": "RECONCILIATION",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "reconciliation compares internal records against broker reality"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "NO_CRITICAL_FINDINGS",
+        "detail": "not collected: reconciliation was not requested for this run",
+        "domain": "RECONCILIATION",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "no critical reconciliation finding is open"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "NO_UNRESOLVED_UNKNOWN_EXECUTIONS",
+        "detail": "not collected: reconciliation was not requested for this run",
+        "domain": "RECONCILIATION",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "no execution is in an unresolved UNKNOWN state"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "EXECUTION_SAFETY_GATES",
+        "detail": "not collected: safety suites were not requested for this run",
+        "domain": "EXECUTION_SAFETY",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "every order-submission gate refuses before a broker is constructed"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "ZERO_ORDERS_IN_SUITE",
+        "detail": "not collected: safety suites were not requested for this run",
+        "domain": "EXECUTION_SAFETY",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "the suite submits zero orders"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "POSITION_LIFECYCLE_VERIFIED",
+        "detail": "not collected: safety suites were not requested for this run",
+        "domain": "POSITION_LIFECYCLE",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "the position lifecycle admits no false CLOSED state"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "EXIT_MANAGEMENT_VERIFIED",
+        "detail": "not collected: safety suites were not requested for this run",
+        "domain": "POSITION_LIFECYCLE",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "exit precedence, blocks and UNKNOWN handling hold"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "PNL_FROM_CONFIRMED_FILLS",
+        "detail": "not collected: safety suites were not requested for this run",
+        "domain": "CAPITAL",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "realised results come from broker-confirmed fills only"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "SETTLEMENT_IDEMPOTENT",
+        "detail": "not collected: safety suites were not requested for this run",
+        "domain": "CAPITAL",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "settling twice has one economic effect"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "DAILY_LOSS_STATE_KNOWN",
+        "detail": "no profit-and-loss ledger was consulted. For a deployment that has never closed a position this is the ordinary state, and it is reported rather than treated as a defect",
+        "domain": "CAPITAL",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-5ccde1dbfba61514d9e4",
+        "evidence_kind": "STORE_SCAN",
+        "evidence_source": "/home/dmytro/git/ibkr-ai-trader/data/pnl",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "DAILY_LOSS_NOT_TRACKED",
+        "status": "UNKNOWN",
+        "title": "the daily loss figure is a measurement rather than an absence"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "SCHEDULER_RUNS",
+        "detail": "no scheduler tick has ever been recorded",
+        "domain": "SCHEDULER",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-43e595378ea153c02920",
+        "evidence_kind": "STORE_SCAN",
+        "evidence_source": "/home/dmytro/git/ibkr-ai-trader/data/operations",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SCHEDULER_NEVER_RAN",
+        "status": "FAIL",
+        "title": "the scheduler has ticked and persisted the result"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "SCHEDULER_JOBS_HEALTHY",
+        "detail": "no scheduler job failed or went unrecorded; 1 deliberately skipped",
+        "domain": "SCHEDULER",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-43e595378ea153c02920",
+        "evidence_kind": "STORE_SCAN",
+        "evidence_source": "/home/dmytro/git/ibkr-ai-trader/data/operations",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "no scheduled job failed or went unrecorded"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "OBSERVABILITY_STACK_RUNNING",
+        "detail": "all 5 services answered their health endpoint",
+        "domain": "OBSERVABILITY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-902a837285a872625d0b",
+        "evidence_kind": "SERVICE_PROBE",
+        "evidence_source": "observability stack health endpoints",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "the collector, Tempo, Prometheus, Loki and Grafana are actually running"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "COLLECTOR_RECEIVES_TELEMETRY",
+        "detail": "the collector accepted 444 span(s) over OTLP from this application",
+        "domain": "OBSERVABILITY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-0831474af79d836307e8",
+        "evidence_kind": "SERVICE_PROBE",
+        "evidence_source": "otel-collector self-telemetry",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "the collector has accepted telemetry from this application"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "TEMPO_HAS_TRACE",
+        "detail": "the emitted trace: status=200",
+        "domain": "OBSERVABILITY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-99a4333fa7725c173908",
+        "evidence_kind": "SERVICE_PROBE",
+        "evidence_source": "tempo /api/traces",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "a real application trace reached the tracing backend"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "PROMETHEUS_HAS_METRIC",
+        "detail": "the emitted metric: status=200",
+        "domain": "OBSERVABILITY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-d4d738be2a9875dad97c",
+        "evidence_kind": "SERVICE_PROBE",
+        "evidence_source": "prometheus /api/v1/query",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "a real application metric is queryable in the metrics backend"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "LOKI_HAS_LOG",
+        "detail": "the emitted log line: status=200",
+        "domain": "OBSERVABILITY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-0bc1415e0f82c6be8ff5",
+        "evidence_kind": "SERVICE_PROBE",
+        "evidence_source": "loki /loki/api/v1/query_range",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "a real structured log line reached the log backend"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "GRAFANA_RUNNING",
+        "detail": "Grafana answered /api/health with a database status of ok",
+        "domain": "OBSERVABILITY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-0c85c43488c2d35019d4",
+        "evidence_kind": "SERVICE_PROBE",
+        "evidence_source": "grafana /api/health, /api/datasources, /api/search",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "Grafana started and answers its health API"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "GRAFANA_DATASOURCES_PROVISIONED",
+        "detail": "Grafana provisioned datasources ['loki', 'prometheus', 'tempo']",
+        "domain": "OBSERVABILITY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-0c85c43488c2d35019d4",
+        "evidence_kind": "SERVICE_PROBE",
+        "evidence_source": "grafana /api/health, /api/datasources, /api/search",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "the tracing, metrics and log datasources are provisioned"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "GRAFANA_DASHBOARDS_PROVISIONED",
+        "detail": "Grafana loaded dashboards ['trading-system-overview', 'trading-trade-view', 'trading-workflow-funnel']",
+        "domain": "OBSERVABILITY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-0c85c43488c2d35019d4",
+        "evidence_kind": "SERVICE_PROBE",
+        "evidence_source": "grafana /api/health, /api/datasources, /api/search",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "the dashboards loaded"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "TRACE_LOG_CORRELATION",
+        "detail": "trace 845fdc49dce1317aa5435dc9a0fec4fb was found in the tracing backend and a log line carrying the same trace id was found in the log backend",
+        "domain": "OBSERVABILITY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-e1925ad7048f941d8811",
+        "evidence_kind": "SERVICE_PROBE",
+        "evidence_source": "tempo + loki, one trace id",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "one trace id is findable in both the tracing and the log backend"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "METRIC_CARDINALITY_SAFE",
+        "detail": "no forbidden label reached a metric; 16 guarded names were checked against live exposition",
+        "domain": "OBSERVABILITY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-66a6fd63a3bea66a3979",
+        "evidence_kind": "SERVICE_PROBE",
+        "evidence_source": "collector metric exposition",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "no domain identifier is used as a metric label"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "AGENT_CONTRACTS_VALIDATED",
+        "detail": "not collected: safety suites were not requested for this run",
+        "domain": "AI_AGENTS",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "each agent's schema and semantic validation holds offline"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "AGENT_BOUNDARIES_ENFORCED",
+        "detail": "not collected: safety suites were not requested for this run",
+        "domain": "AI_AGENTS",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "no agent reaches a broker, provider, repository or socket"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "DATA_POINT_IN_TIME_ENFORCED",
+        "detail": "not collected: safety suites were not requested for this run",
+        "domain": "DATA",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "no reconstruction of a past instant can see later data"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "DATA_QUALITY_ENFORCED",
+        "detail": "not collected: safety suites were not requested for this run",
+        "domain": "DATA",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "quality flags are recorded rather than corrected"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "SECRETS_NOT_TRACKED",
+        "detail": ".env and other secret-bearing paths are untracked and ignored",
+        "domain": "SECURITY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-c597f7c11827a993ee63",
+        "evidence_kind": "SOURCE_CONTROL",
+        "evidence_source": "git ls-files / git check-ignore",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": ".env and other secret-bearing files are untracked"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "TELEMETRY_PRIVACY_ENFORCED",
+        "detail": "not collected: safety suites were not requested for this run",
+        "domain": "SECURITY",
+        "evidence_age_seconds": null,
+        "evidence_id": null,
+        "evidence_kind": null,
+        "evidence_source": null,
+        "observed_at": null,
+        "reason_code": "NOT_COLLECTED",
+        "status": "NOT_TESTED",
+        "title": "telemetry carries no account, credential, prompt or monetary payload"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "ACCOUNT_IDENTIFIERS_MASKED",
+        "detail": "every account reference in a stored artifact is masked",
+        "domain": "SECURITY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-2f8049c46124b2ac5187",
+        "evidence_kind": "STORE_SCAN",
+        "evidence_source": "/home/dmytro/git/ibkr-ai-trader/data (positions, reconciliation, pnl, readiness, operations, fills)",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "no stored readiness or position artifact carries a full account number"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "OPERATIONAL_HISTORY_SUFFICIENT",
+        "detail": "insufficient operational history: distinct_days: 1 recorded, 2 required; history_days: 0 recorded, 2 required; readiness_runs: 2 recorded, 3 required; scheduler_ticks: 0 recorded, 1 required. A single successful run demonstrates that the system works and says nothing about whether it has been operated",
+        "domain": "OPERATIONAL_HISTORY",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-c9ab1dd74176232aa024",
+        "evidence_kind": "STORE_SCAN",
+        "evidence_source": "/home/dmytro/git/ibkr-ai-trader/data",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "INSUFFICIENT_OPERATIONAL_HISTORY",
+        "status": "FAIL",
+        "title": "enough operational history has accumulated for a live review"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_PAPER",
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "GIT_REVISION_RECORDED",
+        "detail": "assessed at revision e17f97b1f877893c62dc925d12d81c54c2fd75bf",
+        "domain": "SOURCE_CONTROL",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-cb8557bfce79e25c1e81",
+        "evidence_kind": "SOURCE_CONTROL",
+        "evidence_source": "git rev-parse HEAD; git status --porcelain",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "SATISFIED",
+        "status": "PASS",
+        "title": "the assessment names the revision it describes"
+      },
+      {
+        "artifact_ids": [],
+        "blocking_for": [
+          "READY_FOR_LIVE_REVIEW"
+        ],
+        "criterion_id": "WORKING_TREE_CLEAN",
+        "detail": "the working tree has 33 modification(s). Test results describe a revision, and the code that would run is not that revision",
+        "domain": "SOURCE_CONTROL",
+        "evidence_age_seconds": 0.0,
+        "evidence_id": "evidence-cb8557bfce79e25c1e81",
+        "evidence_kind": "SOURCE_CONTROL",
+        "evidence_source": "git rev-parse HEAD; git status --porcelain",
+        "observed_at": "2026-08-15T22:27:59.279013Z",
+        "reason_code": "WORKING_TREE_DIRTY",
+        "status": "FAIL",
+        "title": "the working tree matches the revision the evidence describes"
+      }
+    ],
+    "evaluated_at": "2026-08-15T22:27:59.279013Z",
+    "evidence_digest": "ea8772fe3fa8183a4cbf34fed8dd77fe",
+    "evidence_ids": [
+      "evidence-66a6fd63a3bea66a3979",
+      "evidence-0831474af79d836307e8",
+      "evidence-f291b164db0455d505f5",
+      "evidence-e1925ad7048f941d8811",
+      "evidence-5ccde1dbfba61514d9e4",
+      "evidence-cb8557bfce79e25c1e81",
+      "evidence-0c85c43488c2d35019d4",
+      "evidence-0bc1415e0f82c6be8ff5",
+      "evidence-2f8049c46124b2ac5187",
+      "evidence-902a837285a872625d0b",
+      "evidence-c9ab1dd74176232aa024",
+      "evidence-d4d738be2a9875dad97c",
+      "evidence-43e595378ea153c02920",
+      "evidence-c597f7c11827a993ee63",
+      "evidence-99a4333fa7725c173908",
+      "evidence-e123f75f35cb6eb066d6"
+    ],
+    "git_revision": "e17f97b1f877893c62dc925d12d81c54c2fd75bf",
+    "level": "NOT_READY",
+    "schema_version": "2026.08.15-1",
+    "system_version": "0.1.0",
+    "trading_mode": "PAPER",
+    "working_tree_clean": false
+  },
+  "config_version": "2026.08.16-1",
+  "error": null,
+  "evaluated_at": "2026-08-15T22:27:59.279013Z",
+  "git_revision": "e17f97b1f877893c62dc925d12d81c54c2fd75bf",
+  "not_collected": {
+    "agent_boundaries": "safety suites were not requested for this run",
+    "agents": "safety suites were not requested for this run",
+    "broker": "the broker probe was not requested for this run",
+    "data": "safety suites were not requested for this run",
+    "execution_safety": "safety suites were not requested for this run",
+    "exit_management": "safety suites were not requested for this run",
+    "format": "toolchain collectors were not requested for this run",
+    "lint": "toolchain collectors were not requested for this run",
+    "pnl": "safety suites were not requested for this run",
+    "position_lifecycle": "safety suites were not requested for this run",
+    "privacy": "safety suites were not requested for this run",
+    "reconciliation": "reconciliation was not requested for this run",
+    "test_suite": "toolchain collectors were not requested for this run",
+    "typecheck": "toolchain collectors were not requested for this run"
+  },
+  "orders_submitted": 0,
+  "readiness_config_version": "2026.08.15-1",
+  "readiness_run_id": "readiness-run-fd5dcd10e3bed719fe75",
+  "schema_version": "2026.08.15-1",
+  "status": "PARTIAL",
+  "system_version": "0.1.0",
+  "trading_mode": "PAPER",
+  "working_tree_clean": false
+}
