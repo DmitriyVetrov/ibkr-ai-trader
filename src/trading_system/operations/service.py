@@ -280,7 +280,14 @@ class OperationsService:
             capital_locked_by_unknown=capital["locked"],
             daily_pnl_status=daily["status"],
             daily_loss=daily["loss"],
-            telemetry_enabled=self._config.observability.enabled,
+            # The RESOLVED value, not the YAML one. OBSERVABILITY_ENABLED is a
+            # deployment switch that overrides config/observability.yaml, so
+            # reading the file directly reported "disabled by configuration"
+            # for a process that was actively exporting — the one component
+            # whose whole job is to say whether we can see what is happening.
+            telemetry_enabled=self._settings.resolved_observability(
+                self._config.observability
+            ).enabled,
             telemetry_status=self._telemetry_state(),
             notification_channels=len(self._providers),
             notification_failures=0,
