@@ -52,6 +52,7 @@ def _candidate(
     freshness_valid: bool = True,
     classification: DataQuality = DataQuality.OK,
     volume: Decimal | None = Decimal("75000000"),
+    average_daily_volume: Decimal | None = Decimal("75000000"),
     price: Decimal | None = Decimal("500.15"),
 ) -> CandidateAsset:
     return CandidateAsset(
@@ -62,6 +63,7 @@ def _candidate(
         optionability=optionability,
         reference_price=price,
         underlying_volume=volume,
+        average_daily_volume=average_daily_volume,
         data_quality=DataQualitySummary(
             research_usable=research_usable,
             classification=classification,
@@ -275,12 +277,28 @@ def test_claiming_options_are_available_when_optionability_is_unknown_is_rejecte
 
 
 def test_claiming_liquidity_with_no_volume_figure_is_rejected() -> None:
-    agent_input = _input(_candidate("SPY", volume=None))
+    agent_input = _input(_candidate("SPY", volume=None, average_daily_volume=None))
     ranking = _ranking(
         _selected("SPY", 1, reasons=[UniverseSelectionReason.HIGH_UNDERLYING_LIQUIDITY])
     )
 
-    with pytest.raises(AgentOutputInvalidError, match="no underlying volume was supplied"):
+    with pytest.raises(AgentOutputInvalidError, match="no average daily volume was supplied"):
+        validate_ranking(ranking, agent_input, max_selected=10)
+
+
+def test_a_liquidity_claim_resting_only_on_session_volume_is_rejected() -> None:
+    """The session figure is not evidence for a liquidity band.
+
+    It is the field IBKR's delayed feed corrupts, and the one the deterministic
+    floor deliberately does not read. An agent that called a symbol liquid on
+    the strength of it would be reasoning from a number already flagged.
+    """
+    agent_input = _input(_candidate("SPY", volume=Decimal("75000000"), average_daily_volume=None))
+    ranking = _ranking(
+        _selected("SPY", 1, reasons=[UniverseSelectionReason.HIGH_UNDERLYING_LIQUIDITY])
+    )
+
+    with pytest.raises(AgentOutputInvalidError, match="no average daily volume was supplied"):
         validate_ranking(ranking, agent_input, max_selected=10)
 
 
@@ -322,7 +340,7 @@ def test_a_liquidity_band_is_the_agents_judgement_and_is_not_second_guessed() ->
     """Facts are enforced; opinions are not. A thin-but-present volume may still
     be called high, because "high" is a comparative judgement the agent is
     entitled to make from the pool it was shown."""
-    agent_input = _input(_candidate("SPY", volume=Decimal("1200000")))
+    agent_input = _input(_candidate("SPY", average_daily_volume=Decimal("1200000")))
     ranking = _ranking(
         _selected("SPY", 1, reasons=[UniverseSelectionReason.HIGH_UNDERLYING_LIQUIDITY])
     )

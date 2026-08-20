@@ -261,6 +261,53 @@ def test_the_universe_result_validates_against_its_own_schema(
 
 
 @pytest.mark.contract
+@pytest.mark.parametrize(
+    ("schema_name", "definition"),
+    [
+        ("universe_selection_input", "candidate_asset"),
+        ("universe_selection_result", "selected_asset"),
+    ],
+)
+def test_both_volume_fields_are_declared_in_the_universe_schemas(
+    schema_name: str, definition: str, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """The two volumes must stay two, in the schema as well as in the model.
+
+    Both schemas set ``additionalProperties: false``, so a field added to the
+    model and not to the schema fails validation loudly. The reverse — a schema
+    that quietly drops one of them, or that merges them back into a single
+    ``volume`` — would not, and that is the drift this pins: the session figure
+    and the 90-day average answer different questions, and only one of them is
+    the liquidity floor's input.
+    """
+    properties = load_schema(schema_name)["$defs"][definition]["properties"]
+
+    assert "underlying_volume" in properties
+    assert "average_daily_volume" in properties
+
+
+@pytest.mark.contract
+@pytest.mark.parametrize(
+    ("schema_name", "definition"),
+    [
+        ("universe_selection_input", "candidate_asset"),
+        ("universe_selection_result", "selected_asset"),
+    ],
+)
+def test_the_universe_schemas_match_their_models_on_volume(
+    schema_name: str, definition: str, load_schema: Callable[[str], dict[str, Any]]
+) -> None:
+    """Neither side may grow a volume field the other does not know about."""
+    from trading_system.universe.models import CandidateAsset, SelectedAsset
+
+    model = CandidateAsset if definition == "candidate_asset" else SelectedAsset
+    properties = set(load_schema(schema_name)["$defs"][definition]["properties"])
+    fields = set(model.model_fields)
+
+    assert {f for f in fields if "volume" in f} == {p for p in properties if "volume" in p}
+
+
+@pytest.mark.contract
 def test_a_research_run_validates_against_its_own_schema(
     market_research_run, load_schema: Callable[[str], dict[str, Any]]
 ) -> None:

@@ -90,7 +90,11 @@
           "enum": ["LAST", "CLOSE", "MID", "BID", "ASK", null]
         },
         "underlying_volume": {
-          "description": "Underlying share volume. Deliberately NOT option liquidity - that needs option-level data this milestone does not collect.",
+          "description": "Underlying share volume for the CURRENT SESSION, verbatim from the broker. Deliberately NOT option liquidity - that needs option-level data this milestone does not collect. From IBKR's delayed feed this is tick 74, which is known to arrive corrupted; it is preserved and flagged, never rescaled, and the liquidity floor does not read it.",
+          "$ref": "#/$defs/nullable_money"
+        },
+        "average_daily_volume": {
+          "description": "Trailing 90-day average daily share volume (IBKR tick 21 / avVolume, via generic tick 165). This is the field the deterministic liquidity floor evaluates. An independent observation, never derived from underlying_volume and never substituted by it. Still underlying liquidity, so still NOT evidence about option liquidity.",
           "$ref": "#/$defs/nullable_money"
         },
         "market_data_as_of": { "type": ["string", "null"], "format": "date-time" },

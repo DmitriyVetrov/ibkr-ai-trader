@@ -166,6 +166,11 @@
           "$ref": "#/$defs/nullable_money"
         },
         "underlying_volume": {
+          "description": "Current-session underlying share volume, as the broker reported it. Preserved verbatim; never rescaled.",
+          "$ref": "#/$defs/nullable_money"
+        },
+        "average_daily_volume": {
+          "description": "Trailing 90-day average daily share volume (IBKR tick 21 / avVolume). The field the deterministic liquidity floor evaluated.",
           "$ref": "#/$defs/nullable_money"
         },
         "data_quality": {

@@ -328,7 +328,7 @@ def test_the_deterministic_ordering_claims_only_supportable_reasons(
     store_quote, store_chain, make_service
 ) -> None:
     """Even the fallback may not assert evidence it does not have."""
-    store_quote("SPY", volume=None)
+    store_quote("SPY", volume=None, average_daily_volume=None)
     store_chain("SPY")
     service = make_service(symbols=["SPY"], ai_enabled=False, min_volume=0)
 

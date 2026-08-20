@@ -463,6 +463,7 @@ class UniverseSelectionService:
                     optionability=candidate.optionability,
                     reference_price=candidate.reference_price,
                     underlying_volume=candidate.underlying_volume,
+                    average_daily_volume=candidate.average_daily_volume,
                     source=candidate.source,
                 )
             )
@@ -657,17 +658,21 @@ def _deterministic_ranking(
 ) -> UniverseAgentRanking:
     """Order candidates without a model, for explicitly configured runs.
 
-    Ordered by underlying volume descending, ties broken by symbol, candidates
-    with no reported volume last. Deliberately simple and deliberately not a
-    hidden scoring model: this is a documented fallback that has to be
-    switched on, and a run using it is stamped ``DETERMINISTIC_ONLY`` so it can
-    never be mistaken for a model's judgement.
+    Ordered by average daily volume descending, ties broken by symbol,
+    candidates with no reported average last. Deliberately simple and
+    deliberately not a hidden scoring model: this is a documented fallback that
+    has to be switched on, and a run using it is stamped ``DETERMINISTIC_ONLY``
+    so it can never be mistaken for a model's judgement.
+
+    It orders on the same field the liquidity floor gated on, rather than on
+    the current session's volume — which, on IBKR's delayed feed, may be the
+    corrupted tick 74 and would silently reorder the whole universe.
     """
     ordered = sorted(
         agent_input.candidate_assets,
         key=lambda c: (
-            0 if c.underlying_volume is not None else 1,
-            -(c.underlying_volume or Decimal(0)),
+            0 if c.average_daily_volume is not None else 1,
+            -(c.average_daily_volume or Decimal(0)),
             c.symbol,
         ),
     )
@@ -684,7 +689,9 @@ def _deterministic_ranking(
                 rank=index + 1 if selected else None,
                 reasons=_deterministic_reasons(candidate, selected),
                 confidence=ConfidenceLevel.LOW,
-                rationale=("deterministic ordering by underlying volume; no model was consulted"),
+                rationale=(
+                    "deterministic ordering by average daily volume; no model was consulted"
+                ),
             )
         )
     return UniverseAgentRanking(run_id=agent_input.run_id, rankings=rankings)
@@ -695,7 +702,7 @@ def _deterministic_reasons(
 ) -> list[UniverseSelectionReason]:
     """Reason codes the candidate's own evidence actually supports."""
     reasons: list[UniverseSelectionReason] = []
-    if candidate.underlying_volume is not None:
+    if candidate.average_daily_volume is not None:
         reasons.append(
             UniverseSelectionReason.HIGH_UNDERLYING_LIQUIDITY
             if selected

@@ -106,6 +106,7 @@ def _candidate(
     *,
     optionability: Optionability = Optionability.TRUE,
     volume: Decimal | None = Decimal("80000000"),
+    average_daily_volume: Decimal | None = Decimal("80000000"),
 ) -> CandidateAsset:
     return CandidateAsset(
         symbol=symbol,
@@ -115,6 +116,7 @@ def _candidate(
         optionability=optionability,
         reference_price=Decimal("500.15"),
         underlying_volume=volume,
+        average_daily_volume=average_daily_volume,
         market_data_as_of=NOW,
         data_quality=DataQualitySummary(research_usable=True, classification=DataQuality.OK),
         source=CandidateProvenance(
@@ -428,13 +430,13 @@ def test_a_liquidity_claim_with_no_volume_is_rejected() -> None:
         as_of=NOW,
         universe_source=UniverseSourceRef(kind="STATIC", name="t", version="1"),
         deterministic_filter_config=FilterConfigSnapshot(max_candidates=10, max_selected_assets=2),
-        candidate_assets=[_candidate("SPY", volume=None)],
+        candidate_assets=[_candidate("SPY", volume=None, average_daily_volume=None)],
     )
     client = ScriptedClient(
         _response([_entry("SPY", rank=1, reasons=["HIGH_UNDERLYING_LIQUIDITY"])])
     )
 
-    with pytest.raises(AgentOutputInvalidError, match="no underlying volume"):
+    with pytest.raises(AgentOutputInvalidError, match="no average daily volume"):
         UniverseSelectorAgent(client).rank(no_volume, max_selected=2)
 
 

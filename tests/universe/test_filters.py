@@ -125,7 +125,7 @@ def test_an_unavailable_price_is_not_a_low_price(
 def test_volume_below_the_minimum_is_rejected(
     data_repo, store_quote, store_chain, make_universe_config
 ) -> None:
-    store_quote("SPY", volume=Decimal("1000"))
+    store_quote("SPY", average_daily_volume=Decimal("1000"))
     store_chain("SPY")
 
     outcome = _evaluate(data_repo, _filter(make_universe_config, min_volume=1_000_000))
@@ -138,7 +138,26 @@ def test_an_unknown_volume_never_passes_a_liquidity_floor(
     data_repo, store_quote, store_chain, make_universe_config
 ) -> None:
     """None is not zero, and it is certainly not "enough"."""
-    store_quote("SPY", volume=None)
+    store_quote("SPY", average_daily_volume=None)
+    store_chain("SPY")
+
+    outcome = _evaluate(data_repo, _filter(make_universe_config, min_volume=1_000_000))
+
+    assert outcome.rejection is not None
+    assert outcome.rejection.reason is UniverseRejectionReason.VOLUME_UNAVAILABLE
+
+
+def test_a_healthy_session_volume_never_substitutes_for_a_missing_average(
+    data_repo, store_quote, store_chain, make_universe_config
+) -> None:
+    """`min_average_daily_volume` asks about an average, so only the average answers.
+
+    A session volume far above the floor is present and deliberately ignored:
+    falling back to it would read a threshold about a 90-day average off a
+    single day, and on IBKR's delayed feed that single day is the corrupted
+    tick 74.
+    """
+    store_quote("SPY", volume=Decimal("500000000"), average_daily_volume=None)
     store_chain("SPY")
 
     outcome = _evaluate(data_repo, _filter(make_universe_config, min_volume=1_000_000))
@@ -151,7 +170,7 @@ def test_the_volume_rejection_names_underlying_liquidity_not_option_liquidity(
     data_repo, store_quote, store_chain, make_universe_config
 ) -> None:
     """Milestone 4 brief section 11: the two must never be conflated in wording."""
-    store_quote("SPY", volume=Decimal("1000"))
+    store_quote("SPY", average_daily_volume=Decimal("1000"))
     store_chain("SPY")
 
     outcome = _evaluate(data_repo, _filter(make_universe_config, min_volume=1_000_000))

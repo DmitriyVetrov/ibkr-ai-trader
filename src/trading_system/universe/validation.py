@@ -268,7 +268,11 @@ def _reason_contradicted(reason: UniverseSelectionReason, candidate: CandidateAs
     ):
         return "its data quality is OK with no recorded issues"
 
-    if reason in _LIQUIDITY_REASONS and candidate.underlying_volume is None:
-        return "no underlying volume was supplied, so no liquidity claim is supportable"
+    if reason in _LIQUIDITY_REASONS and candidate.average_daily_volume is None:
+        # The average, not the session's cumulative volume: that is what the
+        # liquidity floor gated on, and on IBKR's delayed feed the session
+        # figure may be the corrupted tick 74. A liquidity claim resting on it
+        # would rest on a number the data layer has already flagged.
+        return "no average daily volume was supplied, so no liquidity claim is supportable"
 
     return None

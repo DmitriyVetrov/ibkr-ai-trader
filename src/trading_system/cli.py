@@ -1656,7 +1656,13 @@ def universe_explain(
         console.print(f"  score        : {_or_dash(selected.selection_score)}")
         console.print(f"  optionability: {selected.optionability.value}")
         console.print(f"  price        : {_or_dash(selected.reference_price)}")
-        console.print(f"  volume       : {_or_dash(selected.underlying_volume)} (underlying)")
+        console.print(
+            f"  avg volume   : {_or_dash(selected.average_daily_volume)} "
+            f"(underlying, 90d average — the liquidity floor reads this)"
+        )
+        console.print(
+            f"  volume       : {_or_dash(selected.underlying_volume)} (underlying, session)"
+        )
         console.print(
             f"  data quality : {selected.data_quality.classification.value} "
             f"(research_usable={selected.data_quality.research_usable})"

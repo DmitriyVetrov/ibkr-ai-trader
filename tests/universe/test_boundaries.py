@@ -173,6 +173,26 @@ def test_no_universe_module_can_reach_an_order_path(repo_root: Path) -> None:
     assert offenders == []
 
 
+def test_no_universe_module_reaches_a_data_provider(repo_root: Path) -> None:
+    """Canonical repository records only — never a provider, never a collector.
+
+    The liquidity floor now reads a field that originates at a specific IBKR
+    tick, and the obvious way to be sure of getting it is to go and ask IBKR.
+    That would put a live provider behind a deterministic filter and make the
+    pre-filter's verdict depend on whatever the feed happened to answer at
+    evaluation time. The field arrives the same way every other fact does: as a
+    stored, point-in-time canonical record read back through the repository.
+    """
+    package = repo_root / "src" / "trading_system" / "universe"
+    forbidden = ("trading_system.data.providers", "trading_system.data.collectors")
+    offenders: list[str] = []
+    for path in sorted(package.rglob("*.py")):
+        for imported in _imports_of(path):
+            if any(imported.startswith(prefix) for prefix in forbidden):
+                offenders.append(f"{path.relative_to(repo_root)} -> {imported}")
+    assert offenders == [], f"universe modules must not reach a provider: {offenders}"
+
+
 def test_no_universe_module_names_an_order_api(repo_root: Path) -> None:
     package = repo_root / "src" / "trading_system" / "universe"
     for path in sorted(package.rglob("*.py")):

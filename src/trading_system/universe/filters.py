@@ -254,21 +254,30 @@ class PreFilter:
                 evidence,
             )
 
-        volume = quote.volume
+        # `min_average_daily_volume` asks about an *average*, so it reads the
+        # average: IBKR tick 21, not the current session's cumulative volume.
+        # There is deliberately no fallback to `quote.volume`. Two independent
+        # reasons, either sufficient: today's volume is not what this threshold
+        # names, and IBKR's delayed session volume (tick 74) arrives corrupted
+        # by a factor that varies per symbol, so reading it here would compare
+        # a liquidity floor against a number nobody can trust.
+        average_daily_volume = quote.average_daily_volume
         if config.min_average_daily_volume > 0:
-            if volume is None:
+            if average_daily_volume is None:
                 return _reject(
                     symbol,
                     UniverseRejectionReason.VOLUME_UNAVAILABLE,
-                    "no underlying volume was reported; an unknown volume cannot be "
-                    "read as meeting a liquidity floor",
+                    "no average daily volume was reported (IBKR tick 21 / avVolume, "
+                    "which needs generic tick 165); an unknown volume cannot be read "
+                    "as meeting a liquidity floor, and the current session's volume "
+                    "is not a substitute for an average",
                     evidence,
                 )
-            if volume < Decimal(config.min_average_daily_volume):
+            if average_daily_volume < Decimal(config.min_average_daily_volume):
                 return _reject(
                     symbol,
                     UniverseRejectionReason.VOLUME_BELOW_MINIMUM,
-                    f"underlying volume {volume} is below the configured "
+                    f"average daily volume {average_daily_volume} is below the configured "
                     f"{config.min_average_daily_volume} (underlying liquidity, "
                     f"which does not establish option liquidity)",
                     evidence,
@@ -289,7 +298,8 @@ class PreFilter:
                 deterministic_eligibility=UniverseEligibility.ELIGIBLE,
                 reference_price=price,
                 reference_price_field=price_field,
-                underlying_volume=volume,
+                underlying_volume=quote.volume,
+                average_daily_volume=average_daily_volume,
                 market_data_as_of=quote.as_of,
                 market_data_age_seconds=age,
                 market_data_origin=quote.source.origin,

@@ -74,7 +74,8 @@ def render_report(result: UniverseSelectionResult, *, max_rejected: int = 50) ->
             sections.append(
                 f"      optionability  : {asset.optionability.value}   "
                 f"price: {_or_dash(asset.reference_price)}   "
-                f"underlying volume: {_or_dash(asset.underlying_volume)}"
+                f"avg daily volume: {_or_dash(asset.average_daily_volume)}   "
+                f"session volume: {_or_dash(asset.underlying_volume)}"
             )
             sections.append(
                 f"      data quality   : {asset.data_quality.classification.value} "

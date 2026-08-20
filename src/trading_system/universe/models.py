@@ -186,6 +186,13 @@ class CandidateAsset(ImmutableModel):
     named: it is share volume for the underlying, and it does not establish
     that the underlying's *options* are liquid. That needs option-level data
     this milestone does not collect.
+
+    ``underlying_volume`` and ``average_daily_volume`` are two different
+    observations and are never merged. The first is the current session's
+    cumulative volume as the broker reported it — from IBKR's delayed feed it
+    may well be the corrupted tick 74, preserved and flagged rather than
+    repaired. The second is the trailing 90-day average (IBKR tick 21) and is
+    the only one the liquidity floor reads.
     """
 
     symbol: Ticker
@@ -200,6 +207,7 @@ class CandidateAsset(ImmutableModel):
     reference_price: Money | None = None
     reference_price_field: str | None = None
     underlying_volume: Money | None = None
+    average_daily_volume: Money | None = None
     market_data_as_of: UtcDatetime | None = None
     market_data_age_seconds: float | None = Field(default=None, ge=0)
     market_data_origin: MarketDataOrigin | None = None
@@ -338,6 +346,7 @@ class SelectedAsset(ImmutableModel):
     optionability: Optionability = Optionability.UNKNOWN
     reference_price: Money | None = None
     underlying_volume: Money | None = None
+    average_daily_volume: Money | None = None
     source: CandidateProvenance | None = None
 
     @model_validator(mode="after")

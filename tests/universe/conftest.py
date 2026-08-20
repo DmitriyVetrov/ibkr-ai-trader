@@ -106,6 +106,7 @@ def store_quote(data_repo: FilesystemDataRepository) -> Callable[..., MarketQuot
         bid: Decimal | None = Decimal("500.10"),
         ask: Decimal | None = Decimal("500.20"),
         volume: Decimal | None = Decimal("75000000"),
+        average_daily_volume: Decimal | None = Decimal("75000000"),
         currency: str | None = "USD",
         exchange: str | None = "ARCA",
         security_type: SecurityType = SecurityType.STOCK,
@@ -137,6 +138,7 @@ def store_quote(data_repo: FilesystemDataRepository) -> Callable[..., MarketQuot
             last=last,
             close=close,
             volume=volume,
+            average_daily_volume=average_daily_volume,
             quality=DataQualityReport(
                 research_usable=research_usable,
                 freshness_valid=freshness_valid,
@@ -225,6 +227,10 @@ def optionable_symbols(
             store_quote(
                 symbol,
                 volume=Decimal(90_000_000 - index * 1_000_000),
+                # Distinct from `volume` on purpose: the liquidity floor and
+                # the deterministic ordering both read the average, so a
+                # fixture where the two agree could not tell them apart.
+                average_daily_volume=Decimal(80_000_000 - index * 1_000_000),
                 **kwargs,
             )
             store_chain(symbol)
