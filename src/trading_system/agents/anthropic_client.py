@@ -92,19 +92,28 @@ class AnthropicLLMClient:
         started = datetime.now(UTC)
         client = self._client.with_options(timeout=request.timeout_seconds)
 
+        # Typed `Any` because the SDK's parameter TypedDicts (`MessageParam`,
+        # `OutputConfigParam`) live behind the lazy import: naming them here
+        # would make `anthropic` a module-level dependency of the package,
+        # which is exactly what this adapter exists to avoid. The shapes are
+        # the SDK's documented ones, and a mismatch surfaces as an API error
+        # that `_translate` turns into an agent failure rather than an answer.
+        messages: list[Any] = [{"role": "user", "content": request.user_content}]
+        output_config: Any = {
+            "effort": request.effort,
+            "format": {
+                "type": "json_schema",
+                "schema": dict(request.output_schema),
+            },
+        }
+
         try:
             message = client.messages.create(
                 model=self._identity.model_name,
                 max_tokens=request.max_output_tokens,
                 system=request.system_prompt,
-                messages=[{"role": "user", "content": request.user_content}],
-                output_config={
-                    "effort": request.effort,
-                    "format": {
-                        "type": "json_schema",
-                        "schema": dict(request.output_schema),
-                    },
-                },
+                messages=messages,
+                output_config=output_config,
             )
         except Exception as exc:
             raise self._translate(exc) from exc
