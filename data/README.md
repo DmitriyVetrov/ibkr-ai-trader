@@ -306,6 +306,45 @@ Nothing is ever corrected, smoothed, swapped or dropped. A crossed quote
 (`bid > ask`) is flagged, not un-crossed. A zero price is flagged, not nulled.
 Future consumers filter on `research_usable`; auditors read the raw value.
 
+### The two volume fields
+
+`MarketQuote` carries two, and they answer different questions:
+
+| field                  | IBKR source                     | meaning                          |
+| ---------------------- | ------------------------------- | -------------------------------- |
+| `volume`               | tick 8 live / **tick 74** delayed | current session, cumulative    |
+| `average_daily_volume` | tick 21 `avVolume` (generic 165) | trailing 90-day average          |
+
+**Tick 74 is a known-defective field on the delayed feed.** A raw-wire capture
+on 2026-08-15 (gateway 10.45, `ib_async` 2.1.0, `IBKR_MARKET_DATA_TYPE=3`)
+recorded, for SPY:
+
+```
+<<< 2,6,3,74,31367915626456     DELAYED_VOLUME  -- real volume ~31.4M shares
+<<< 2,6,3,21,52014430           avVolume        -- clean, unscaled
+```
+
+Both arrive on the same message type, on the same connection, in the same
+session. IBKR sends the bad one; `ib_async` decodes it with a plain `float()`
+and transforms nothing, so there is no library-side bug. It is also not the
+`DBL_MAX` unset sentinel, so nothing upstream may drop it.
+
+**No rescaling is performed, and none should be added.** The inflation is 10⁶
+on eleven of twelve sampled symbols and demonstrably something else on AMZN, so
+any fixed divisor would fabricate a value on some symbols — in the direction
+that *passes* a liquidity floor. The raw number is stored, `SUSPICIOUS_VOLUME`
+is recorded against it, and `research_usable` goes false, exactly as for any
+other implausible figure.
+
+`average_daily_volume` is an **independent observation**, not a repaired form
+of `volume`. It is checked against the same plausibility bound on its own terms
+and its finding names it explicitly, so a corrupt session volume and a corrupt
+average are distinguishable in the report. Neither field ever falls back to the
+other, and `None` means the provider did not report it — not zero.
+
+It is a broker market-data field observed at retrieval time, not a historical
+series: it obeys the same point-in-time rules as every price beside it.
+
 Thresholds live in [`config/data.yaml`](../config/data.yaml), never in code.
 
 ## Look-ahead bias

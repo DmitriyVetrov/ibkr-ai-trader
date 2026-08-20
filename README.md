@@ -374,6 +374,20 @@ Three rules do most of the work:
 - a suspicious value is preserved and flagged, never corrected;
 - a record is invisible to any reconstruction of a time before we retrieved it.
 
+The second rule has a live example. IBKR's **delayed session volume (tick 74)**
+arrives corrupted — a wire capture on 2026-08-15 recorded `31367915626456` for
+an SPY session of some 31.4 million shares. It is IBKR's own number, not a
+decoding artefact, and the inflation factor is *not* constant across symbols,
+so nothing rescales it: the raw value is stored, `SUSPICIOUS_VOLUME` is
+recorded, and it is never read as a liquidity measure.
+
+A quote therefore carries **two** volume fields with different meanings.
+`volume` is the session figure above. `average_daily_volume` is IBKR tick 21
+(`avVolume`, requested through generic tick 165) — the trailing 90-day average,
+clean on the same connection, and the field the universe liquidity floor reads,
+because `min_average_daily_volume` names an average. Neither ever substitutes
+for the other: a missing average is an explicit `VOLUME_UNAVAILABLE`.
+
 ## Market research
 
 ```

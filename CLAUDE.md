@@ -282,6 +282,14 @@ Five rules govern it, each with tests that fail loudly:
 - **Underlying liquidity is not option liquidity.** `underlying_volume` is share volume. It
   does not establish that an option is liquid — that needs option-level data this milestone
   does not collect. The wording is enforced in a test.
+- **The liquidity floor reads `average_daily_volume`, and nothing else.**
+  `min_average_daily_volume` names an average, so it evaluates IBKR tick 21 — not the
+  current session's cumulative volume, which was never what the threshold asked about and
+  which the delayed feed corrupts. There is deliberately no `average_daily_volume or volume`
+  anywhere: a missing average is `VOLUME_UNAVAILABLE`, never zero, never "close enough".
+  Both figures are recorded on the candidate so an audit can see what was gated on *and*
+  what the broker reported, and a liquidity reason code the agent claims is checked against
+  the average for the same reason.
 
 Reason codes are a closed vocabulary checked against the candidate's own evidence: claiming
 `OPTIONS_AVAILABLE` for an `UNKNOWN` asset, or any liquidity code with no volume figure,
@@ -1567,6 +1575,43 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   reading an unknown volume as passing. That is the correct behaviour, not a bug: to select a
   universe from delayed data, set the floor to 0 explicitly, or use a provider that reports
   volume. Never treat a missing measurement as a satisfied threshold.
+- **IBKR's delayed session volume (tick 74) arrives corrupted, and there is no correction
+  for it.** A raw-wire capture on 2026-08-15 (gateway 10.45, `ib_async` 2.1.0,
+  `IBKR_MARKET_DATA_TYPE=3`) recorded `<<< 2,6,3,74,31367915626456` for SPY — a session
+  whose real volume was some 31.4 million shares. Three facts settle what to do about it.
+  **It is IBKR's number, not the library's**: `ib_async` decodes msgId 2 with a bare
+  `float()` (`decoder.py`'s `wrap("tickSize", [int, int, float])`) and transforms nothing,
+  so there is no library bug to work around. **It is not the `DBL_MAX` sentinel** — it is
+  some 22 million times smaller — so `conversion.to_decimal` cannot drop it and must not
+  try. **The inflation is not a constant**: it is 10⁶ on eleven of twelve sampled symbols
+  and demonstrably not that on AMZN, whose `/1e6` value sits at 0.15× its own
+  extended-hours bar while the rest cluster at 1.06–1.49. So a fixed `/1_000_000` would be
+  wrong by an order of magnitude somewhere, silently, in the direction that *passes* a
+  liquidity floor. The value is preserved verbatim, flagged `SUSPICIOUS_VOLUME`, and never
+  rescaled. Do not add a correction, a per-symbol table or an AMZN special case; the
+  unresolved AMZN reading is the evidence that rescaling is unsafe, not a gap to patch.
+- **`average_daily_volume` is what a liquidity floor reads, and it is a different
+  observation from `volume`.** IBKR tick 21 (`avVolume`) came back clean and unscaled on
+  the same connection in the same capture — SPY `52014430`, NVDA `146001516` — and it is
+  the trailing 90-day average, which is what `min_average_daily_volume` actually names.
+  Getting it requires **generic tick 165**, which `reqTickers` cannot carry, so
+  `IBKRBroker.get_market_data` opens a short streaming `reqMktData` subscription and
+  cancels it before returning. That is still one market-data operation per connection —
+  the Milestone 2/3 one-purpose-per-connection contract is unchanged. The two fields never
+  substitute for each other in either direction: a missing average is
+  `VOLUME_UNAVAILABLE`, never answered from the session figure, and
+  `tests/broker/test_ibkr_average_volume.py` pins the no-rescaling claim as an explicit
+  inequality because the failure mode is a plausible-looking "normalise" helper.
+- **A corrupt session volume still makes the whole record research-unusable, and that
+  gate runs *before* the liquidity check.** `SUSPICIOUS_VOLUME` fails the plausibility
+  dimension, `research_usable` goes false, and `universe.yaml`'s
+  `require_research_usable: true` rejects the symbol as `DATA_NOT_RESEARCH_USABLE` several
+  checks earlier than any volume comparison. So pointing the floor at `average_daily_volume`
+  does **not**, on its own, make a live IBKR delayed universe non-empty — the symbols are
+  refused upstream. Whether a record whose only defect is a known-defective broker field
+  should still count as research-usable is a policy decision nobody has made yet; it is
+  deliberately not made by this change, because widening `research_usability` would relax
+  plausibility for prices too.
 - **`universe/__init__.py` loads its service lazily.** The service imports the agent, the agent
   imports the universe contract models, and an eager re-export closes that loop. Do not "tidy"
   the `__getattr__` away; moving the contract models out of the universe package would put a
