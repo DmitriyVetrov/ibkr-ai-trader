@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 from trading_system.broker.base import (
     Broker,
@@ -99,6 +99,36 @@ _SECURITY_TYPE_CODES = {
     SecurityType.INDEX: "IND",
     SecurityType.CASH: "CASH",
 }
+
+#: IBKR generic tick 165 ("Miscellaneous Stats") is what makes tick 21
+#: (``avVolume``) arrive at all. Without it the field is never sent and the
+#: liquidity floor has nothing honest to read.
+_AVERAGE_VOLUME_GENERIC_TICK = "165"
+
+#: How much longer to wait for tick 21 once a price is already in hand. Short
+#: on purpose: a feed that does not serve it should cost one grace period per
+#: symbol, not a full request timeout.
+_AVERAGE_VOLUME_GRACE_SECONDS = 2.0
+
+
+def _reported(value: Any) -> TypeGuard[float]:
+    """Did IBKR actually send a number here?
+
+    ``ib_async`` initialises unset ticker fields to ``NaN``, which is neither
+    absent nor a value — and ``NaN`` compares false against everything,
+    including itself, which is exactly what ``value == value`` exploits. A
+    naive truth test would read "not sent yet" as "sent".
+    """
+    return isinstance(value, float | int) and not isinstance(value, bool) and value == value
+
+
+def _priced(ticker: Any) -> bool:
+    """Whether any usable price has arrived on a streaming ticker."""
+    for field in ("bid", "ask", "last", "close"):
+        value = getattr(ticker, field, None)
+        if _reported(value) and value > 0:
+            return True
+    return False
 
 
 def _import_ib_async() -> Any:
@@ -650,7 +680,7 @@ class IBKRBroker(Broker):
                 raise MarketDataUnavailableError(
                     f"MARKET_DATA_UNAVAILABLE: IBKR could not resolve {symbol.upper()}"
                 )
-            tickers = ib.reqTickers(qualified[0])
+            ticker = self._request_quote(ib, qualified[0])
         except MarketDataUnavailableError:
             raise
         except TimeoutError as exc:
@@ -661,14 +691,14 @@ class IBKRBroker(Broker):
                 f"{symbol.upper()}: {exc}"
             ) from exc
 
-        if not tickers:
+        if ticker is None:
             raise MarketDataUnavailableError(
                 f"MARKET_DATA_UNAVAILABLE: IBKR returned no ticker for {symbol.upper()}"
             )
 
         self._last_communication = self._clock.now()
         snapshot = to_market_data_snapshot(
-            tickers[0], self._clock.now(), fallback_symbol=symbol.upper()
+            ticker, self._clock.now(), fallback_symbol=symbol.upper()
         )
         if not snapshot.has_quote:
             raise MarketDataUnavailableError(
@@ -676,6 +706,63 @@ class IBKRBroker(Broker):
                 f"A market data subscription may be required."
             )
         return snapshot
+
+    def _request_quote(self, ib: Any, contract: Any) -> Any:
+        """Subscribe briefly, so generic tick 165 can be requested.
+
+        ``reqTickers`` takes no generic tick list, which puts IBKR tick 21
+        (``avVolume``) out of reach — and that is the only volume field this
+        system trusts for a liquidity floor, because tick 74 arrives corrupted
+        on the delayed feed. A short streaming subscription is IBKR's own way
+        to ask for it.
+
+        This is still **one** market-data operation on the connection, not a
+        second uncached round trip: a subscription is opened, its ticks are
+        awaited under a bound, and it is cancelled before returning. The
+        Milestone 2/3 one-purpose-per-connection contract is unchanged, and
+        :class:`~trading_system.data.providers.broker_session.BrokerSession`
+        still gets exactly one operation per connect.
+        """
+        ticker = ib.reqMktData(
+            contract, genericTickList=_AVERAGE_VOLUME_GENERIC_TICK, snapshot=False
+        )
+        try:
+            self._await_quote(ib, ticker)
+        finally:
+            # A failed cancel must not discard a quote we already hold. The
+            # connection is short-lived and closes moments later regardless.
+            with suppress(Exception):
+                ib.cancelMktData(contract)
+        return ticker
+
+    def _await_quote(self, ib: Any, ticker: Any) -> None:
+        """Wait, bounded, for a price — and a little longer for tick 21.
+
+        Two deadlines, deliberately. A quote that never arrives becomes the
+        caller's ``MARKET_DATA_UNAVAILABLE``, so the price gets the full
+        request bound. ``avVolume`` is a different matter: it is not always
+        served, and spending the whole bound on every symbol to discover that
+        would make collection crawl. So once a price is in hand tick 21 gets a
+        short grace period, after which the quote is returned **without** it —
+        honestly absent rather than waited for indefinitely, and never
+        substituted from ``volume``.
+        """
+        deadline = time.monotonic() + self._request_timeout
+        grace_deadline: float | None = None
+
+        while time.monotonic() < deadline:
+            if _reported(getattr(ticker, "avVolume", None)) and _priced(ticker):
+                return
+            if _priced(ticker) and grace_deadline is None:
+                grace_deadline = min(time.monotonic() + _AVERAGE_VOLUME_GRACE_SECONDS, deadline)
+            if grace_deadline is not None and time.monotonic() >= grace_deadline:
+                return
+            try:
+                ib.waitOnUpdate(timeout=min(0.5, max(deadline - time.monotonic(), 0.05)))
+            except Exception:
+                # A wait that fails is a wait that ended; the loop's own
+                # deadline bounds this, not the library's cooperation.
+                return
 
     def get_option_chain(self, underlying: str) -> OptionChainSnapshot:
         ib = self._require_connection()

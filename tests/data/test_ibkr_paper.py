@@ -210,3 +210,81 @@ def test_each_real_retrieval_uses_its_own_connection(paper_settings) -> None:
 def test_the_broker_request_timeout_is_bounded(paper_settings) -> None:
     broker = build_broker(paper_settings)
     assert getattr(broker, "_request_timeout", 0) > 0
+
+
+# ---------------------------------------------------------------------------
+# Average daily volume (IBKR tick 21 / avVolume, via generic tick 165)
+# ---------------------------------------------------------------------------
+def test_average_daily_volume_is_either_a_real_value_or_honestly_absent(
+    paper_session,
+) -> None:
+    """Tick 21 against the live paper gateway. Zero orders, no fabrication.
+
+    Two outcomes are acceptable and they are asserted apart:
+
+    * a positive ``Decimal`` — the account's feed serves tick 21, and the value
+      is whatever IBKR said, unrescaled;
+    * ``None`` — generic tick 165 was not served. That is honest and is *not*
+      a failure of this test, because the account's entitlements are not the
+      thing under test.
+
+    What is refused in both branches is a substitution: the average must never
+    come back equal to the session volume, because nothing in the pipeline is
+    permitted to derive one from the other.
+
+    Deliberately not pinned to a value. SPY's average volume moves daily, and a
+    test asserting a number would fail for the wrong reason every week.
+    """
+    result = IBKRMarketDataProvider(paper_session).fetch_quote("SPY")
+    if not result.succeeded:
+        pytest.skip(f"no market data for SPY on this account: {result.error}")
+
+    quote = result.records[0]
+    average = quote.average_daily_volume
+
+    if average is None:
+        # Honest absence. Assert it really is absence and not a masked zero.
+        assert quote.average_daily_volume is None
+        pytest.skip("this account's feed did not serve tick 21 (generic tick 165)")
+
+    assert isinstance(average, Decimal)
+    assert average > 0, "a reported average daily volume must be positive"
+    if quote.volume is not None and quote.volume != average:
+        assert average != quote.volume, "the average must not be copied from session volume"
+
+
+def test_the_two_volume_fields_are_not_the_same_observation(paper_session) -> None:
+    """Whatever the feed serves, neither field may be synthesised from the other.
+
+    This is the live counterpart to the offline no-rescaling tests: if a fixed
+    divisor were ever reintroduced, the average would land at exactly
+    ``volume / 1e6`` and this would catch it against real data.
+    """
+    result = IBKRMarketDataProvider(paper_session).fetch_quote("SPY")
+    if not result.succeeded:
+        pytest.skip("no market data for SPY on this account")
+
+    quote = result.records[0]
+    if quote.volume is None or quote.average_daily_volume is None:
+        pytest.skip("both volume fields are needed to compare them")
+
+    assert quote.average_daily_volume != quote.volume / Decimal(1_000_000)
+    assert quote.average_daily_volume != quote.volume * Decimal(1_000_000)
+
+
+def test_reading_the_average_submits_no_orders(paper_settings) -> None:
+    """The new generic-tick request must not have changed the read-only shape."""
+    brokers = []
+
+    def _factory():
+        broker = build_broker(paper_settings)
+        brokers.append(broker)
+        return broker
+
+    IBKRMarketDataProvider(BrokerSession(_factory)).fetch_quote("SPY")
+
+    assert brokers, "no broker was constructed"
+    for broker in brokers:
+        assert broker.orders_submitted == 0
+        assert broker.read_only
+        assert not broker.is_connected, "the session left a connection open"

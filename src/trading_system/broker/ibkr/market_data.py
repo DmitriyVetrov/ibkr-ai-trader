@@ -6,6 +6,38 @@ hours, without a market-data subscription, or for an unqualified contract. A
 snapshot with no usable field is reported as ``UNAVAILABLE``, never as zero and
 never filled in from the previous close of something else.
 
+**Two volume fields, and they are not interchangeable.**
+
+``volume`` is the current session's cumulative share volume — IBKR tick 8
+(``VOLUME``) live, tick 74 (``DELAYED_VOLUME``) delayed. Against a delayed
+paper feed, **tick 74 arrives corrupted**: a raw-wire capture on
+2026-08-15 (gateway 10.45, ``ib_async`` 2.1.0, ``marketDataType=3``) recorded
+
+    <<< 2,6,3,74,31367915626456        SPY DELAYED_VOLUME
+
+for an SPY session whose true volume was some 31.4 million shares. The
+inflation is *approximately* one million on most symbols and demonstrably not
+that on all of them, so there is no correction to apply:
+
+* dividing by a fixed factor would be wrong by 10x on at least one sampled
+  symbol, silently, in the direction that *passes* a liquidity floor;
+* the value is not IBKR's ``DBL_MAX`` unset sentinel, so
+  :func:`~trading_system.broker.ibkr.conversion.to_decimal` cannot and must not
+  drop it;
+* it is a real observation of a misbehaving feed, and destroying it destroys
+  the evidence.
+
+So the raw value is carried through byte for byte and the quality engine flags
+``SUSPICIOUS_VOLUME``. Nothing here rescales it. Nothing anywhere should read
+it as a liquidity measure.
+
+``average_daily_volume`` is IBKR tick 21 (``avVolume``), the trailing 90-day
+average daily share volume, requested through generic tick 165. The same
+capture recorded it clean and unscaled on the same connection — SPY
+``52014430``, NVDA ``146001516`` — and it is the field a liquidity floor should
+read. It is an *independent* observation, never derived from ``volume`` and
+never a repaired version of it.
+
 Pure functions over duck-typed inputs; nothing here imports ``ib_async``.
 """
 
@@ -103,6 +135,9 @@ def to_market_data_snapshot(
     last = _tradeable(to_decimal(getattr(ticker, "last", None)))
     close = _tradeable(to_decimal(getattr(ticker, "close", None)))
     volume = to_decimal(getattr(ticker, "volume", None))
+    # Tick 21, via generic tick 165. Copied across with no arithmetic at all —
+    # not scaled, not clamped, not reconciled against `volume`.
+    average_daily_volume = to_decimal(getattr(ticker, "avVolume", None))
 
     if bid is None and ask is None and last is None and close is None:
         return unavailable_snapshot(
@@ -131,6 +166,11 @@ def to_market_data_snapshot(
         last=last,
         close=close,
         volume=volume if volume is None or volume >= 0 else None,
+        average_daily_volume=(
+            average_daily_volume
+            if average_daily_volume is None or average_daily_volume >= 0
+            else None
+        ),
     )
 
 

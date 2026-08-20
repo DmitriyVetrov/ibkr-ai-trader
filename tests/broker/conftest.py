@@ -205,6 +205,7 @@ def make_ticker(
     last: float = 6.25,
     close: float = 6.10,
     volume: float = 1500.0,
+    average_daily_volume: float = 2500.0,
     market_data_type: int = 1,
 ) -> SimpleNamespace:
     return SimpleNamespace(
@@ -216,6 +217,9 @@ def make_ticker(
         last=last,
         close=close,
         volume=volume,
+        # IBKR tick 21. Distinct from `volume` by default so a test cannot pass
+        # by accident when the two are conflated.
+        avVolume=average_daily_volume,
     )
 
 

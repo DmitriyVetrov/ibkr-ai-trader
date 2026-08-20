@@ -78,6 +78,11 @@ def simulated_quote(
         last=last,
         close=last,
         volume=Decimal("1000000"),
+        # The simulator's stand-in for IBKR tick 21. Deliberately distinct from
+        # `volume` so the two never look interchangeable offline, and above the
+        # shipped `min_average_daily_volume` so a simulated run can reach the
+        # agent at all.
+        average_daily_volume=Decimal("2000000"),
     )
 
 

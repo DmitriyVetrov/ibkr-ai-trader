@@ -191,6 +191,66 @@ def test_ordinary_volume_is_not_flagged(quality_engine, make_quote, data_now) ->
     assert not report.has(DataQualityIssue.SUSPICIOUS_VOLUME)
 
 
+def test_the_corrupt_delayed_volume_is_flagged_and_preserved(
+    quality_engine, make_quote, data_config, data_now
+) -> None:
+    """The exact SPY tick-74 value captured off the wire on 2026-08-15.
+
+    IBKR sent ``31367915626456`` for a session whose real volume was some 31.4
+    million shares. It is not the ``DBL_MAX`` unset sentinel, so nothing
+    upstream drops it; it is preserved verbatim here and flagged, because the
+    inflation factor is not constant across symbols and any fixed correction
+    would therefore be a fabrication on some of them.
+    """
+    corrupt = Decimal("31367915626456")
+    assert corrupt > data_config.plausibility.max_equity_daily_volume
+
+    quote = make_quote(volume=corrupt, average_daily_volume=Decimal("52014430"))
+    report = quality_engine.evaluate(quote, context=QualityContext(now=data_now))
+
+    assert report.has(DataQualityIssue.SUSPICIOUS_VOLUME)
+    assert quote.volume == corrupt, "the raw value must survive the quality pass"
+    assert quote.volume != corrupt / Decimal(1_000_000), "nothing rescales it"
+    assert quote.average_daily_volume == Decimal("52014430")
+
+
+def test_a_sound_average_volume_is_not_flagged_by_a_corrupt_session_volume(
+    quality_engine, make_quote, data_now
+) -> None:
+    """The finding names the field that failed, and only that field."""
+    quote = make_quote(volume=Decimal("31367915626456"), average_daily_volume=Decimal("52014430"))
+    report = quality_engine.evaluate(quote, context=QualityContext(now=data_now))
+
+    details = " ".join(report.details)
+    assert "average_daily_volume" not in details
+    assert "volume 31367915626456" in details
+
+
+def test_an_implausible_average_volume_is_flagged_on_its_own_terms(
+    quality_engine, make_quote, data_config, data_now
+) -> None:
+    """Tick 21 is trusted, not exempt. It gets the same bound and its own label."""
+    absurd = Decimal(data_config.plausibility.max_equity_daily_volume) * 10
+    quote = make_quote(volume=Decimal("180000000"), average_daily_volume=absurd)
+
+    report = quality_engine.evaluate(quote, context=QualityContext(now=data_now))
+
+    assert report.has(DataQualityIssue.SUSPICIOUS_VOLUME)
+    assert "average_daily_volume" in " ".join(report.details)
+    assert quote.average_daily_volume == absurd
+
+
+def test_a_missing_average_volume_is_not_an_issue(quality_engine, make_quote, data_now) -> None:
+    """Absence is honest, and honestly not a defect: it is simply unavailable."""
+    report = quality_engine.evaluate(
+        make_quote(volume=Decimal("180000000"), average_daily_volume=None),
+        context=QualityContext(now=data_now),
+    )
+
+    assert not report.has(DataQualityIssue.SUSPICIOUS_VOLUME)
+    assert not report.has(DataQualityIssue.NEGATIVE_VOLUME)
+
+
 # ---------------------------------------------------------------------------
 # 7-8. Missing IV and open interest
 # ---------------------------------------------------------------------------

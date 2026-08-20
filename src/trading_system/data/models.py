@@ -340,7 +340,16 @@ class MarketQuote(DataRecord):
     open: ExactDecimal | None = None
     high: ExactDecimal | None = None
     low: ExactDecimal | None = None
+    #: Current-session cumulative share volume, verbatim from the provider.
+    #: From IBKR's delayed feed this is tick 74, which is known to arrive
+    #: corrupted; the value is preserved and flagged, never repaired. Not a
+    #: liquidity measure — see :attr:`average_daily_volume`.
     volume: ExactDecimal | None = None
+    #: Trailing 90-day average daily share volume: IBKR tick 21 (``avVolume``),
+    #: requested through generic tick 165. An independent observation made at
+    #: retrieval time, not a historical series and not derived from
+    #: :attr:`volume`. ``None`` means the provider did not report it.
+    average_daily_volume: ExactDecimal | None = None
 
     bid_size: ExactDecimal | None = None
     ask_size: ExactDecimal | None = None

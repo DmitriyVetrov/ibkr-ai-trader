@@ -272,7 +272,7 @@ def test_rejected_market_data_request_does_not_invent_a_price(
         def qualifyContracts(self, *contracts: Any) -> list[Any]:  # noqa: N802
             return [SimpleNamespace(symbol="SPY", secType="STK", conId=1)]
 
-        def reqTickers(self, *contracts: Any, **kwargs: Any) -> list[Any]:  # noqa: N802
+        def reqMktData(self, *contracts: Any, **kwargs: Any) -> Any:  # noqa: N802
             raise RuntimeError("market data farm connection is broken")
 
     broker = connect_fake(make_broker(broker_clock), RejectingIB())
@@ -290,8 +290,10 @@ def test_all_nan_quote_is_reported_unavailable(broker_clock: FixedClock) -> None
         def qualifyContracts(self, *contracts: Any) -> list[Any]:  # noqa: N802
             return [SimpleNamespace(symbol="SPY", secType="STK", conId=1)]
 
-        def reqTickers(self, *contracts: Any, **kwargs: Any) -> list[Any]:  # noqa: N802
-            return [make_ticker(bid=NAN, ask=NAN, last=NAN, close=NAN, volume=NAN)]
+        def reqMktData(self, *contracts: Any, **kwargs: Any) -> Any:  # noqa: N802
+            return make_ticker(
+                bid=NAN, ask=NAN, last=NAN, close=NAN, volume=NAN, average_daily_volume=NAN
+            )
 
     broker = connect_fake(make_broker(broker_clock), NanIB())
 

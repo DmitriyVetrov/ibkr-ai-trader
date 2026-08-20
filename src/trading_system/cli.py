@@ -813,11 +813,31 @@ def test_ibkr_market_data(
             _fail(str(exc))
             return
 
+        console.print(f"Contract id: {_or_dash(snapshot.contract_id)}")
         console.print(f"Data origin: {snapshot.origin.value}")
         console.print(f"Quality    : {snapshot.data_quality.value}")
         console.print(f"As of      : {snapshot.as_of.isoformat()}")
+        console.print(f"Retrieved  : {_now().isoformat()}")
         console.print(f"Bid/Ask    : {_or_dash(snapshot.bid)} / {_or_dash(snapshot.ask)}")
         console.print(f"Last/Close : {_or_dash(snapshot.last)} / {_or_dash(snapshot.close)}")
+
+        # Both volume fields, side by side and unmodified. This is the
+        # mid-session validation surface for the tick-74 finding: session
+        # volume is displayed exactly as the broker sent it, however
+        # implausible, next to the tick-21 average the liquidity floor reads.
+        console.print(
+            f"Volume     : {_or_dash(snapshot.volume)} "
+            f"(session, IBKR tick 8/74 — raw, never rescaled)"
+        )
+        console.print(
+            f"Avg volume : {_or_dash(snapshot.average_daily_volume)} "
+            f"(90d average, IBKR tick 21 via generic tick 165)"
+        )
+        if snapshot.average_daily_volume is None:
+            console.print(
+                "[yellow]note[/yellow]  no average daily volume was reported; the "
+                "universe liquidity floor rejects rather than falling back to session volume"
+            )
 
         _print_zero_orders(broker)
         console.print("[green]PASS[/green]  Quote retrieved.\n")

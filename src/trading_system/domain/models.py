@@ -802,7 +802,19 @@ class MarketDataSnapshot(ImmutableModel):
     ask: Money | None = None
     last: Money | None = None
     close: Money | None = None
+    #: Current-session cumulative share volume, exactly as the broker reported
+    #: it. From IBKR this is tick 8 (``VOLUME``) or tick 74
+    #: (``DELAYED_VOLUME``). **Tick 74 is known to arrive corrupted** — see the
+    #: IBKR market-data translation module for the wire capture — so the value
+    #: is stored verbatim, flagged by the quality engine, and never rescaled.
+    #: Do not use it as a liquidity measure; use :attr:`average_daily_volume`.
     volume: Money | None = None
+    #: Average daily share volume over IBKR's trailing 90-day window: tick 21
+    #: (``avVolume``), requested through generic tick 165. A *separate*
+    #: observation from :attr:`volume`, with different semantics — it is not a
+    #: repaired or rescaled form of it, and neither field ever falls back to
+    #: the other.
+    average_daily_volume: Money | None = None
 
     @model_validator(mode="after")
     def _unavailable_carries_no_prices(self) -> MarketDataSnapshot:

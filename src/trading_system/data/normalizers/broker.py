@@ -68,6 +68,7 @@ def market_quote_from_broker(
         last=snapshot.last,
         close=snapshot.close,
         volume=snapshot.volume,
+        average_daily_volume=snapshot.average_daily_volume,
     )
 
 

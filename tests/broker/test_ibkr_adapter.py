@@ -49,6 +49,7 @@ class FakeIB:
         positions: list[Any] | None = None,
         trades: list[Any] | None = None,
         fills: list[Any] | None = None,
+        ticker: Any | None = None,
     ) -> None:
         self._accounts = accounts if accounts is not None else ["DU1234567"]
         self._summary = summary if summary is not None else default_summary()
@@ -58,6 +59,10 @@ class FakeIB:
         self._fills = fills if fills is not None else []
         self.connected = True
         self.market_data_type: int | None = None
+        self._ticker = ticker
+        self.generic_tick_list: str | None = None
+        self.market_data_requests: list[Any] = []
+        self.cancelled_market_data: list[Any] = []
 
     def isConnected(self) -> bool:  # noqa: N802 - mirrors the ib_async API
         return self.connected
@@ -70,6 +75,29 @@ class FakeIB:
 
     def reqMarketDataType(self, market_data_type: int) -> None:  # noqa: N802
         self.market_data_type = market_data_type
+
+    # --- streaming market data ---------------------------------------------
+    # `reqTickers` cannot carry a generic tick list, so the adapter opens a
+    # short streaming subscription instead: that is the only way to be sent
+    # IBKR tick 21 (`avVolume`). The fake records what was asked for so a test
+    # can assert generic tick 165 was actually requested, and that the
+    # subscription was cancelled rather than left open.
+    def reqMktData(  # noqa: N802
+        self,
+        contract: Any,
+        genericTickList: str = "",  # noqa: N803 - ib_async's own keyword name
+        **kwargs: Any,
+    ) -> Any:
+        self.generic_tick_list = genericTickList
+        self.market_data_requests.append(contract)
+        return self._ticker
+
+    def cancelMktData(self, contract: Any) -> None:  # noqa: N802
+        self.cancelled_market_data.append(contract)
+
+    def waitOnUpdate(self, timeout: float = 0) -> None:  # noqa: N802
+        """Ticks are already present on the fake, so a wait is a no-op."""
+        return None
 
     def reqCurrentTime(self) -> None:  # noqa: N802
         return None
@@ -382,5 +410,91 @@ def test_reads_never_submit_orders(broker_clock: FixedClock) -> None:
     broker.get_open_orders()
     broker.get_executions()
     broker.health_check()
+
+    assert broker.orders_submitted == 0
+
+
+# ---------------------------------------------------------------------------
+# The market-data request asks for tick 21, and cleans up after itself
+# ---------------------------------------------------------------------------
+@pytest.mark.unit
+def test_the_quote_request_asks_for_the_average_volume_generic_tick(
+    broker_clock: FixedClock,
+) -> None:
+    """Generic tick 165 is what makes IBKR send tick 21 at all.
+
+    Without it the field is simply never transmitted, and the universe
+    liquidity floor would have nothing to read on every symbol forever — the
+    failure would look exactly like an account entitlement problem.
+    """
+    from .conftest import make_ticker
+
+    class QuotingIB(FakeIB):
+        def qualifyContracts(self, *contracts: Any) -> list[Any]:  # noqa: N802
+            return [SimpleNamespace(symbol="SPY", secType="STK", conId=756733)]
+
+    ib = QuotingIB(ticker=make_ticker(average_daily_volume=52_014_430.0))
+    broker = connect_fake(make_broker(broker_clock), ib)
+
+    snapshot = broker.get_market_data("SPY")
+
+    assert ib.generic_tick_list == "165"
+    assert snapshot.average_daily_volume == Decimal("52014430")
+
+
+@pytest.mark.unit
+def test_the_streaming_subscription_is_always_cancelled(broker_clock: FixedClock) -> None:
+    """A subscription left open holds a market-data line the account may need."""
+    from .conftest import make_ticker
+
+    class QuotingIB(FakeIB):
+        def qualifyContracts(self, *contracts: Any) -> list[Any]:  # noqa: N802
+            return [SimpleNamespace(symbol="SPY", secType="STK", conId=756733)]
+
+    ib = QuotingIB(ticker=make_ticker())
+    broker = connect_fake(make_broker(broker_clock), ib)
+
+    broker.get_market_data("SPY")
+
+    assert len(ib.market_data_requests) == 1
+    assert len(ib.cancelled_market_data) == 1
+
+
+@pytest.mark.unit
+def test_a_quote_still_returns_when_the_average_never_arrives(
+    broker_clock: FixedClock,
+) -> None:
+    """Tick 21 is waited for briefly, then given up on — never indefinitely.
+
+    An account without the entitlement must still get its prices, with the
+    average honestly absent rather than the collection hanging on every symbol.
+    """
+    from .conftest import NAN, make_ticker
+
+    class NoAverageIB(FakeIB):
+        def qualifyContracts(self, *contracts: Any) -> list[Any]:  # noqa: N802
+            return [SimpleNamespace(symbol="SPY", secType="STK", conId=756733)]
+
+    ib = NoAverageIB(ticker=make_ticker(average_daily_volume=NAN))
+    broker = connect_fake(make_broker(broker_clock), ib)
+
+    snapshot = broker.get_market_data("SPY")
+
+    assert snapshot.has_quote
+    assert snapshot.average_daily_volume is None
+    assert ib.cancelled_market_data, "the subscription must be cancelled even so"
+
+
+@pytest.mark.unit
+def test_reading_a_quote_submits_no_orders(broker_clock: FixedClock) -> None:
+    from .conftest import make_ticker
+
+    class QuotingIB(FakeIB):
+        def qualifyContracts(self, *contracts: Any) -> list[Any]:  # noqa: N802
+            return [SimpleNamespace(symbol="SPY", secType="STK", conId=756733)]
+
+    broker = connect_fake(make_broker(broker_clock), QuotingIB(ticker=make_ticker()))
+
+    broker.get_market_data("SPY")
 
     assert broker.orders_submitted == 0

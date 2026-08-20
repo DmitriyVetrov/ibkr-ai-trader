@@ -52,6 +52,7 @@ def _broker_quote(**overrides: object) -> MarketDataSnapshot:
         "last": Decimal("500.15"),
         "close": Decimal("499.80"),
         "volume": Decimal("75000000"),
+        "average_daily_volume": Decimal("52014430"),
     }
     fields.update(overrides)
     return MarketDataSnapshot(**fields)
@@ -297,3 +298,49 @@ def test_normalisation_produces_a_new_object_and_leaves_the_input_alone(make_sou
     assert id(quote) != id(broker_snapshot)
     assert broker_snapshot.bid == Decimal("500.10")
     assert broker_snapshot.source == "IBKR"
+
+
+# ---------------------------------------------------------------------------
+# Both volume fields survive normalisation, separately
+# ---------------------------------------------------------------------------
+def test_both_volume_fields_cross_the_normalisation_boundary(make_source) -> None:
+    """Normalisation renames and attaches provenance. It does not do arithmetic.
+
+    The pair here is the real SPY capture from 2026-08-15: a corrupted tick 74
+    beside a clean tick 21. Both must arrive on the canonical record exactly as
+    the broker sent them, still distinguishable.
+    """
+    quote = market_quote_from_broker(
+        _broker_quote(
+            volume=Decimal("31367915626456"),
+            average_daily_volume=Decimal("52014430"),
+        ),
+        source=make_source(),
+    )
+
+    assert quote.volume == Decimal("31367915626456")
+    assert quote.average_daily_volume == Decimal("52014430")
+
+
+def test_a_missing_average_daily_volume_stays_missing(make_source) -> None:
+    """`None` crosses as `None`; it is never filled in from the session volume."""
+    quote = market_quote_from_broker(
+        _broker_quote(volume=Decimal("75000000"), average_daily_volume=None),
+        source=make_source(),
+    )
+
+    assert quote.average_daily_volume is None
+    assert quote.volume == Decimal("75000000")
+
+
+def test_normalisation_of_the_same_snapshot_is_deterministic(make_source) -> None:
+    """Requirement I, at the canonical boundary."""
+    source = make_source()
+    snapshot = _broker_quote(
+        volume=Decimal("31367915626456"), average_daily_volume=Decimal("52014430")
+    )
+
+    first = market_quote_from_broker(snapshot, source=source)
+    second = market_quote_from_broker(snapshot, source=source)
+
+    assert first.model_dump() == second.model_dump()

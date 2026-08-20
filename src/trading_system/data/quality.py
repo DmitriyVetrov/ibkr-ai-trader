@@ -403,6 +403,16 @@ class QualityEngine:
         self._check_volume(
             findings, quote.volume, self._config.plausibility.max_equity_daily_volume
         )
+        # Checked on its own terms against the same bound, and labelled so the
+        # finding names which field failed. The two are independent
+        # observations: a corrupt session volume says nothing about tick 21,
+        # and neither is ever substituted for the other.
+        self._check_volume(
+            findings,
+            quote.average_daily_volume,
+            self._config.plausibility.max_equity_daily_volume,
+            label="average_daily_volume",
+        )
 
         if quote.high is not None and quote.low is not None and quote.high < quote.low:
             findings.fail_consistency(
