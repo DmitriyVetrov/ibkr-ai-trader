@@ -189,7 +189,8 @@ broker.
 
 ```bash
 python -m trading_system.cli data collect --symbol SPY
-python -m trading_system.cli data collect-options --symbol SPY --quotes
+python -m trading_system.cli data collect-options --symbol SPY --quotes --dte 21
+python -m trading_system.cli data collect-options --symbol SPY --quotes --expiration 2026-09-11
 python -m trading_system.cli data status
 python -m trading_system.cli data quality --symbol SPY
 ```
@@ -201,8 +202,31 @@ rather than inventing candidates.
 **Option quotes are the binding constraint on contract selection**, not the
 chain. A stored `OPTION_CHAIN` gives expirations and strikes; it gives no
 contract id, no bid, no delta. With chain metadata alone every selection ends
-`REQUIRED_DATA_UNAVAILABLE` — correctly. Only the simulator supplies
-per-contract quotes today.
+`REQUIRED_DATA_UNAVAILABLE` — correctly.
+
+**Collect in this order, and it matters.** The quote step needs a stored chain
+(for the expirations and strikes) *and* a stored underlying price (the strike
+band is a percentage around it). Working either out from the broker would cost
+extra round trips on a connection that reliably answers one, so the collector
+reads them from the store and refuses — naming the missing command — rather
+than reaching for them.
+
+**Which contracts get quoted.** `data.yaml`'s `collection.option_quotes` states
+the DTE window, the strike band and a contract cap. Without `--expiration` or
+`--dte`, the expiration nearest the middle of that window is used. Do not
+expect the chain's *first* expiration: it is often a day out, and quotes
+collected there can never satisfy `contract_selection.yaml`'s 21-day target or
+`risk.yaml`'s 14–30 DTE range. When the contract cap binds, the strikes nearest
+the money are kept and the run says `CONTRACT_LIMIT_APPLIED`.
+
+**Delayed data gives you one-sided option quotes, and that is not a cost.**
+With `IBKR_MARKET_DATA_TYPE=3` and the market closed, IBKR sends the option bid
+and ask as `-1` — its "no value" marker. The adapter drops them, so the quotes
+arrive priced by `last` alone, and allocation cannot read an ask. Set
+`IBKR_MARKET_DATA_TYPE=4` (delayed-frozen) to get the session's last two-sided
+quote, with open interest and Greeks. The two are never substituted for each
+other; `origin` on the stored snapshot records which answered
+(`BROKER_DELAYED` vs `BROKER_FROZEN`).
 
 ### 2. Select the universe
 

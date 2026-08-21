@@ -223,6 +223,84 @@ def make_ticker(
     )
 
 
+#: IBKR's "no value" marker on delayed price and size ticks. Neither ``NaN``
+#: nor the ``DBL_MAX`` sentinel, so ``to_decimal`` cannot drop it — observed on
+#: ticks 66, 67 and 74 against the paper gateway with the market closed.
+NO_VALUE = -1.0
+#: The same idea inside an ``OptionComputation``: observed on ``bidGreeks`` and
+#: ``askGreeks`` as ``vega=-2.0, theta=-2.0`` while ``delta`` was ``None``.
+NO_COMPUTATION = -2.0
+
+
+def make_option_computation(
+    *,
+    implied_vol: float | None = 0.2543,
+    delta: float | None = 0.5605,
+    gamma: float | None = 0.0164,
+    vega: float | None = 0.7378,
+    theta: float | None = -0.2698,
+    und_price: float | None = 762.34,
+) -> SimpleNamespace:
+    """An ``ib_async.OptionComputation``."""
+    return SimpleNamespace(
+        tickAttrib=0,
+        impliedVol=implied_vol,
+        delta=delta,
+        optPrice=10.70,
+        pvDividend=0.0,
+        gamma=gamma,
+        vega=vega,
+        theta=theta,
+        undPrice=und_price,
+    )
+
+
+#: Distinguishes "caller said nothing" from "caller said None". IBKR really
+#: does report a contract with no ``modelGreeks`` at all, so a test has to be
+#: able to say so — and `None` as a default would make that inexpressible.
+DEFAULT = object()
+
+
+def make_option_quote_ticker(
+    contract: SimpleNamespace | None = None,
+    *,
+    bid: float = 6.20,
+    ask: float = 6.30,
+    last: float = 6.25,
+    close: float = 6.10,
+    volume: float = 321.0,
+    call_open_interest: float = 1500.0,
+    put_open_interest: float = 1400.0,
+    model_greeks: Any = DEFAULT,
+    bid_greeks: Any = DEFAULT,
+    ask_greeks: Any = DEFAULT,
+    market_data_type: int = 3,
+) -> SimpleNamespace:
+    """An ``ib_async.Ticker`` for one option contract.
+
+    ``bidGreeks``/``askGreeks`` default to the sentinel-bearing shape actually
+    observed on the delayed feed, so a test that starts reading them fails.
+    """
+    sentinel_computation = make_option_computation(
+        delta=None, gamma=None, vega=NO_COMPUTATION, theta=NO_COMPUTATION
+    )
+    return SimpleNamespace(
+        contract=contract or make_option_contract(),
+        time=BROKER_NOW,
+        marketDataType=market_data_type,
+        bid=bid,
+        ask=ask,
+        last=last,
+        close=close,
+        volume=volume,
+        callOpenInterest=call_open_interest,
+        putOpenInterest=put_open_interest,
+        modelGreeks=make_option_computation() if model_greeks is DEFAULT else model_greeks,
+        bidGreeks=sentinel_computation if bid_greeks is DEFAULT else bid_greeks,
+        askGreeks=sentinel_computation if ask_greeks is DEFAULT else ask_greeks,
+    )
+
+
 def make_option_chain_row(
     *,
     exchange: str = "SMART",

@@ -1673,8 +1673,51 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
 - **Option quotes are the binding constraint on contract selection, not the chain.** A stored
   `OPTION_CHAIN` gives expirations and strikes; it gives no contract id, no bid, no delta. With
   chain metadata alone every selection ends `REQUIRED_DATA_UNAVAILABLE` — correctly. Collect
-  `data collect-options --quotes` first, and note that only the simulator supplies per-contract
-  quotes today: the IBKR path is still deferred behind the one-round-trip constraint.
+  `data collect-options --quotes` first.
+- **IBKR per-contract quotes are batched, not one connection each — the old deferral rested
+  on an assumption that measurement disproved.** `IBKROptionsDataProvider` used to answer
+  `NO_DATA` because a 500-strike chain looked like 500 connections under the
+  one-round-trip constraint. Measured against the paper gateway (10.45, `ib_async` 2.1.0)
+  on 2026-08-20: one batched `qualifyContracts` plus one `reqMktData` per contract answered
+  **eight contracts in 2.4 s, and 120 in 11 s, on a single connection** — the same two-step
+  shape `get_market_data` already used. What stays true is that the *chain* and the
+  *underlying price* must not ride that connection, which is why `Broker.get_option_quotes`
+  takes an explicit strike list and `DataService` composes it from the store. There is
+  deliberately no "all strikes" form.
+- **IBKR reports an unavailable option bid or ask as `-1`, and that is a third sentinel.**
+  Not `NaN`, not `DBL_MAX` — a plain negative float on delayed ticks 66/67 (and 74 for
+  volume) with the market closed, copied onto `ticker.bid` by `ib_async` unchanged. So
+  `conversion.to_decimal` **cannot** drop it and must not try: `-1` is a legitimate value
+  elsewhere in the API (a put's delta, unrealised P&L). `market_data.py`'s `_tradeable`
+  rejects it, where the field's meaning is known. Left alone it would reach the allocator,
+  whose `price_source: ASK_DEBIT` reads the ask as what a contract costs.
+- **`marketDataType=4` is where a closed market keeps its two-sided quote.** The same
+  contract reporting `bid=-1 ask=-1` under type 3 reports `bid=10.37 ask=11.14` under
+  type 4, with open interest and full Greeks. Neither is substituted for the other and no
+  fallback is automatic — the operator's `IBKR_MARKET_DATA_TYPE` decides, and `origin`
+  records which answered (`BROKER_DELAYED` vs `BROKER_FROZEN`). A delayed, market-closed
+  collection is therefore *correctly* one-sided, which is not a cost.
+- **Waiting for "any price" returns a one-sided batch.** `last` is the cached previous
+  trade and lands at once; the bid and ask follow. The first version of
+  `_await_option_quotes` stopped as soon as anything had priced and returned **0/8**
+  two-sided quotes on a feed that served 8/8 a second later. The satisfying condition is
+  both sides; the grace period is what stops that costing the full request timeout when the
+  sides are genuinely never coming.
+- **Open interest needs generic tick 101** and is otherwise never sent — which matters
+  because `risk.yaml` states a `min_open_interest` floor that has to read something real.
+  `bidGreeks`/`askGreeks` are deliberately **never read**: they were observed carrying
+  `vega=-2.0, theta=-2.0` beside `delta=None`, and a theta of `-2.0` is perfectly possible
+  for a real contract, so no filter separates sentinel from value honestly. Only
+  `modelGreeks` is read. Plausibility bounds stay with the quality engine, which already
+  states `max_abs_delta`.
+- **`data collect-options` takes `--expiration` and `--dte`, and the default is not the
+  chain's first expiration.** It used to be, which meant the shipped command collected
+  DTE-1 quotes while `contract_selection.yaml` asked for 21 and `risk.yaml` refused
+  anything under 14 — a collection that succeeded and made every later selection end
+  `NO_VALID_CONTRACT`, pointing at the wrong stage. `data.yaml`'s
+  `collection.option_quotes` states collection *breadth* (a DTE window, a strike band, a
+  contract cap) and deliberately does **not** restate a target DTE, which would declare the
+  same policy twice.
 - **The shipped EUR campaign refuses a USD-quoted contract, and that is correct.** The
   universe is US-listed, the campaign is denominated in EUR, and no FX rate source is
   configured — so every US option is rejected with `CURRENCY_MISMATCH`. Converting at an

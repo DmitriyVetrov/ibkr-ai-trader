@@ -69,6 +69,7 @@ __all__ = [
     "Money",
     "OptionChainSnapshot",
     "OptionLeg",
+    "OptionQuoteSnapshot",
     "OrderIntent",
     "PositionSnapshot",
     "PurchaseCard",
@@ -871,6 +872,111 @@ class OptionChainSnapshot(ImmutableModel):
         if list(self.strikes) != sorted(set(self.strikes)):
             raise ValueError("strikes must be sorted and unique")
         return self
+
+
+class OptionQuoteSnapshot(ImmutableModel):
+    """A quote for ONE option contract, with its provenance attached.
+
+    Deliberately not a :class:`MarketDataSnapshot`. An option quote carries
+    Greeks and an underlying price, and its *contract* — strike, expiry, right
+    — is part of the observation rather than a symbol: two SPY options with
+    different strikes are different instruments, not two quotes for SPY.
+
+    Every measured field is optional and ``None`` means **not available**,
+    which is load-bearing here in a way it is not for a stock. IBKR reports an
+    unavailable option price as ``-1`` and an uncomputed Greek as ``-2``
+    (observed on the delayed feed with the market closed; see the IBKR
+    market-data translation module). Reading either at face value would put a
+    negative price, or a fabricated sensitivity, into a decision about money.
+    A missing bid is a missing bid — never the ask, never the last, never a
+    midpoint conjured from one side.
+    """
+
+    contract: BrokerContract
+    as_of: UtcDatetime
+    source: Identifier
+    origin: MarketDataOrigin
+    data_quality: DataQuality = DataQuality.OK
+
+    bid: Money | None = Field(default=None, gt=0)
+    ask: Money | None = Field(default=None, gt=0)
+    last: Money | None = Field(default=None, gt=0)
+    close: Money | None = Field(default=None, gt=0)
+    #: Contract volume for the session, exactly as reported. Never rescaled.
+    volume: Money | None = Field(default=None, ge=0)
+    open_interest: Money | None = Field(default=None, ge=0)
+
+    #: Greeks, unconstrained in sign: delta is negative for a put and theta is
+    #: normally negative for a long option, so a ``ge=0`` here would reject
+    #: correct data.
+    implied_volatility: Money | None = Field(default=None, ge=0)
+    delta: Money | None = None
+    gamma: Money | None = None
+    theta: Money | None = None
+    vega: Money | None = None
+    underlying_price: Money | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _option_contract_only(self) -> OptionQuoteSnapshot:
+        """The contract must actually be an option, and identify itself.
+
+        A quote whose contract has no strike, expiry or right cannot be matched
+        to anything downstream. Storing it would put an unaddressable record in
+        a store whose whole purpose is to answer "what did this contract cost".
+        """
+        if self.contract.security_type is not SecurityType.OPTION:
+            raise ValueError(
+                f"an option quote needs an OPTION contract, got {self.contract.security_type.value}"
+            )
+        missing = [
+            name
+            for name, value in (
+                ("expiration", self.contract.expiration),
+                ("strike", self.contract.strike),
+                ("right", self.contract.right),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ValueError(
+                f"an option quote cannot identify its contract without: {', '.join(missing)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _unavailable_carries_no_prices(self) -> OptionQuoteSnapshot:
+        if self.origin is MarketDataOrigin.UNAVAILABLE:
+            priced = [
+                name
+                for name, value in (
+                    ("bid", self.bid),
+                    ("ask", self.ask),
+                    ("last", self.last),
+                    ("close", self.close),
+                )
+                if value is not None
+            ]
+            if priced:
+                raise ValueError(
+                    f"origin UNAVAILABLE must carry no prices, but got: {', '.join(priced)}"
+                )
+        return self
+
+    @property
+    def has_quote(self) -> bool:
+        """Whether any price at all was reported."""
+        return self.origin is not MarketDataOrigin.UNAVAILABLE and any(
+            value is not None for value in (self.bid, self.ask, self.last, self.close)
+        )
+
+    @property
+    def has_two_sided_quote(self) -> bool:
+        """Whether BOTH sides were reported.
+
+        The distinction matters: a cost is taken from the ask and a spread
+        needs both sides, so a one-sided quote is not a priced contract.
+        """
+        return self.bid is not None and self.ask is not None
 
 
 class BrokerHealth(ImmutableModel):

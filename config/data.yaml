@@ -26,6 +26,29 @@ collection:
   # failed collection.
   max_records_per_snapshot: 20000
 
+  # Which option contracts a collection run asks the broker to quote.
+  #
+  # This is collection BREADTH, not decision policy. It says how wide a net to
+  # cast; contract_selection.yaml then picks within what was caught, and says
+  # REQUIRED_DATA_UNAVAILABLE honestly if the net was too narrow. Stating a
+  # target DTE here as well would declare the same policy twice, and the two
+  # copies would drift.
+  #
+  # These bounds are wider than the selection policy on purpose:
+  # contract_selection's target_dte of 21 and its 5% strike band, and
+  # risk.yaml's 14-30 DTE range, all sit comfortably inside them.
+  option_quotes:
+    min_dte: 7
+    max_dte: 45
+    # A percentage band rather than a strike count: a fixed count spans a very
+    # different amount of money on a $9 stock than on a $760 index.
+    strike_window_pct: 8.0
+    # Hard ceiling per underlying per collection. SPY alone lists 491 strikes,
+    # and a request that quietly expanded to a thousand subscriptions is how a
+    # market-data line gets throttled. When this binds, the strikes nearest the
+    # money are kept and the fact is recorded rather than silently applied.
+    max_contracts: 120
+
 # ---------------------------------------------------------------------------
 # Freshness (Milestone 3 brief section 21).
 #

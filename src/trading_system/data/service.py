@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -60,11 +61,16 @@ from trading_system.data.providers.base import ProviderResult
 from trading_system.data.providers.broker_session import BrokerSession
 from trading_system.data.quality import QualityEngine
 from trading_system.data.registry import ProviderRegistry
-from trading_system.data.repository import DataRepository, FilesystemDataRepository
-from trading_system.domain.enums import DataType
+from trading_system.data.repository import (
+    DataRepository,
+    FilesystemDataRepository,
+    records_of,
+)
+from trading_system.domain.enums import CollectionOutcome, DataType
 from trading_system.infrastructure.clock import Clock, SystemClock
 from trading_system.infrastructure.settings import (
     BrokerBackend,
+    OptionQuoteCollectionConfig,
     Settings,
     SystemConfig,
     project_root,
@@ -160,14 +166,187 @@ class DataService:
         ).collect(symbol, preferred=preferred)
 
     def collect_option_quotes(
-        self, symbol: str, *, expiration: date | None = None, preferred: str | None = None
+        self,
+        symbol: str,
+        *,
+        expiration: date | None = None,
+        target_dte: int | None = None,
+        preferred: str | None = None,
     ) -> CollectionReport:
-        return self._collector(
+        """Quote the option contracts a decision might actually need.
+
+        *Which* contracts is resolved here rather than by the provider, and
+        that split is the point: working them out needs the chain and the
+        underlying's price, and a broker-backed provider gets one connection
+        whose second uncached round trip may never be answered. Both are
+        already in the store, so this reads them and hands the provider an
+        explicit list.
+
+        ``expiration`` names one outright. Otherwise the expiration nearest
+        ``target_dte`` *within* ``data.yaml``'s ``option_quotes`` window is
+        used — and if none falls inside that window the run reports what it
+        found rather than reaching outside it, because a DTE-7 quote collected
+        in place of a DTE-21 one would satisfy the collector and fail the
+        selector for reasons nobody could see.
+        """
+        key = symbol.upper()
+        policy = self._config.data.collection.option_quotes
+        started = self._clock.now()
+
+        def refused(error: str) -> CollectionReport:
+            """A resolution failure is a collection outcome, not an exception.
+
+            NO_DATA, deliberately: the store is missing something the caller
+            can go and collect, which is a different fact from the provider
+            being unreachable.
+            """
+            completed = self._clock.now()
+            return CollectionReport(
+                provider="NONE",
+                data_type=DataType.OPTION_QUOTE,
+                key=key,
+                outcome=CollectionOutcome.NO_DATA,
+                started_at=started,
+                completed_at=completed,
+                duration_seconds=max((completed - started).total_seconds(), 0.0),
+                error=error,
+            )
+
+        chain = self._latest_option_chain(key)
+        if chain is None:
+            return refused(
+                f"no stored option chain for {key}. Run 'data collect-options --symbol {key}' "
+                f"first: the expirations and strikes to quote come from the chain, not from a "
+                f"second broker request."
+            )
+
+        resolved = self._resolve_expiration(chain, expiration, target_dte, policy)
+        if isinstance(resolved, str):
+            return refused(resolved)
+
+        reference = self._reference_price(key)
+        if reference is None:
+            return refused(
+                f"no stored reference price for {key}. Run 'data collect --symbol {key}' first: "
+                f"the strike band is a percentage around the underlying's price, and a band "
+                f"around an assumed price would quote the wrong contracts."
+            )
+
+        strikes, capped = self._strike_window(chain, reference, policy)
+        if not strikes:
+            return refused(
+                f"no strike within {policy.strike_window_pct}% of {reference} for {key}; the "
+                f"stored chain lists {len(chain.strikes)} strike(s). Widen "
+                f"data.collection.option_quotes.strike_window_pct or collect a fresher chain."
+            )
+
+        report = self._collector(
             DataType.OPTION_QUOTE,
-            lambda provider, key: _as_options_provider(provider).fetch_option_quotes(
-                key, expiration=expiration
+            lambda provider, provider_key: _as_options_provider(provider).fetch_option_quotes(
+                provider_key,
+                expiration=resolved,
+                strikes=strikes,
+                trading_class=chain.trading_class,
             ),
         ).collect(symbol, preferred=preferred)
+
+        notes = [
+            f"expiration {resolved.isoformat()} "
+            f"(DTE {(resolved - self._clock.now().date()).days}); "
+            f"{len(strikes)} strike(s) within {policy.strike_window_pct}% of {reference}"
+        ]
+        if capped:
+            # Recorded rather than silently applied: a cap that binds changes
+            # which contracts a later selection can even see.
+            notes.append(
+                f"CONTRACT_LIMIT_APPLIED: the band held more than "
+                f"max_contracts={policy.max_contracts}; the strikes nearest the money were kept"
+            )
+        return report.model_copy(update={"notes": [*report.notes, *notes]})
+
+    # --- option quote resolution -------------------------------------------
+    def _latest_option_chain(self, symbol: str) -> OptionChain | None:
+        """The newest stored chain, re-validated on read.
+
+        A snapshot's ``records`` are stored JSON, not model instances, so they
+        are parsed through :func:`records_of` — which also means a stored chain
+        that no longer satisfies the current model raises rather than being
+        quietly read as absent.
+        """
+        snapshot = self._repository.get_latest(DataType.OPTION_CHAIN, symbol)
+        if snapshot is None or not snapshot.records:
+            return None
+        chains = records_of(snapshot, OptionChain)
+        return chains[0] if chains else None
+
+    def _reference_price(self, symbol: str) -> Decimal | None:
+        """The underlying's price, from the store. Never a fresh broker request."""
+        snapshot = self._repository.get_latest(DataType.MARKET_QUOTE, symbol)
+        if snapshot is None or not snapshot.records:
+            return None
+        quotes = records_of(snapshot, MarketQuote)
+        if not quotes:
+            return None
+        quote = quotes[0]
+        # `last` before `close` before the midpoint: the strike band should be
+        # centred on the most recent real trade where there is one. The mid is
+        # last because it exists only when both sides were quoted.
+        for value in (quote.last, quote.close, quote.mid):
+            if value is not None and value > 0:
+                return value
+        return None
+
+    def _resolve_expiration(
+        self,
+        chain: OptionChain,
+        expiration: date | None,
+        target_dte: int | None,
+        policy: OptionQuoteCollectionConfig,
+    ) -> date | str:
+        """The expiration to quote, or a sentence saying why there is none."""
+        today = self._clock.now().date()
+        if expiration is not None:
+            if expiration not in chain.expirations:
+                available = ", ".join(e.isoformat() for e in chain.expirations[:8])
+                return (
+                    f"the stored chain does not list {expiration.isoformat()}; it has "
+                    f"{len(chain.expirations)} expiration(s): {available}..."
+                )
+            return expiration
+
+        eligible = [
+            candidate
+            for candidate in chain.expirations
+            if policy.min_dte <= (candidate - today).days <= policy.max_dte
+        ]
+        if not eligible:
+            listed = ", ".join(f"{(e - today).days}" for e in chain.expirations[:10])
+            return (
+                f"no stored expiration falls within the configured DTE window "
+                f"[{policy.min_dte}, {policy.max_dte}]; the chain's DTEs are: {listed}. "
+                f"Collect a fresher chain, widen data.collection.option_quotes, or name an "
+                f"expiration explicitly."
+            )
+
+        wanted = target_dte if target_dte is not None else (policy.min_dte + policy.max_dte) // 2
+        # Ties break on the earlier expiration, so the choice is reproducible.
+        return min(eligible, key=lambda e: (abs((e - today).days - wanted), e))
+
+    def _strike_window(
+        self,
+        chain: OptionChain,
+        reference: Decimal,
+        policy: OptionQuoteCollectionConfig,
+    ) -> tuple[list[Decimal], bool]:
+        """Strikes inside the configured band, capped nearest-the-money."""
+        band = reference * Decimal(str(policy.strike_window_pct)) / Decimal(100)
+        inside = [s for s in chain.strikes if abs(s - reference) <= band]
+        # Two rights per strike, so the contract cap halves into a strike cap.
+        strike_cap = max(1, policy.max_contracts // 2)
+        capped = len(inside) > strike_cap
+        if capped:
+            inside = sorted(sorted(inside, key=lambda s: (abs(s - reference), s))[:strike_cap])
+        return inside, capped
 
     def collect_news(self, symbol: str, *, preferred: str | None = None) -> CollectionReport:
         return self._collector(

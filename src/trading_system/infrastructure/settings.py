@@ -1270,12 +1270,49 @@ class SourcesConfig(_ConfigModel):
 # ---------------------------------------------------------------------------
 # Data layer policy (Milestone 3)
 # ---------------------------------------------------------------------------
+class OptionQuoteCollectionConfig(_ConfigModel):
+    """Which option contracts a collection run asks the broker to quote.
+
+    This is *collection breadth*, deliberately not decision policy. It says how
+    wide a net to cast; ``contract_selection.yaml`` then picks within what was
+    caught, and reports ``REQUIRED_DATA_UNAVAILABLE`` honestly if the net was
+    too narrow. Stating a target DTE here as well would declare the same policy
+    twice, and the two copies would drift.
+
+    The defaults are wider than the selection policy on purpose, so a
+    ``target_dte`` of 21 and a 5% strike band both sit comfortably inside.
+    """
+
+    #: Expirations to consider, as a day range from the collection instant.
+    min_dte: int = Field(default=7, ge=0)
+    max_dte: int = Field(default=45, ge=0)
+    #: Strikes to quote, as a percentage band around the underlying reference
+    #: price. A band rather than a count, because a fixed count spans a very
+    #: different amount of money on a $9 stock than on a $760 index.
+    strike_window_pct: float = Field(default=8.0, gt=0.0, le=100.0)
+    #: Hard ceiling on contracts requested per underlying per collection.
+    #: SPY alone lists 491 strikes; a request that quietly expanded to a
+    #: thousand subscriptions is how a market-data line gets throttled. When it
+    #: binds, the strikes nearest the money are kept and the fact is recorded.
+    max_contracts: int = Field(default=120, ge=2)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> OptionQuoteCollectionConfig:
+        if self.min_dte > self.max_dte:
+            raise ValueError(
+                f"option_quotes.min_dte ({self.min_dte}) exceeds max_dte ({self.max_dte}); "
+                f"no expiration could ever satisfy both"
+            )
+        return self
+
+
 class CollectionConfig(_ConfigModel):
     """What the collectors fetch, until universe selection exists."""
 
     symbols: list[str] = Field(default_factory=list)
     option_chain_symbols: list[str] = Field(default_factory=list)
     max_records_per_snapshot: int = Field(default=20000, ge=1)
+    option_quotes: OptionQuoteCollectionConfig = Field(default_factory=OptionQuoteCollectionConfig)
 
 
 class FreshnessConfig(_ConfigModel):

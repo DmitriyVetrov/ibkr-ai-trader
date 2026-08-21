@@ -16,10 +16,13 @@ pretending to have executed anything.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from datetime import date
+from decimal import Decimal
 from types import TracebackType
 from typing import final
 
-from trading_system.domain.enums import SecurityType, TradingMode
+from trading_system.domain.enums import OptionRight, SecurityType, TradingMode
 from trading_system.domain.models import (
     BrokerAccount,
     BrokerContract,
@@ -30,6 +33,7 @@ from trading_system.domain.models import (
     ExecutionResult,
     MarketDataSnapshot,
     OptionChainSnapshot,
+    OptionQuoteSnapshot,
     OrderIntent,
 )
 
@@ -231,6 +235,45 @@ class Broker(ABC):
 
         Selecting a contract is not this method's job — that is the
         deterministic contract selector in Milestone 6.
+        """
+
+    @abstractmethod
+    def get_option_quotes(
+        self,
+        underlying: str,
+        expiration: date,
+        strikes: Sequence[Decimal],
+        *,
+        rights: Sequence[OptionRight] | None = None,
+        trading_class: str | None = None,
+        exchange: str | None = None,
+    ) -> list[OptionQuoteSnapshot]:
+        """Fetch quotes for an **explicitly named** set of option contracts.
+
+        The contracts are an argument rather than something this method works
+        out, and that is a safety property, not an inconvenience. Deriving them
+        would mean reading the chain and the underlying's price first, which
+        turns one data request into three on a connection where **only the
+        first uncached round trip is reliably answered** (see
+        :mod:`trading_system.data.providers.broker_session`). The caller
+        already holds a stored chain and a stored quote; it composes from those
+        and asks for exactly what it wants.
+
+        ``strikes`` must be non-empty. There is deliberately no "all strikes"
+        form: SPY alone lists 491 of them, and a request that quietly expanded
+        to a thousand subscriptions is how a market-data line gets throttled.
+
+        Returns one snapshot per contract the broker answered for, in a
+        deterministic order (strike, then right). A contract the broker could
+        not resolve is omitted — never returned priced at zero — and a
+        contract it resolved but did not price comes back with origin
+        ``UNAVAILABLE``, because "we could not look it up" and "it has no
+        quote" are different facts.
+
+        Raises:
+            MarketDataUnavailableError: the broker could not supply quotes at
+                all. A missing subscription or a closed market must never
+                become an invented price.
         """
 
     # --- mutation ----------------------------------------------------------

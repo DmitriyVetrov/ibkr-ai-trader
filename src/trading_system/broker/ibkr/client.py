@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import time
 from contextlib import suppress
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, TypeGuard
 
 from trading_system.broker.base import (
@@ -44,6 +45,7 @@ from trading_system.broker.ibkr.market_data import (
     IBKR_SOURCE,
     to_market_data_snapshot,
     to_option_chain_snapshot,
+    to_option_quote_snapshot,
 )
 from trading_system.broker.ibkr.order_translation import (
     IBKROrderRequest,
@@ -58,6 +60,7 @@ from trading_system.broker.ibkr.orders import (
 from trading_system.broker.ibkr.positions import to_broker_positions
 from trading_system.domain.enums import (
     BrokerConnectionState,
+    OptionRight,
     SecurityType,
     TradingMode,
 )
@@ -71,13 +74,14 @@ from trading_system.domain.models import (
     ExecutionResult,
     MarketDataSnapshot,
     OptionChainSnapshot,
+    OptionQuoteSnapshot,
     OrderIntent,
 )
 from trading_system.infrastructure.clock import Clock, SystemClock
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
-    from datetime import datetime
+    from datetime import date, datetime
 
 __all__ = ["ACCOUNT_TAGS", "IBKRBroker"]
 
@@ -110,6 +114,21 @@ _AVERAGE_VOLUME_GENERIC_TICK = "165"
 #: symbol, not a full request timeout.
 _AVERAGE_VOLUME_GRACE_SECONDS = 2.0
 
+#: Generic ticks for an option subscription. 101 is option open interest, which
+#: ``risk.yaml``'s ``min_open_interest`` reads and which is never sent unless
+#: it is asked for; 106 is option implied volatility. The Greeks themselves
+#: need no generic tick — IBKR sends ``modelGreeks`` on an option subscription
+#: unprompted.
+_OPTION_GENERIC_TICKS = "101,106"
+
+#: How much longer to wait for the stragglers once some contracts have priced.
+#: A batch is only as fast as its slowest member, and an illiquid strike that
+#: is never going to quote must not cost the whole request timeout.
+_OPTION_QUOTE_GRACE_SECONDS = 3.0
+
+#: IBKR's single-letter option right codes.
+_OPTION_RIGHT_CODES = {OptionRight.CALL: "C", OptionRight.PUT: "P"}
+
 
 def _reported(value: Any) -> TypeGuard[float]:
     """Did IBKR actually send a number here?
@@ -129,6 +148,21 @@ def _priced(ticker: Any) -> bool:
         if _reported(value) and value > 0:
             return True
     return False
+
+
+def _two_sided(ticker: Any) -> bool:
+    """Whether BOTH sides have arrived.
+
+    A separate question from :func:`_priced`, because IBKR answers them at
+    different times: ``last`` is the cached previous trade and lands at once,
+    while the bid and ask ticks follow. On a delayed feed with the market
+    closed they arrive carrying ``-1``, which is why the ``> 0`` test is here
+    rather than a mere presence check.
+    """
+    return all(
+        _reported(getattr(ticker, field, None)) and getattr(ticker, field) > 0
+        for field in ("bid", "ask")
+    )
 
 
 def _import_ib_async() -> Any:
@@ -796,6 +830,156 @@ class IBKRBroker(Broker):
             )
         except ValueError as exc:
             raise OptionChainUnavailableError(str(exc)) from exc
+
+    def get_option_quotes(
+        self,
+        underlying: str,
+        expiration: date,
+        strikes: Sequence[Decimal],
+        *,
+        rights: Sequence[OptionRight] | None = None,
+        trading_class: str | None = None,
+        exchange: str | None = None,
+    ) -> list[OptionQuoteSnapshot]:
+        """Quote an explicitly named set of option contracts.
+
+        One batch qualification and one batch subscription, in that order —
+        the same two-step shape :meth:`get_market_data` already uses, not a new
+        per-contract round trip each. Against the validated paper gateway a
+        batch of eight qualified and priced in 2.8 s on a single connection.
+
+        The subscription is streaming rather than a snapshot request because
+        ``reqTickers`` takes no generic tick list, which would put option open
+        interest (tick 101) out of reach — and ``risk.yaml`` states a
+        ``min_open_interest`` floor that has to read something real. Every
+        subscription is cancelled before returning.
+
+        What comes back is what the broker said. A contract it could not
+        resolve is absent from the result; a contract it resolved but never
+        priced is present with origin ``UNAVAILABLE``. Neither is filled in.
+        """
+        ib = self._require_connection()
+        key = underlying.upper()
+        wanted_strikes = sorted({Decimal(str(s)) for s in strikes})
+        if not wanted_strikes:
+            raise MarketDataUnavailableError(
+                f"MARKET_DATA_UNAVAILABLE: no strikes were requested for {key}"
+            )
+        wanted_rights = list(rights) if rights else [OptionRight.CALL, OptionRight.PUT]
+
+        ib_async = _import_ib_async()
+        requested = [
+            ib_async.Option(
+                key,
+                expiration.strftime("%Y%m%d"),
+                float(strike),
+                _OPTION_RIGHT_CODES[right],
+                exchange or "SMART",
+                multiplier="100",
+                currency="USD",
+                tradingClass=trading_class or key,
+            )
+            for strike in wanted_strikes
+            for right in wanted_rights
+        ]
+
+        try:
+            qualified = [c for c in ib.qualifyContracts(*requested) if getattr(c, "conId", 0)]
+        except TimeoutError as exc:
+            raise self._timed_out(f"option contract qualification for {key}") from exc
+        except Exception as exc:
+            raise MarketDataUnavailableError(
+                f"MARKET_DATA_UNAVAILABLE: IBKR could not qualify option contracts for "
+                f"{key} {expiration.isoformat()}: {exc}"
+            ) from exc
+
+        if not qualified:
+            raise MarketDataUnavailableError(
+                f"MARKET_DATA_UNAVAILABLE: IBKR resolved none of the "
+                f"{len(requested)} requested {key} contracts expiring "
+                f"{expiration.isoformat()}"
+            )
+
+        try:
+            tickers = self._request_option_quotes(ib, qualified)
+        except TimeoutError as exc:
+            raise self._timed_out(f"option quotes for {key}") from exc
+        except Exception as exc:
+            raise MarketDataUnavailableError(
+                f"MARKET_DATA_UNAVAILABLE: IBKR rejected the option quote request for {key}: {exc}"
+            ) from exc
+
+        self._last_communication = self._clock.now()
+        as_of = self._clock.now()
+
+        quotes: list[OptionQuoteSnapshot] = []
+        for ticker in tickers:
+            try:
+                quotes.append(to_option_quote_snapshot(ticker, as_of))
+            except ValueError:
+                # A contract that cannot identify itself is unaddressable. It
+                # is dropped rather than guessed at, and the count is what the
+                # caller compares against what it asked for.
+                continue
+        quotes.sort(
+            key=lambda q: (
+                q.contract.strike or Decimal(0),
+                q.contract.right.value if q.contract.right else "",
+            )
+        )
+        return quotes
+
+    def _request_option_quotes(self, ib: Any, contracts: list[Any]) -> list[Any]:
+        """Subscribe to every contract, await bounded, cancel every one."""
+        tickers = [
+            ib.reqMktData(contract, genericTickList=_OPTION_GENERIC_TICKS, snapshot=False)
+            for contract in contracts
+        ]
+        try:
+            self._await_option_quotes(ib, tickers)
+        finally:
+            for contract in contracts:
+                # A failed cancel must not discard quotes already in hand. The
+                # connection is short-lived and closes moments later regardless.
+                with suppress(Exception):
+                    ib.cancelMktData(contract)
+        return tickers
+
+    def _await_option_quotes(self, ib: Any, tickers: list[Any]) -> None:
+        """Wait for a **two-sided** batch, then briefly for its stragglers.
+
+        The satisfying condition is deliberately both sides, not any price.
+        ``last`` arrives almost immediately — it is the cached previous trade —
+        whereas the bid and ask ticks (66 and 67 on a delayed feed) come later
+        and are the ones that matter: ``price_source: ASK_DEBIT`` reads the ask
+        and ``max_bid_ask_spread_pct`` needs the pair. An earlier version
+        stopped as soon as anything had priced, and returned a batch of
+        one-sided quotes on a feed that would have served both sides a second
+        later.
+
+        The second deadline is what keeps that from costing the full request
+        timeout when the sides are genuinely never coming — which is the
+        ordinary case on a delayed feed with the market closed. Once every
+        contract has *some* price, the pair gets a short grace period, after
+        which the batch is returned with whatever arrived. Nothing is
+        substituted for a side that never came.
+        """
+        deadline = time.monotonic() + self._request_timeout
+        grace_deadline: float | None = None
+
+        while time.monotonic() < deadline:
+            if all(_two_sided(ticker) for ticker in tickers):
+                return
+            if all(_priced(ticker) for ticker in tickers) and grace_deadline is None:
+                grace_deadline = min(time.monotonic() + _OPTION_QUOTE_GRACE_SECONDS, deadline)
+            if grace_deadline is not None and time.monotonic() >= grace_deadline:
+                return
+            try:
+                ib.waitOnUpdate(timeout=min(0.5, max(deadline - time.monotonic(), 0.05)))
+            except Exception:
+                # A wait that fails is a wait that ended; the loop's own
+                # deadline bounds this, not the library's cooperation.
+                return
 
     # --- execution (Milestone 8) -------------------------------------------
     def verify_paper_account(self, prefixes: Sequence[str]) -> str:

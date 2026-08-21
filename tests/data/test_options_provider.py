@@ -8,6 +8,7 @@ pre-filtered the chain would be making that decision invisibly.
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -82,20 +83,39 @@ def test_the_raw_chain_response_is_preserved(data_clock) -> None:
     assert result.raw.payload_hash
 
 
-def test_the_provider_declares_only_chain_support(data_clock) -> None:
-    """Per-contract IBKR quotes are deferred, and the provider says so."""
+def test_the_provider_declares_chain_and_quote_support(data_clock) -> None:
+    """Per-contract IBKR quotes exist now, and the provider says so."""
     provider = _provider(data_clock)
 
-    assert provider.data_types == frozenset({DataType.OPTION_CHAIN})
-    assert "deferred" in provider.notes.lower()
+    assert provider.data_types == frozenset({DataType.OPTION_CHAIN, DataType.OPTION_QUOTE})
 
 
-def test_ibkr_option_quotes_report_no_data_rather_than_being_invented(data_clock) -> None:
+def test_option_quotes_without_a_strike_list_are_refused_not_guessed(data_clock) -> None:
+    """The refusal is the design, not a gap.
+
+    Working the contracts out means reading the chain and the underlying's
+    price, which is two more round trips on a connection that reliably answers
+    one. The caller holds both already, so it supplies them — and a provider
+    that quietly picked its own strikes would be making a selection decision
+    inside a retrieval layer.
+    """
     result = _provider(data_clock).fetch_option_quotes("SPY")
 
     assert result.outcome is CollectionOutcome.NO_DATA
     assert result.records == ()
-    assert "per-contract option quotes" in (result.error or "")
+    assert "explicit expiration and strike list" in (result.error or "")
+
+
+def test_option_quotes_with_an_expiration_but_no_strikes_are_still_refused(data_clock) -> None:
+    """Half the identification is not identification.
+
+    An expiration alone leaves 491 strikes on SPY, and "all of them" is the
+    request that gets a market-data line throttled.
+    """
+    result = _provider(data_clock).fetch_option_quotes("SPY", expiration=date(2026, 9, 18))
+
+    assert result.outcome is CollectionOutcome.NO_DATA
+    assert "strike list" in (result.error or "")
 
 
 # ---------------------------------------------------------------------------

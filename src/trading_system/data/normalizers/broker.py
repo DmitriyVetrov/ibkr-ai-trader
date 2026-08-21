@@ -31,17 +31,20 @@ from trading_system.data.models import (
     MarketQuote,
     OptionChain,
     OptionContract,
+    OptionQuote,
 )
 from trading_system.domain.models import (
     BrokerContract,
     MarketDataSnapshot,
     OptionChainSnapshot,
+    OptionQuoteSnapshot,
 )
 
 __all__ = [
     "market_quote_from_broker",
     "option_chain_from_broker",
     "option_contract_from_broker",
+    "option_quote_from_broker",
 ]
 
 
@@ -124,4 +127,37 @@ def option_chain_from_broker(
         strikes=list(snapshot.strikes),
         rights=list(snapshot.rights),
         contracts=list(contracts or []),
+    )
+
+
+def option_quote_from_broker(
+    snapshot: OptionQuoteSnapshot,
+    *,
+    source: DataSourceMetadata,
+    underlying: str,
+    as_of: datetime | None = None,
+) -> OptionQuote:
+    """Convert one broker option quote into a canonical :class:`OptionQuote`.
+
+    Every ``None`` stays ``None``. The broker adapter has already rejected
+    IBKR's ``-1`` "no value" marker on the price ticks, so an absent bid here
+    means the market did not quote one — not that it quoted a negative number
+    and nobody noticed.
+    """
+    return OptionQuote(
+        as_of=as_of or snapshot.as_of,
+        source=source,
+        contract=option_contract_from_broker(snapshot.contract, underlying=underlying),
+        bid=snapshot.bid,
+        ask=snapshot.ask,
+        last=snapshot.last,
+        close=snapshot.close,
+        volume=snapshot.volume,
+        open_interest=snapshot.open_interest,
+        implied_volatility=snapshot.implied_volatility,
+        delta=snapshot.delta,
+        gamma=snapshot.gamma,
+        theta=snapshot.theta,
+        vega=snapshot.vega,
+        underlying_price=snapshot.underlying_price,
     )

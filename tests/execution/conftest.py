@@ -467,6 +467,14 @@ class FakeBroker(Broker):
     def get_option_chain(self, underlying):
         raise BrokerError("the fake broker has no chain")
 
+    def get_option_quotes(
+        self, underlying, expiration, strikes, *, rights=None, trading_class=None, exchange=None
+    ):
+        # This fake exists to exercise the *submission* path. Refusing here
+        # keeps it honest: an execution test that started depending on option
+        # quotes would fail loudly rather than quietly reading a fabrication.
+        raise BrokerError("the fake broker has no option quotes")
+
     def _submit_order(self, intent: OrderIntent) -> ExecutionResult:
         # Recorded before any failure, exactly as a real broker would have
         # received the bytes before failing to answer.

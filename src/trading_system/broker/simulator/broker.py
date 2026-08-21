@@ -10,6 +10,7 @@ code that mishandles positions or orders pass unnoticed.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
@@ -36,6 +37,7 @@ from trading_system.broker.simulator.market import (
 from trading_system.domain.enums import (
     BrokerConnectionState,
     LegAction,
+    MarketDataOrigin,
     OptionRight,
     OrderSide,
     OrderStatus,
@@ -52,6 +54,7 @@ from trading_system.domain.models import (
     ExecutionResult,
     MarketDataSnapshot,
     OptionChainSnapshot,
+    OptionQuoteSnapshot,
     OrderIntent,
 )
 from trading_system.infrastructure.clock import Clock, SystemClock
@@ -408,6 +411,107 @@ class SimulatedBroker(Broker):
                 f"simulator has no option chain for {underlying.upper()}"
             )
         return simulated_option_chain(underlying, self._clock)
+
+    def get_option_quotes(
+        self,
+        underlying: str,
+        expiration: date,
+        strikes: Sequence[Decimal],
+        *,
+        rights: Sequence[OptionRight] | None = None,
+        trading_class: str | None = None,
+        exchange: str | None = None,
+    ) -> list[OptionQuoteSnapshot]:
+        """Deterministic synthetic quotes for exactly the contracts requested.
+
+        Answers the same shape as the IBKR adapter so the collection path,
+        the quality checks and the snapshot store can be exercised without a
+        gateway. The numbers are crude on purpose — this is scaffolding, not a
+        pricing model, and dressing it up would invite someone to trust it.
+        """
+        self._require_connection()
+        key = underlying.upper()
+        if key in self._state.chainless_symbols:
+            raise OptionChainUnavailableError(f"simulator has no option chain for {key}")
+        if not strikes:
+            raise MarketDataUnavailableError(
+                f"MARKET_DATA_UNAVAILABLE: no strikes were requested for {key}"
+            )
+
+        wanted = list(rights) if rights else [OptionRight.CALL, OptionRight.PUT]
+        reference = simulated_reference_price(key)
+        now = self._clock.now()
+
+        quotes: list[OptionQuoteSnapshot] = []
+        for strike in sorted(set(strikes)):
+            for right in wanted:
+                quotes.append(
+                    self._simulated_option_quote(
+                        key,
+                        expiration,
+                        strike,
+                        right,
+                        reference=reference,
+                        as_of=now,
+                        trading_class=trading_class or key,
+                        exchange=exchange or "SMART",
+                    )
+                )
+        return quotes
+
+    def _simulated_option_quote(
+        self,
+        underlying: str,
+        expiration: date,
+        strike: Decimal,
+        right: OptionRight,
+        *,
+        reference: Decimal,
+        as_of: datetime,
+        trading_class: str,
+        exchange: str,
+    ) -> OptionQuoteSnapshot:
+        intrinsic = (
+            max(Decimal("0"), reference - strike)
+            if right is OptionRight.CALL
+            else max(Decimal("0"), strike - reference)
+        )
+        theoretical = (intrinsic + reference * Decimal("0.02")).quantize(Decimal("0.01"))
+        half_spread = (theoretical * Decimal("0.02")).quantize(Decimal("0.01"))
+        local_symbol = f"{underlying} {expiration:%y%m%d}{right.value[0]}{int(strike * 1000):08d}"
+        return OptionQuoteSnapshot(
+            contract=BrokerContract(
+                symbol=underlying,
+                security_type=SecurityType.OPTION,
+                as_of=as_of,
+                source=SIMULATED_SOURCE,
+                contract_id=abs(hash((underlying, expiration, strike, right.value)))
+                % 1_000_000_000,
+                exchange=exchange,
+                currency="USD",
+                local_symbol=local_symbol,
+                trading_class=trading_class,
+                multiplier=100,
+                expiration=expiration,
+                strike=strike,
+                right=right,
+            ),
+            as_of=as_of,
+            source=SIMULATED_SOURCE,
+            origin=MarketDataOrigin.SIMULATED,
+            bid=max(Decimal("0.01"), theoretical - half_spread),
+            ask=theoretical + half_spread,
+            last=theoretical,
+            close=theoretical,
+            volume=Decimal("250"),
+            open_interest=Decimal("1500"),
+            implied_volatility=Decimal("0.25"),
+            delta=Decimal("0.50") if right is OptionRight.CALL else Decimal("-0.50"),
+            gamma=Decimal("0.02"),
+            theta=Decimal("-0.05"),
+            vega=Decimal("0.12"),
+            underlying_price=reference,
+        )
 
     def reference_price(self, symbol: str) -> Decimal:
         """Expose the deterministic reference price used by the simulated quote."""

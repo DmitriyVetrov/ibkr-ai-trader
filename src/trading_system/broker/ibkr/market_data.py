@@ -50,6 +50,7 @@ from typing import Any
 from trading_system.broker.ibkr.conversion import (
     to_date,
     to_decimal,
+    to_option_right,
     to_security_type,
     to_utc,
 )
@@ -59,13 +60,19 @@ from trading_system.domain.enums import (
     OptionRight,
     SecurityType,
 )
-from trading_system.domain.models import MarketDataSnapshot, OptionChainSnapshot
+from trading_system.domain.models import (
+    BrokerContract,
+    MarketDataSnapshot,
+    OptionChainSnapshot,
+    OptionQuoteSnapshot,
+)
 
 __all__ = [
     "IBKR_SOURCE",
     "market_data_origin",
     "to_market_data_snapshot",
     "to_option_chain_snapshot",
+    "to_option_quote_snapshot",
     "unavailable_snapshot",
 ]
 
@@ -172,6 +179,168 @@ def to_market_data_snapshot(
             else None
         ),
     )
+
+
+def to_option_quote_snapshot(
+    ticker: Any,
+    as_of: datetime,
+    *,
+    source: str = IBKR_SOURCE,
+) -> OptionQuoteSnapshot:
+    """Convert an IBKR ``Ticker`` for one **option** contract.
+
+    Three IBKR behaviours shape this, all observed against the validated paper
+    gateway (10.45, ``ib_async`` 2.1.0) on 2026-08-20 with the market closed:
+
+    * **``-1`` is "no value", not a price.** With ``marketDataType=3`` the
+      delayed bid and ask ticks (66 and 67) arrive carrying ``-1``, and
+      ``ib_async`` copies that straight onto ``ticker.bid`` / ``ticker.ask``.
+      It is neither ``NaN`` nor the ``DBL_MAX`` sentinel, so
+      :func:`~trading_system.broker.ibkr.conversion.to_decimal` cannot drop it
+      and must not try. :func:`_tradeable` is what rejects it — a negative ask
+      would be a contract that costs less than nothing.
+
+    * **``marketDataType=4`` is where a closed market keeps its quote.** The
+      same contract that reports ``bid=-1 ask=-1`` under type 3 reports
+      ``bid=10.37 ask=11.14`` under type 4. Which type is requested is the
+      operator's setting; this function only records what came back, and
+      ``origin`` distinguishes ``BROKER_DELAYED`` from ``BROKER_FROZEN`` so a
+      consumer can always tell.
+
+    * **Only ``modelGreeks`` is read.** ``bidGreeks`` and ``askGreeks`` were
+      observed carrying ``vega=-2.0, theta=-2.0`` alongside ``delta=None`` on
+      the delayed feed — a sentinel wearing a plausible value's clothes. A
+      theta of ``-2.0`` is perfectly possible for a real contract, so there is
+      no filter that separates the two cases honestly. The resolution is not to
+      read those fields at all.
+
+    Plausibility is deliberately *not* judged here. A delta outside ``[-1, 1]``
+    is impossible, but ``config/data.yaml`` already states ``max_abs_delta``
+    and the quality engine applies it; a second, silent bound in the broker
+    adapter would discard evidence of a misbehaving feed before anything could
+    record that it misbehaved. This function drops only what is provably not a
+    value: the ``-1`` price sentinel, a negative size, a negative volatility.
+
+    Raises:
+        ValueError: the ticker's contract is not an identifiable option. A
+            quote that cannot say which contract it belongs to is
+            unaddressable, and guessing a strike is worse than refusing.
+    """
+    contract = getattr(ticker, "contract", None)
+    if contract is None:
+        raise ValueError("an option quote ticker carried no contract")
+
+    security_type = to_security_type(getattr(contract, "secType", None))
+    strike = _tradeable(to_decimal(getattr(contract, "strike", None)))
+    expiration = to_date(getattr(contract, "lastTradeDateOrContractMonth", None))
+    right = to_option_right(getattr(contract, "right", None))
+    contract_id = _positive_int(getattr(contract, "conId", None))
+
+    broker_contract = BrokerContract(
+        symbol=str(getattr(contract, "symbol", "") or "UNKNOWN"),
+        security_type=security_type,
+        as_of=as_of,
+        source=source,
+        contract_id=contract_id,
+        exchange=_optional_str(getattr(contract, "exchange", None)),
+        primary_exchange=_optional_str(getattr(contract, "primaryExchange", None)),
+        currency=_optional_str(getattr(contract, "currency", None)),
+        local_symbol=_optional_str(getattr(contract, "localSymbol", None)),
+        trading_class=_optional_str(getattr(contract, "tradingClass", None)),
+        multiplier=_positive_int(_as_int(getattr(contract, "multiplier", None))),
+        expiration=expiration,
+        strike=strike,
+        right=right,
+    )
+
+    bid = _tradeable(to_decimal(getattr(ticker, "bid", None)))
+    ask = _tradeable(to_decimal(getattr(ticker, "ask", None)))
+    last = _tradeable(to_decimal(getattr(ticker, "last", None)))
+    close = _tradeable(to_decimal(getattr(ticker, "close", None)))
+    volume = _nonnegative(to_decimal(getattr(ticker, "volume", None)))
+    open_interest = _nonnegative(to_decimal(_open_interest(ticker, right)))
+
+    greeks = getattr(ticker, "modelGreeks", None)
+    implied_volatility = _nonnegative(to_decimal(getattr(greeks, "impliedVol", None)))
+    delta = to_decimal(getattr(greeks, "delta", None))
+    gamma = to_decimal(getattr(greeks, "gamma", None))
+    theta = to_decimal(getattr(greeks, "theta", None))
+    vega = to_decimal(getattr(greeks, "vega", None))
+    underlying_price = _tradeable(to_decimal(getattr(greeks, "undPrice", None)))
+
+    if bid is None and ask is None and last is None and close is None:
+        # No price at all. Reported as UNAVAILABLE rather than as a row of
+        # zeros, and the Greeks go with it: an implied volatility for a
+        # contract nobody quoted is a model output, not a market observation.
+        return OptionQuoteSnapshot(
+            contract=broker_contract,
+            as_of=as_of,
+            source=source,
+            origin=MarketDataOrigin.UNAVAILABLE,
+            data_quality=DataQuality.UNUSABLE,
+        )
+
+    quote_time = to_utc(getattr(ticker, "time", None)) or as_of
+    origin = market_data_origin(getattr(ticker, "marketDataType", None))
+
+    # A cost is taken from the ask and a spread needs both sides, so a
+    # one-sided quote is degraded even when `last` looks healthy.
+    if bid is not None and ask is not None:
+        quality = DataQuality.OK
+    elif last is not None or bid is not None or ask is not None:
+        quality = DataQuality.DEGRADED
+    else:
+        quality = DataQuality.STALE
+
+    return OptionQuoteSnapshot(
+        contract=broker_contract,
+        as_of=quote_time,
+        source=source,
+        origin=origin,
+        data_quality=quality,
+        bid=bid,
+        ask=ask,
+        last=last,
+        close=close,
+        volume=volume,
+        open_interest=open_interest,
+        implied_volatility=implied_volatility,
+        delta=delta,
+        gamma=gamma,
+        theta=theta,
+        vega=vega,
+        underlying_price=underlying_price,
+    )
+
+
+def _open_interest(ticker: Any, right: OptionRight | None) -> Any:
+    """Open interest for the side this contract actually is.
+
+    IBKR reports call and put open interest as *separate* ticks (generic tick
+    101), both carried on the same ticker. Reading the wrong one would attach a
+    put's open interest to a call and let a thin contract pass a liquidity
+    floor on its counterpart's depth.
+    """
+    if right is OptionRight.CALL:
+        return getattr(ticker, "callOpenInterest", None)
+    if right is OptionRight.PUT:
+        return getattr(ticker, "putOpenInterest", None)
+    return None
+
+
+def _as_int(value: Any) -> Any:
+    """IBKR reports an option multiplier as the string ``"100"``."""
+    if isinstance(value, str):
+        text = value.strip()
+        return int(text) if text.isdigit() else None
+    return value
+
+
+def _nonnegative(value: Decimal | None) -> Decimal | None:
+    """IBKR uses -1 for "not reported" on size and volatility fields."""
+    if value is None or value < 0:
+        return None
+    return value
 
 
 def to_option_chain_snapshot(

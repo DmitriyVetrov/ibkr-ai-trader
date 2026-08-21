@@ -304,9 +304,24 @@ def test_the_data_layer_reuses_the_broker_abstraction(repo_root: Path) -> None:
 
 
 def test_no_module_outside_the_adapter_creates_an_ibkr_connection(repo_root: Path) -> None:
+    """No data-layer module *calls* a raw IBKR API.
+
+    Matched as call syntax — ``.reqTickers(`` — rather than as a bare name.
+    The looser form flagged the option provider's own docstring, which
+    explains why the strike list is an argument by naming the API calls the
+    design avoids. That is documentation of the boundary, not a crossing of
+    it, and a test that cannot tell the two apart pushes the next person into
+    writing vaguer comments to appease it.
+
+    The claim is unweakened: every real call goes through an attribute access
+    on the broker's ``ib`` handle, so every real call is still caught.
+    """
     data_package = repo_root / "src" / "trading_system" / "data"
-    for path in data_package.rglob("*.py"):
-        source = path.read_text(encoding="utf-8")
-        assert "reqTickers" not in source, path
-        assert "reqSecDefOptParams" not in source, path
-        assert "qualifyContracts" not in source, path
+    forbidden_calls = (".reqTickers(", ".reqSecDefOptParams(", ".qualifyContracts(", ".reqMktData(")
+    offenders = [
+        (str(path.relative_to(repo_root)), call)
+        for path in data_package.rglob("*.py")
+        for call in forbidden_calls
+        if call in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []

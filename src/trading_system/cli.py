@@ -40,7 +40,7 @@ from trading_system.infrastructure.settings import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from datetime import datetime
+    from datetime import date, datetime
 
     from trading_system.allocation.service import AllocationService
     from trading_system.cleanup.service import CleanupService
@@ -1177,12 +1177,38 @@ def data_collect_options(
         bool,
         typer.Option("--quotes", help="Also collect per-contract option quotes where available."),
     ] = False,
+    expiration: Annotated[
+        str | None,
+        typer.Option(
+            "--expiration",
+            help="Quote this expiration (YYYY-MM-DD). Default: nearest --dte in the config window.",
+        ),
+    ] = None,
+    dte: Annotated[
+        int | None,
+        typer.Option(
+            "--dte",
+            help="Target days to expiration. Default: the middle of the configured DTE window.",
+        ),
+    ] = None,
 ) -> None:
-    """Collect an option chain snapshot. Selects no contract. (collects data)"""
+    """Collect an option chain snapshot. Selects no contract. (collects data)
+
+    Without ``--expiration`` or ``--dte`` the nearest expiration inside
+    ``data.yaml``'s ``option_quotes`` DTE window is quoted. That default
+    matters: the chain's *first* expiration is often a day away, and quotes
+    collected there can never satisfy a selection policy asking for 21 days.
+    """
     service = _data_service(simulated)
     reports = [service.collect_option_chain(symbol)]
     if quotes:
-        reports.append(service.collect_option_quotes(symbol))
+        reports.append(
+            service.collect_option_quotes(
+                symbol,
+                expiration=_parse_expiration(expiration),
+                target_dte=dte,
+            )
+        )
     for report in reports:
         _print_collection(report)
     if not reports[0].succeeded:
@@ -1393,6 +1419,23 @@ def _parse_instant(value: str) -> datetime:
     if parsed.tzinfo is None:
         _fail("--as-of must carry a timezone; a naive instant has no position on the timeline")
     return parsed
+
+
+def _parse_expiration(value: str | None) -> date | None:
+    """Parse ``--expiration``. A calendar date, deliberately not an instant.
+
+    An option expires on a date at an exchange, not at a UTC moment, so there
+    is no timezone to carry here and nothing to normalise.
+    """
+    from datetime import date as date_type
+
+    if value is None:
+        return None
+    try:
+        return date_type.fromisoformat(value.strip())
+    except ValueError:
+        _fail(f"--expiration must be a calendar date as YYYY-MM-DD, got {value!r}")
+        raise AssertionError("unreachable") from None  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
