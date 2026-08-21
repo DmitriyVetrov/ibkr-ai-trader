@@ -35,6 +35,7 @@ from trading_system.domain.enums import (
     AlertSeverity,
     AllocationPolicy,
     ConfidenceLevel,
+    DataQualityIssue,
     ExitPolicyKind,
     ExitQuoteField,
     ExpirationSelectionPolicy,
@@ -1388,6 +1389,26 @@ class ResearchUsabilityConfig(_ConfigModel):
     require_consistency: bool = True
     #: False by default: staleness is contextual and the consumer decides.
     require_freshness: bool = False
+
+    #: Plausibility findings an operator has deliberately decided to tolerate.
+    #:
+    #: All-or-nothing, and empty by default. A record whose plausibility
+    #: dimension failed stays research-usable only when *every* plausibility
+    #: finding it carries is listed here; one untolerated finding fails the
+    #: record even when a tolerated one sits beside it. Tolerating a defect is
+    #: an operator decision recorded in configuration, never a default.
+    #:
+    #: This is deliberately an allow-list rather than ``require_plausibility:
+    #: false``, which would switch off every plausibility check at once --
+    #: negative and zero prices, prices out of bounds, implausible implied
+    #: volatility, deltas outside +/-1, strike bounds and expiration horizon.
+    #: The precedent is ``observability/privacy.py``'s ``ALLOWED_EXACT_NAMES``:
+    #: a blunt guard needs an explicit exception list, not a loosened pattern.
+    #:
+    #: Nothing here rescales, repairs or hides anything. The raw value, the
+    #: finding and ``plausibility_valid=False`` are all unchanged; only the
+    #: derived ``research_usable`` moves.
+    tolerated_plausibility_issues: list[DataQualityIssue] = Field(default_factory=list)
 
 
 class MarketCalendarConfig(_ConfigModel):

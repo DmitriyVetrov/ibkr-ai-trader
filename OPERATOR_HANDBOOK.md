@@ -683,24 +683,78 @@ Almost always a delayed-data consequence, and almost always correct behaviour.
   missing measurement is never a satisfied threshold. To select from delayed
   data, set the floor to `0` **explicitly**, or use a provider that reports
   volume.
-- **`DATA_NOT_RESEARCH_USABLE`** — IBKR's delayed *session* volume (tick 74)
-  arrives corrupted: a raw capture recorded 31,367,915,626,456 for a SPY
-  session whose real volume was about 31.4 million. It is IBKR's number, not a
-  library bug, and it is not the `DBL_MAX` sentinel. The inflation is **not a
-  constant** — 10⁶ on eleven of twelve sampled symbols and demonstrably not
-  that on AMZN. So the value is preserved verbatim, flagged `SUSPICIOUS_VOLUME`,
-  and never rescaled. That flag fails plausibility, `research_usable` goes
-  false, and `universe.yaml`'s `require_research_usable: true` rejects the
-  symbol *several checks before* any volume comparison.
+- **`DATA_NOT_RESEARCH_USABLE`** — a plausibility finding the configuration
+  does not tolerate. Check which one:
 
-**Do not add a rescaling correction, a per-symbol table, or an AMZN special
-case.** The unresolved AMZN reading is the evidence that rescaling is unsafe,
-not a gap to patch. Note that pointing the liquidity floor at
-`average_daily_volume` (tick 21, which comes back clean) does **not** on its own
-make a live delayed universe non-empty — the symbols are refused upstream by
-research usability. Whether a record whose only defect is a known-defective
-broker field should still count as research-usable is a policy decision nobody
-has made yet.
+  ```bash
+  python -m trading_system.cli data quality --symbol SPY
+  ```
+
+  The shipped configuration tolerates exactly one finding, `SUSPICIOUS_VOLUME`,
+  so seeing this code today means something *else* failed plausibility — an
+  implausible price, an impossible delta, a strike or expiry out of bounds.
+  Read the detail line rather than reaching for the switch: those are the
+  checks the allow-list exists to keep switched on.
+
+**Tick 74, and why nothing divides it.** IBKR's delayed *session* volume
+arrives at a scale that varies per value. It behaves like a decimal
+floating-point number whose mantissa survives and whose exponent does not:
+IBKR moved size fields to the `Decimal` type between API V9 and V10, and
+`ib_async` decodes msgId 2 with a bare `float()` and no `decimalToDouble`. It
+is IBKR's number rather than a library bug — ticks 8, 74 and 21 share one
+decode path and only 74 comes back scaled — and it is not the `DBL_MAX`
+sentinel.
+
+The exponent **floats, and cannot be inferred from the number**. Decoded values
+for the 2026-08-21 session, checked against an external public source:
+
+| Symbol | tick 74 ÷ 10⁶ | real session volume | divisor actually needed |
+|---|---|---|---|
+| SPY  | 38,583,983 | 38,892,743 | 10⁶ |
+| NVDA | 98,282,719 | 98,371,121 | 10⁶ |
+| DIA  |  2,960,172 |  3,032,659 | 10⁶ |
+| MSFT |  2,186,102 | **21,861,968** | **10⁵** |
+
+DIA and MSFT have the same digit count and need different divisors, so neither
+magnitude nor digit count is a usable signal. **Do not add a rescaling
+correction or a per-symbol table**, and do not build one around whichever
+symbol looks like the exception — the outlier moves between symbols. An earlier
+note named AMZN; on 2026-08-21 AMZN was normal and MSFT was the broken one. Any
+fixed divisor is wrong by an order of magnitude somewhere, silently, and can be
+wrong in the direction that *passes* a liquidity floor.
+
+**Why the universe still runs.** The value is preserved verbatim and still
+flagged `SUSPICIOUS_VOLUME`; the flag still fails plausibility. What lets the
+record through is
+`config/data.yaml`'s `research_usability.tolerated_plausibility_issues`, which
+names that one finding. The justification is narrow: **no decision in this
+system is permitted to read tick 74.** The liquidity floor names
+`average_daily_volume` — tick 21, which arrives clean and unscaled — and a
+missing average is `VOLUME_UNAVAILABLE`, never answered from the session
+figure. Tick 74 is kept as evidence that the feed misbehaves and nothing more,
+so a record whose only defect is a field nobody may read is not unfit to
+research.
+
+Measured on the live paper feed on 2026-08-21, same code and same session: with
+the list empty, seven of ten universe symbols were rejected
+`DATA_NOT_RESEARCH_USABLE`; with the shipped list, none were and nine were
+selected.
+
+Three things to know before editing that list:
+
+1. **It is all-or-nothing.** A record stays usable only if *every* plausibility
+   finding it carries is listed. One untolerated finding fails the record even
+   with a tolerated one beside it.
+2. **It is not `require_plausibility: false`.** That switch turns off every
+   plausibility check at once — negative price, zero price, price out of
+   bounds, implausible implied volatility, delta outside ±1, strike bounds,
+   expiration horizon. Each entry in the allow-list is a separate decision
+   needing its own justification; do not add one in passing.
+3. **The verdict is stored at collection time.** Consumers read the verdict off
+   the snapshot rather than recomputing it, so a change here governs records
+   collected *afterwards*. Re-storing an unchanged response is recorded as a
+   re-observation, not a new snapshot, so re-running collection over identical
+   content will not clear a stale verdict.
 
 ### 9.4 Every contract is rejected `CURRENCY_MISMATCH`
 

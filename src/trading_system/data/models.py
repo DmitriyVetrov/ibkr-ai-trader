@@ -247,6 +247,18 @@ class DataQualityReport(ImmutableModel):
     research_usable: bool = True
 
     issues: list[DataQualityIssue] = Field(default_factory=list)
+    #: The subset of ``issues`` that cleared the plausibility dimension.
+    #:
+    #: Recorded separately because ``issues`` is flat and a finding cannot
+    #: otherwise be traced back to the dimension it failed. That matters for
+    #: one derivation only: ``research_usable`` may tolerate a plausibility
+    #: finding an operator has listed in
+    #: ``data.research_usability.tolerated_plausibility_issues``, and the
+    #: decision is checkable from the stored report because the findings it
+    #: was made over are on the record. An older report predating this field
+    #: carries an empty list and is treated as *untolerated*, which fails
+    #: closed.
+    plausibility_issues: list[DataQualityIssue] = Field(default_factory=list)
     #: Human-readable detail, parallel to ``issues`` in spirit but not indexed
     #: by it: one issue can produce several notes.
     details: list[str] = Field(default_factory=list)

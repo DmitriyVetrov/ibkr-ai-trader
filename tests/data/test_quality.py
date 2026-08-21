@@ -160,8 +160,12 @@ def test_suspicious_volume_is_flagged_and_the_raw_value_survives(
     """The Milestone 2 finding, encoded as a regression.
 
     Real IBKR paper validation returned an SPY volume that cannot be a real
-    session volume. The required behaviour is: preserve the value, flag it,
-    exclude it from research — never correct it and never drop the record.
+    session volume. The required behaviour is: preserve the value and flag it
+    — never correct it and never drop the record.
+
+    Whether such a record may still be *researched* is a separate, configured
+    question, and it is the only thing the tolerated-issue allow-list moves;
+    see the tolerance section at the end of this module.
     """
     absurd = Decimal(data_config.plausibility.max_equity_daily_volume) * 10
     quote = make_quote(volume=absurd)
@@ -169,7 +173,7 @@ def test_suspicious_volume_is_flagged_and_the_raw_value_survives(
 
     assert report.has(DataQualityIssue.SUSPICIOUS_VOLUME)
     assert not report.plausibility_valid
-    assert not report.research_usable
+    assert DataQualityIssue.SUSPICIOUS_VOLUME in report.plausibility_issues
     # Technically valid and economically impossible at the same time.
     assert report.transport_valid and report.schema_valid and report.source_valid
     assert report.technically_valid
@@ -520,10 +524,14 @@ def test_option_snapshot_rolls_up_the_worst_of_its_parts(
 # Research usability is a separate question from technical validity
 # ---------------------------------------------------------------------------
 def test_research_usability_is_configurable_and_distinct(data_config, make_quote, data_now) -> None:
-    """Same record, two policies, two verdicts — and identical raw values."""
-    suspicious = make_quote(volume=Decimal(data_config.plausibility.max_equity_daily_volume) * 3)
+    """Same record, two policies, two verdicts — and identical raw values.
 
-    strict = QualityEngine(data_config).evaluate(suspicious, context=QualityContext(now=data_now))
+    The finding used here is deliberately one the shipped allow-list does not
+    tolerate, so the two verdicts come from ``require_plausibility`` alone.
+    """
+    impossible = make_quote(ask=Decimal(data_config.plausibility.max_price) * 10)
+
+    strict = QualityEngine(data_config).evaluate(impossible, context=QualityContext(now=data_now))
     relaxed_config = data_config.model_copy(
         update={
             "research_usability": data_config.research_usability.model_copy(
@@ -532,14 +540,14 @@ def test_research_usability_is_configurable_and_distinct(data_config, make_quote
         }
     )
     relaxed = QualityEngine(relaxed_config).evaluate(
-        suspicious, context=QualityContext(now=data_now)
+        impossible, context=QualityContext(now=data_now)
     )
 
     assert not strict.research_usable
     assert relaxed.research_usable
     # In both cases the finding is recorded and the value untouched.
-    assert strict.has(DataQualityIssue.SUSPICIOUS_VOLUME)
-    assert relaxed.has(DataQualityIssue.SUSPICIOUS_VOLUME)
+    assert strict.has(DataQualityIssue.IMPLAUSIBLE_PRICE)
+    assert relaxed.has(DataQualityIssue.IMPLAUSIBLE_PRICE)
 
 
 def test_the_report_is_machine_readable(quality_engine, make_quote, data_now) -> None:
@@ -574,3 +582,184 @@ def test_attach_returns_a_copy_and_leaves_the_original_alone(
     assert assessed.quality.has(DataQualityIssue.CROSSED_BID_ASK)
     assert original.quality == DataQualityReport()
     assert assessed.bid == original.bid and assessed.ask == original.ask
+
+
+# ---------------------------------------------------------------------------
+# Tolerated plausibility findings
+#
+# An operator may decide that one specific plausibility finding does not make
+# a record unfit to reason from. The list is explicit, it defaults to empty,
+# and it is all-or-nothing. It is deliberately not `require_plausibility:
+# false`, which switches off every plausibility check at once — the precedent
+# is `observability/privacy.py`'s ALLOWED_EXACT_NAMES: a blunt guard needs an
+# exception list, not a loosened pattern.
+#
+# The shipped list holds exactly one entry, SUSPICIOUS_VOLUME, because every
+# quote from the real IBKR feed carries it (tick 74 arrives at a scale that
+# varies per value) and no decision in this system is permitted to read that
+# field: the liquidity floor names average_daily_volume, which arrives clean.
+# ---------------------------------------------------------------------------
+def _tolerating(data_config, *issues: DataQualityIssue):
+    """The shipped policy with the allow-list replaced outright."""
+    return data_config.model_copy(
+        update={
+            "research_usability": data_config.research_usability.model_copy(
+                update={"tolerated_plausibility_issues": list(issues)}
+            )
+        }
+    )
+
+
+def test_the_shipped_policy_tolerates_the_corrupt_session_volume_and_nothing_else(
+    data_config,
+) -> None:
+    """Each entry is a separate decision. There is currently exactly one."""
+    assert data_config.research_usability.tolerated_plausibility_issues == [
+        DataQualityIssue.SUSPICIOUS_VOLUME
+    ]
+
+
+def test_the_allow_list_is_empty_by_default() -> None:
+    """Tolerating a defect is an operator decision, never a default."""
+    from trading_system.infrastructure.settings import ResearchUsabilityConfig
+
+    assert ResearchUsabilityConfig().tolerated_plausibility_issues == []
+
+
+def test_a_tolerated_finding_leaves_the_record_usable_and_changes_nothing_else(
+    data_config, make_quote, data_now
+) -> None:
+    """Only the derived verdict moves. The value, the flag and the dimension stay."""
+    corrupt = Decimal("31367915626456")
+    quote = make_quote(volume=corrupt, average_daily_volume=Decimal("52014430"))
+
+    engine = QualityEngine(_tolerating(data_config, DataQualityIssue.SUSPICIOUS_VOLUME))
+    report = engine.evaluate(quote, context=QualityContext(now=data_now))
+
+    assert report.research_usable
+    # Everything the finding said about the record is still on the record.
+    assert not report.plausibility_valid
+    assert report.has(DataQualityIssue.SUSPICIOUS_VOLUME)
+    assert report.plausibility_issues == [DataQualityIssue.SUSPICIOUS_VOLUME]
+    assert report.classification is DataQuality.DEGRADED
+    # And the raw value is untouched: tolerating is not rescaling.
+    assert quote.volume == corrupt
+    assert quote.volume != corrupt / Decimal(1_000_000)
+    assert quote.average_daily_volume == Decimal("52014430")
+
+
+def test_an_empty_allow_list_leaves_the_same_record_unusable(
+    data_config, make_quote, data_now
+) -> None:
+    """The default behaviour is unchanged: nothing is tolerated implicitly."""
+    quote = make_quote(volume=Decimal("31367915626456"))
+
+    engine = QualityEngine(_tolerating(data_config))
+    report = engine.evaluate(quote, context=QualityContext(now=data_now))
+
+    assert not report.research_usable
+    assert report.has(DataQualityIssue.SUSPICIOUS_VOLUME)
+
+
+def test_tolerating_a_volume_finding_does_not_tolerate_a_bad_price(
+    data_config, make_quote, data_now
+) -> None:
+    """The guard against constraint 2: this is an allow-list, not an off switch.
+
+    A crossed quote fails a different dimension entirely, and an implausible
+    price fails the same one. Neither is on the list, so both are still
+    rejected while the volume finding beside them is tolerated.
+    """
+    engine = QualityEngine(_tolerating(data_config, DataQualityIssue.SUSPICIOUS_VOLUME))
+    corrupt = Decimal("31367915626456")
+
+    crossed = engine.evaluate(
+        make_quote(volume=corrupt, bid=Decimal("600"), ask=Decimal("500")),
+        context=QualityContext(now=data_now),
+    )
+    assert crossed.has(DataQualityIssue.CROSSED_BID_ASK)
+    assert not crossed.consistency_valid
+    assert not crossed.research_usable
+
+    impossible = engine.evaluate(
+        make_quote(volume=corrupt, ask=Decimal(data_config.plausibility.max_price) * 10),
+        context=QualityContext(now=data_now),
+    )
+    assert impossible.has(DataQualityIssue.IMPLAUSIBLE_PRICE)
+    assert not impossible.research_usable
+
+
+def test_one_untolerated_finding_fails_the_record_beside_a_tolerated_one(
+    data_config, make_quote, data_now
+) -> None:
+    """All-or-nothing: the list is a subset test over every plausibility finding."""
+    engine = QualityEngine(_tolerating(data_config, DataQualityIssue.SUSPICIOUS_VOLUME))
+    report = engine.evaluate(
+        make_quote(volume=Decimal("31367915626456"), ask=Decimal("-1")),
+        context=QualityContext(now=data_now),
+    )
+
+    assert report.has(DataQualityIssue.SUSPICIOUS_VOLUME)
+    assert report.has(DataQualityIssue.NEGATIVE_PRICE)
+    assert set(report.plausibility_issues) == {
+        DataQualityIssue.SUSPICIOUS_VOLUME,
+        DataQualityIssue.NEGATIVE_PRICE,
+    }
+    assert not report.research_usable
+
+
+def test_an_untolerated_finding_inside_a_chain_still_fails_the_snapshot(
+    data_config, make_chain, make_option_quote, data_now
+) -> None:
+    """A nested finding is rolled up as the plausibility finding it was.
+
+    Without that, a merged report would show ``plausibility_valid=False`` with
+    no findings attributed to the dimension, and the subset test would pass
+    vacuously — tolerating an impossible delta nobody listed.
+    """
+    engine = QualityEngine(_tolerating(data_config, DataQualityIssue.SUSPICIOUS_VOLUME))
+    snapshot = OptionSnapshot(
+        as_of=data_now,
+        source=make_chain().source,
+        underlying="SPY",
+        chain=make_chain(),
+        quotes=[make_option_quote(), make_option_quote(delta=Decimal("9"))],
+    )
+
+    report = engine.evaluate(snapshot, context=QualityContext(now=data_now))
+
+    assert DataQualityIssue.IMPLAUSIBLE_GREEK in report.plausibility_issues
+    assert not report.research_usable
+
+
+def test_a_failed_dimension_with_no_attributed_finding_fails_closed(
+    data_config, make_quote, data_now
+) -> None:
+    """An empty set satisfies a subset test vacuously; that must not read as tolerated.
+
+    The case arises when a report stored before findings were attributed to
+    dimensions is merged in.
+    """
+    from trading_system.data.quality import _Findings
+
+    engine = QualityEngine(_tolerating(data_config, DataQualityIssue.SUSPICIOUS_VOLUME))
+    findings = _Findings()
+    findings.plausibility_valid = False
+
+    assert not engine._plausibility_permits_research(findings)
+
+
+def test_an_unknown_issue_name_fails_to_load(tmp_config_dir) -> None:
+    """A typo in the allow-list must fail loudly, not tolerate nothing quietly."""
+    from trading_system.infrastructure.settings import ConfigError, load_config
+
+    data_yaml = tmp_config_dir / "data.yaml"
+    data_yaml.write_text(
+        data_yaml.read_text(encoding="utf-8").replace(
+            "    - SUSPICIOUS_VOLUME", "    - SUSPICIOUS_VOLUMES"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError):
+        load_config(tmp_config_dir)

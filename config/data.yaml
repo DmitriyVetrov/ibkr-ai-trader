@@ -145,6 +145,37 @@ research_usability:
   require_consistency: true
   require_freshness: false
 
+  # Plausibility findings this deployment has deliberately decided to tolerate.
+  #
+  # All-or-nothing: a record whose plausibility dimension failed stays usable
+  # only if EVERY plausibility finding it carries is listed here. One
+  # untolerated finding fails the record even with a tolerated one beside it.
+  #
+  # This is NOT require_plausibility: false. That switch turns off every
+  # plausibility check at once — negative price, zero price, price out of
+  # bounds, implausible implied volatility, delta outside +/-1, strike bounds,
+  # expiration horizon. A crossed quote and an implausible price are still
+  # rejected while the entries below are tolerated.
+  #
+  # Nothing here rescales or repairs anything. The raw value is preserved, the
+  # finding is still recorded, and plausibility_valid stays false. Only the
+  # derived research_usable moves.
+  tolerated_plausibility_issues:
+    # IBKR's delayed session volume (tick 74) arrives at a scale that varies
+    # per value, so quotes from the feed routinely carry this finding (the
+    # rest report no session volume at all). It is tolerated for exactly one
+    # reason: no decision in this system is permitted to read the field. The
+    # liquidity floor names average_daily_volume (tick 21), which arrives
+    # clean and unscaled, and a missing average is VOLUME_UNAVAILABLE rather
+    # than being answered from the session figure. So tick 74 is kept as
+    # evidence that the feed misbehaves and nothing else. Without this entry
+    # the affected symbols are rejected DATA_NOT_RESEARCH_USABLE several
+    # checks before any volume comparison happens.
+    #
+    # This tolerates the finding; it does not license reading the value. See
+    # CLAUDE.md and OPERATOR_HANDBOOK.md section 9.3 for why no divisor exists.
+    - SUSPICIOUS_VOLUME
+
 # ---------------------------------------------------------------------------
 # Market calendar (Milestone 3 brief section 35).
 #

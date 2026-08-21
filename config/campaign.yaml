@@ -76,7 +76,18 @@ currency_policy:
   # USD is listed because the shipped universe is US-listed and the paper
   # account reports in EUR; treating the two as interchangeable would be
   # inventing a rate, so this list is deliberately empty by default.
-  treat_as_campaign_currency: []
+  #
+  # LOCAL OPERATOR CHANGE — DO NOT COMMIT WITHOUT A DECISION.
+  # USD is listed so the US-listed universe can actually be priced against this
+  # campaign. What this asserts, explicitly: 1 USD is accounted as 1 EUR. No
+  # rate is applied because none is known — the alternative to this line is not
+  # a correct conversion, it is CURRENCY_MISMATCH on every contract forever.
+  # The envelope is therefore an approximate bound in a paper campaign, and the
+  # error is in the conservative direction while EUR/USD is above parity.
+  # Remove this and denominate the campaign in USD once the test fixtures in
+  # tests/allocation and tests/risk are moved off EUR.
+  treat_as_campaign_currency:
+    - USD
 
 # --- allocation policy ------------------------------------------------------
 allocation:

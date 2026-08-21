@@ -24,7 +24,13 @@
 # `false` again, and `tests/execution/test_zero_orders.py` asserts the shipped
 # value so the same edit cannot be committed unnoticed a second time. Flip it
 # locally to run a paper submission; do not commit the flip.
-enabled: false
+#
+# LOCAL OPERATOR FLIP — DO NOT COMMIT. Turned on deliberately for PAPER
+# operation. `tests/execution/test_zero_orders.py::
+# test_execution_submission_is_disabled_in_the_shipped_configuration` now fails
+# by design; that failure IS the tripwire working. Revert with `git checkout --
+# config/execution.yaml` before committing anything in this directory.
+enabled: true
 
 # LIVE is refused outright here, on top of the Milestone 1 environment guards
 # (LIVE_TRADING_CONFIRMED and LIVE_READINESS_CHECKLIST_SIGNED_OFF) and on top

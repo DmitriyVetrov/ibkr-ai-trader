@@ -99,6 +99,10 @@ class _Findings:
     plausibility_valid: bool = True
     consistency_valid: bool = True
     issues: list[DataQualityIssue] = field(default_factory=list)
+    #: The subset of ``issues`` raised by :meth:`fail_plausibility`. ``issues``
+    #: is flat, so without this a finding cannot be traced to the dimension it
+    #: failed — and the tolerated-issue allow-list has to know exactly that.
+    plausibility_issues: list[DataQualityIssue] = field(default_factory=list)
     details: list[str] = field(default_factory=list)
 
     def add(self, issue: DataQualityIssue, detail: str) -> None:
@@ -121,6 +125,8 @@ class _Findings:
 
     def fail_plausibility(self, issue: DataQualityIssue, detail: str) -> None:
         self.plausibility_valid = False
+        if issue not in self.plausibility_issues:
+            self.plausibility_issues.append(issue)
         self.add(issue, detail)
 
     def fail_consistency(self, issue: DataQualityIssue, detail: str) -> None:
@@ -140,6 +146,9 @@ class _Findings:
         for issue in other.issues:
             if issue not in self.issues:
                 self.issues.append(issue)
+        for issue in other.plausibility_issues:
+            if issue not in self.plausibility_issues:
+                self.plausibility_issues.append(issue)
         self.details.extend(f"{prefix}: {detail}" for detail in other.details)
 
 
@@ -670,6 +679,29 @@ class QualityEngine:
             )
 
     # --- verdict -----------------------------------------------------------
+    def _plausibility_permits_research(self, findings: _Findings) -> bool:
+        """Whether the plausibility dimension leaves the record usable.
+
+        A clean record passes. A failing one passes only when *every*
+        plausibility finding it carries appears in
+        ``research_usability.tolerated_plausibility_issues`` — one untolerated
+        finding fails the record even when a tolerated one sits beside it.
+
+        The empty-findings case fails closed. A dimension marked invalid with
+        nothing named cannot be reasoned about, and "no findings" would satisfy
+        a subset test vacuously; that arises when an older stored report, from
+        before findings were attributed to dimensions, is merged in.
+
+        Nothing here changes ``plausibility_valid``, the findings or the raw
+        values. Only the derived ``research_usable`` moves.
+        """
+        if findings.plausibility_valid:
+            return True
+        tolerated = set(self._config.research_usability.tolerated_plausibility_issues)
+        if not tolerated or not findings.plausibility_issues:
+            return False
+        return all(issue in tolerated for issue in findings.plausibility_issues)
+
     def _report(self, findings: _Findings, now: datetime) -> DataQualityReport:
         policy = self._config.research_usability
         usable = all(
@@ -679,7 +711,7 @@ class QualityEngine:
                 findings.source_valid or not policy.require_source,
                 findings.timestamp_valid or not policy.require_timestamp,
                 findings.completeness_valid or not policy.require_completeness,
-                findings.plausibility_valid or not policy.require_plausibility,
+                self._plausibility_permits_research(findings) or not policy.require_plausibility,
                 findings.consistency_valid or not policy.require_consistency,
                 findings.freshness_valid or not policy.require_freshness,
             ]
@@ -695,6 +727,7 @@ class QualityEngine:
             consistency_valid=findings.consistency_valid,
             research_usable=usable,
             issues=list(findings.issues),
+            plausibility_issues=list(findings.plausibility_issues),
             details=list(findings.details),
             evaluated_at=now.astimezone(UTC),
         )

@@ -1575,25 +1575,39 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   reading an unknown volume as passing. That is the correct behaviour, not a bug: to select a
   universe from delayed data, set the floor to 0 explicitly, or use a provider that reports
   volume. Never treat a missing measurement as a satisfied threshold.
-- **IBKR's delayed session volume (tick 74) arrives corrupted, and there is no correction
-  for it.** A raw-wire capture on 2026-08-15 (gateway 10.45, `ib_async` 2.1.0,
-  `IBKR_MARKET_DATA_TYPE=3`) recorded `<<< 2,6,3,74,31367915626456` for SPY — a session
-  whose real volume was some 31.4 million shares. Three facts settle what to do about it.
-  **It is IBKR's number, not the library's**: `ib_async` decodes msgId 2 with a bare
-  `float()` (`decoder.py`'s `wrap("tickSize", [int, int, float])`) and transforms nothing,
-  so there is no library bug to work around. **It is not the `DBL_MAX` sentinel** — it is
-  some 22 million times smaller — so `conversion.to_decimal` cannot drop it and must not
-  try. **The inflation is not a constant**: it is 10⁶ on eleven of twelve sampled symbols
-  and demonstrably not that on AMZN, whose `/1e6` value sits at 0.15× its own
-  extended-hours bar while the rest cluster at 1.06–1.49. So a fixed `/1_000_000` would be
-  wrong by an order of magnitude somewhere, silently, in the direction that *passes* a
+- **IBKR's delayed session volume (tick 74) arrives at a scale that varies per value, and
+  there is no correction for it.** It behaves like a decimal floating-point number whose
+  mantissa survives and whose exponent does not: IBKR migrated size fields to the `Decimal`
+  type (Intel Decimal FP Library) between API V9 and V10, and `ib_async` decodes msgId 2
+  as `wrap("tickSize", [int, int, float])` — a bare `float()`, with no `decimalToDouble`.
+  **It is not a library bug**: ticks 8, 74 and 21 all go through one `SIZE_TICK_MAP` and
+  one `float()`, and only 74 comes back scaled, so IBKR is sending the fields at different
+  scales. **It is not the `DBL_MAX` sentinel** either — it is millions of times smaller —
+  so `conversion.to_decimal` cannot drop it and must not try.
+
+  **The exponent floats, and it cannot be inferred from the number.** Decoded values for
+  the 2026-08-21 session, checked against an external public source:
+
+  | Symbol | tick 74 ÷ 10⁶ | real session volume | divisor actually needed |
+  |---|---|---|---|
+  | SPY  | 38,583,983 | 38,892,743 | 10⁶ |
+  | NVDA | 98,282,719 | 98,371,121 | 10⁶ |
+  | DIA  |  2,960,172 |  3,032,659 | 10⁶ |
+  | MSFT |  2,186,102 | **21,861,968** | **10⁵** |
+
+  The raw integers for DIA and MSFT have the same digit count and need different divisors,
+  so magnitude and digit count both fail as a signal. Any fixed divisor is wrong by an
+  order of magnitude somewhere, silently, and can be wrong in the direction that *passes* a
   liquidity floor. The value is preserved verbatim, flagged `SUSPICIOUS_VOLUME`, and never
-  rescaled. Do not add a correction, a per-symbol table or an AMZN special case; the
-  unresolved AMZN reading is the evidence that rescaling is unsafe, not a gap to patch.
+  rescaled. Do not add a correction, a per-symbol table, or a special case for whichever
+  symbol was the outlier — **the outlier moves between symbols**: an earlier note named
+  AMZN, and on 2026-08-21 AMZN was normal while MSFT was the broken one. A per-symbol
+  table would not have worked either.
 - **`average_daily_volume` is what a liquidity floor reads, and it is a different
-  observation from `volume`.** IBKR tick 21 (`avVolume`) came back clean and unscaled on
-  the same connection in the same capture — SPY `52014430`, NVDA `146001516` — and it is
-  the trailing 90-day average, which is what `min_average_daily_volume` actually names.
+  observation from `volume`.** IBKR tick 21 (`avVolume`) comes back clean and unscaled on
+  the same connection that delivers the corrupted tick 74 — SPY `52014430`, NVDA
+  `146001516` — and it is the trailing 90-day average, which is what
+  `min_average_daily_volume` actually names.
   Getting it requires **generic tick 165**, which `reqTickers` cannot carry, so
   `IBKRBroker.get_market_data` opens a short streaming `reqMktData` subscription and
   cancels it before returning. That is still one market-data operation per connection —
@@ -1602,16 +1616,33 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   `VOLUME_UNAVAILABLE`, never answered from the session figure, and
   `tests/broker/test_ibkr_average_volume.py` pins the no-rescaling claim as an explicit
   inequality because the failure mode is a plausible-looking "normalise" helper.
-- **A corrupt session volume still makes the whole record research-unusable, and that
-  gate runs *before* the liquidity check.** `SUSPICIOUS_VOLUME` fails the plausibility
-  dimension, `research_usable` goes false, and `universe.yaml`'s
-  `require_research_usable: true` rejects the symbol as `DATA_NOT_RESEARCH_USABLE` several
-  checks earlier than any volume comparison. So pointing the floor at `average_daily_volume`
-  does **not**, on its own, make a live IBKR delayed universe non-empty — the symbols are
-  refused upstream. Whether a record whose only defect is a known-defective broker field
-  should still count as research-usable is a policy decision nobody has made yet; it is
-  deliberately not made by this change, because widening `research_usability` would relax
-  plausibility for prices too.
+- **A corrupt session volume is *tolerated* by name, and by nothing weaker.**
+  `SUSPICIOUS_VOLUME` still fails the plausibility dimension and the raw value is still
+  preserved — what moved is the derived `research_usable`, via
+  `data.yaml`'s `research_usability.tolerated_plausibility_issues`. That list is empty in
+  the model, all-or-nothing (a record stays usable only if *every* plausibility finding it
+  carries is listed), and ships holding exactly one entry. The justification is specific to
+  that entry: nothing in this system is permitted to read tick 74 for a decision — the
+  liquidity floor names `average_daily_volume` (tick 21), which arrives clean — so the
+  field is kept purely as evidence that the feed misbehaves, and a record whose only defect
+  is a field nobody may read is not thereby unfit to research.
+
+  It is deliberately **not** `require_plausibility: false`, which switches off every
+  `fail_plausibility` call site at once — negative price, zero price, price out of bounds,
+  implausible implied volatility, delta outside ±1, strike bounds, expiration horizon. The
+  precedent is `observability/privacy.py`'s `ALLOWED_EXACT_NAMES`: a blunt guard needs an
+  explicit exception list, not a loosened pattern. Do not add further entries in passing —
+  each one is a separate decision needing its own justification.
+
+  Measured on the live paper feed on 2026-08-21, same code and same session: with the list
+  empty, seven of ten universe symbols were rejected `DATA_NOT_RESEARCH_USABLE`; with the
+  shipped list, none were and nine were selected.
+- **The usability verdict is stored at collection time, not recomputed by consumers.**
+  `universe/features.py` reads `quote.quality` off the snapshot, so a change to
+  `research_usability` governs records collected *after* it. Snapshots collected under the
+  old policy keep their old verdict, and re-storing an unchanged response is recorded as a
+  re-observation rather than a new snapshot — so a stale verdict is not cleared by
+  re-running collection over identical content.
 - **`universe/__init__.py` loads its service lazily.** The service imports the agent, the agent
   imports the universe contract models, and an eager re-export closes that loop. Do not "tidy"
   the `__getattr__` away; moving the contract models out of the universe package would put a

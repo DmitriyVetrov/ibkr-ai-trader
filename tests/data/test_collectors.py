@@ -345,10 +345,16 @@ class _SuspiciousProvider(SimulatedMarketDataProvider):
         )
 
 
-def test_a_suspicious_record_is_stored_flagged_and_marked_unusable(
+def test_a_suspicious_record_is_stored_flagged_and_preserved_verbatim(
     repository, quality_engine, data_clock
 ) -> None:
-    """Preserve the evidence, flag the problem, exclude it from research."""
+    """Preserve the evidence, flag the problem, never correct or drop it.
+
+    Whether the record may still be *researched* is a separate, configured
+    question — ``research_usability.tolerated_plausibility_issues`` — and it is
+    tested in ``test_quality.py``. What is asserted here is that collection
+    stores the record and the finding either way.
+    """
     registry = ProviderRegistry()
     registry.register(_SuspiciousProvider(clock=data_clock))
     report = RegistryCollector(
@@ -360,12 +366,12 @@ def test_a_suspicious_record_is_stored_flagged_and_marked_unusable(
     assert report.succeeded
     assert report.snapshots_created == 1
     assert DataQualityIssue.SUSPICIOUS_VOLUME in report.quality_issues
-    assert report.research_usable is False
 
     stored = repository.get_latest(DataType.MARKET_QUOTE, "SPY")
     assert stored is not None
     assert stored.records[0]["volume"] == "99000000000000"
-    assert not stored.data_quality.research_usable
+    assert not stored.data_quality.plausibility_valid
+    assert stored.data_quality.has(DataQualityIssue.SUSPICIOUS_VOLUME)
 
 
 def test_an_oversized_payload_is_refused_rather_than_truncated(
@@ -482,3 +488,28 @@ def test_a_gap_is_reported_never_filled(data_now) -> None:
     )
     assert not hasattr(gap, "fill")
     assert gap.detail
+
+
+def test_the_snapshot_verdict_carries_its_plausibility_findings(
+    repository, quality_engine, data_clock
+) -> None:
+    """A failed dimension with nothing attributed to it cannot be audited.
+
+    The snapshot-level verdict is rolled up from the per-record ones, so the
+    findings that failed the plausibility dimension have to be rolled up as
+    well — otherwise a stored report shows ``plausibility_valid=false`` beside
+    an empty list, and no reader can check that verdict against the
+    tolerated-issue allow-list that produced it.
+    """
+    registry = ProviderRegistry()
+    registry.register(_SuspiciousProvider(clock=data_clock))
+    RegistryCollector(
+        registry=registry,
+        collector=_collector(repository, quality_engine, data_clock),
+        operation=lambda provider, key: provider.fetch_quote(key),  # type: ignore[attr-defined]
+    ).collect("SPY")
+
+    stored = repository.get_latest(DataType.MARKET_QUOTE, "SPY")
+    assert stored is not None
+    assert not stored.data_quality.plausibility_valid
+    assert stored.data_quality.plausibility_issues == [DataQualityIssue.SUSPICIOUS_VOLUME]

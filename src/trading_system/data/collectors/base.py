@@ -370,11 +370,18 @@ def _roll_up(reports: Iterable[DataQualityReport]) -> DataQualityReport:
             details=["snapshot contains no records"],
         )
     issues: list[DataQualityIssue] = []
+    plausibility_issues: list[DataQualityIssue] = []
     details: list[str] = []
     for report in collected:
         for issue in report.issues:
             if issue not in issues:
                 issues.append(issue)
+        # Carried up as the plausibility findings they were. A rolled-up report
+        # showing plausibility_valid=false with nothing attributed to the
+        # dimension cannot be audited against the tolerated-issue allow-list.
+        for issue in report.plausibility_issues:
+            if issue not in plausibility_issues:
+                plausibility_issues.append(issue)
         details.extend(report.details)
     return DataQualityReport(
         transport_valid=all(r.transport_valid for r in collected),
@@ -387,6 +394,7 @@ def _roll_up(reports: Iterable[DataQualityReport]) -> DataQualityReport:
         consistency_valid=all(r.consistency_valid for r in collected),
         research_usable=all(r.research_usable for r in collected),
         issues=issues,
+        plausibility_issues=plausibility_issues,
         details=details[:50],
         evaluated_at=collected[0].evaluated_at,
     )
