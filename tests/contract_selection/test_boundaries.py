@@ -212,7 +212,7 @@ def test_the_contract_selection_service_constructs_no_model_client(repo_root: Pa
 FORBIDDEN_SIZING_FIELDS = (
     "quantity",
     "allocation",
-    "allocated_eur",
+    "allocated",
     "budget",
     "account_percentage",
     "campaign_percentage",

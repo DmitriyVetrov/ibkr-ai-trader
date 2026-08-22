@@ -267,7 +267,7 @@ FORBIDDEN_OUTPUT_FIELDS = (
     "strategy_type",
     "legs",
     "quantity",
-    "allocated_eur",
+    "allocated",
     "budget",
     "limit_price",
     "order_type",

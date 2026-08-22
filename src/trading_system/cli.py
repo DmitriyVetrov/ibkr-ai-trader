@@ -56,6 +56,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from trading_system.reconciliation.service import ReconciliationService
     from trading_system.research.service import ResearchService
     from trading_system.reservations.service import ReservationService
+    from trading_system.risk.models import AccountSnapshot, RiskLimits
     from trading_system.strategies.service import ContractSelectionService, StrategyService
     from trading_system.universe.service import UniverseSelectionService
 
@@ -322,6 +323,92 @@ def _print_header(title: str, settings: Settings, broker: Broker) -> None:
     console.print(f"Access     : READ-ONLY / {access}")
     console.print(f"Broker     : {broker.name}")
     console.print(f"Mode       : {settings.trading_mode.value}")
+
+
+def _print_captured_rates(snapshot: AccountSnapshot, *, target: str) -> None:
+    """The rates captured with this balance, and what they make it worth.
+
+    Printed here because this is the only command that reads them: the engines
+    hold no broker and could not refresh a rate if they wanted to, so what this
+    capture stored is what every authorisation against it will use.
+    """
+    rates = snapshot.fx_rates.rates
+    if not rates:
+        if snapshot.currency.upper() != target.upper():
+            console.print(
+                f"\n[red]No exchange rates were reported.[/red] This account is based in "
+                f"{snapshot.currency} and the campaign trades in {target}, so no candidate can "
+                f"be authorised against this snapshot: the balance cannot be expressed in the "
+                f"currency the limits are compared in, and it will not be assumed equal."
+            )
+        return
+
+    table = Table(title="Exchange rates, as the broker reported them", show_header=True)
+    for column in ("Pair", "Rate", "Source"):
+        table.add_column(column)
+    for rate in rates:
+        table.add_row(
+            f"{rate.base_currency}/{rate.quote_currency}",
+            str(rate.rate),
+            f"{rate.source} ({rate.origin.value})",
+        )
+    console.print(table)
+
+    conversion = snapshot.spendable_in(target, as_of=snapshot.as_of, max_rate_age_seconds=None)
+    if conversion is None:
+        return
+    if conversion.ok:
+        console.print(
+            f"Spendable in the traded currency: [bold]{conversion.converted_amount} "
+            f"{conversion.to_currency}[/bold] — {conversion.describe()}"
+        )
+    else:
+        console.print(f"[red]{conversion.status.value}[/red]  {conversion.detail}")
+
+
+def _print_currency_model(limits: RiskLimits) -> None:
+    """The three currencies, and whether the bridge between them is standing.
+
+    Printed wherever limits are, because a figure whose currency a reader has
+    to infer is exactly what this system stopped doing. When the conversion
+    failed the figures shown are the declared ones, and saying so is the whole
+    point of the warning: they are not comparable with an instrument price and
+    nothing will be authorised until a rate exists.
+    """
+    fx = limits.fx
+    console.print(
+        f"Capital        : declared in [bold]{limits.budget_currency}[/bold] "
+        f"(the account's own currency)"
+    )
+    console.print(
+        f"Trades in      : [bold]{limits.target_currency}[/bold] "
+        f"(the currency the instruments are quoted in)"
+    )
+    if not limits.needs_conversion:
+        console.print("FX             : [green]none needed[/green] — one currency throughout")
+        return
+    if limits.convertible and fx is not None:
+        console.print(
+            f"FX             : [green]{fx.rate}[/green] "
+            f"{limits.budget_currency}/{limits.target_currency} from {fx.rate_source} at "
+            f"{fx.rate_as_of.isoformat() if fx.rate_as_of else 'unstated'}"
+        )
+        console.print(
+            f"Figures below are in {limits.target_currency}, converted once at that rate. "
+            f"The declared amounts are what the operator actually holds and are shown "
+            f"alongside; neither replaces the other."
+        )
+        return
+    console.print(
+        f"FX             : [red]{fx.status.value if fx else 'NOT_ATTEMPTED'}[/red] — "
+        f"{fx.detail if fx else 'no conversion was attempted'}"
+    )
+    console.print(
+        f"[yellow]The figures below are the DECLARED ones, in {limits.limit_currency}, and are "
+        f"NOT comparable with a {limits.target_currency} option price.[/yellow] Every candidate "
+        f"is rejected with FX_RATE_UNAVAILABLE until a valid rate is captured; run "
+        f"'risk capture-account'."
+    )
 
 
 def _print_zero_orders(broker: Broker) -> None:
@@ -2420,7 +2507,7 @@ def strategy_validate(
     )
     console.print(
         f"Risk window    : DTE {config.risk.dte_min}-{config.risk.dte_max}, "
-        f"option price {config.risk.min_option_price_eur}-{config.risk.max_option_price_eur}, "
+        f"option price {config.risk.min_option_price}-{config.risk.max_option_price}, "
         f"spread <= {config.risk.max_bid_ask_spread_pct}%"
     )
 
@@ -2851,6 +2938,7 @@ def risk_capture_account(simulated: SimulatedOption = False) -> None:
         )
         _print_zero_orders(broker)
 
+    config_target_currency = service.config.campaign.target_currency
     repository = service.account_repository
     assert isinstance(repository, FilesystemAccountSnapshotRepository)
     repository.save(snapshot)
@@ -2873,6 +2961,24 @@ def risk_capture_account(simulated: SimulatedOption = False) -> None:
     ):
         table.add_row(name, value)
     console.print(table)
+
+    # Cash per currency, unconverted and never summed. An account based in EUR
+    # holding no dollars is two facts; a single total would need a rate and
+    # would hide which of the two it had applied it to.
+    if snapshot.cash_by_currency:
+        ledger = Table(title="Cash by currency", show_header=True, header_style="bold")
+        ledger.add_column("Currency")
+        ledger.add_column("Amount", justify="right")
+        for code, amount in sorted(snapshot.cash_by_currency.items()):
+            ledger.add_row(code, str(amount))
+        console.print(ledger)
+        console.print(
+            "Held as reported, unconverted. Trading a USD instrument does [bold]not[/bold] "
+            "convert this balance; whether dollars must be acquired for a trade is the "
+            "broker's settlement rule, not a decision this system makes."
+        )
+
+    _print_captured_rates(snapshot, target=config_target_currency)
     console.print(
         "\nThis balance is [bold]not[/bold] the campaign budget. The campaign spends its own "
         "envelope; where the account holds less, the account wins."
@@ -2882,17 +2988,26 @@ def risk_capture_account(simulated: SimulatedOption = False) -> None:
 
 @risk_app.command("validate")
 def risk_validate() -> None:
-    """Print the deterministic limits in force, layer by layer. (read-only)"""
+    """Print the deterministic limits in force, layer by layer. (read-only)
+
+    Reads the newest stored account snapshot, if there is one, purely for the
+    exchange rates captured on it. Without one the limits are printed in the
+    currency they were *declared* in and labelled as unconverted — which is the
+    honest answer to "what are the limits" before anyone has looked up a rate,
+    and not a set of figures that may be compared with an option price.
+    """
     service = _allocation_service()
-    limits = service.limits()
+    account = service.account_snapshot(_now())
+    limits = service.limits(account=account, as_of=account.as_of if account else None)
 
     console.print("\n[bold]RISK LIMITS IN FORCE[/bold]")
     console.print(f"Campaign       : {limits.campaign_id}")
     console.print(f"Risk config    : {limits.risk_config_version}")
     console.print("Model involved : [green]none[/green] — risk is deterministic")
+    _print_currency_model(limits)
 
     table = Table(title="Effective limits", show_header=True, header_style="bold")
-    for column in ("Limit", "Value", "Owned by"):
+    for column in ("Limit", f"Value ({limits.limit_currency})", "Declared", "Owned by"):
         table.add_column(column)
     for name, value in (
         ("campaign_budget", str(limits.campaign_budget)),
@@ -2914,13 +3029,23 @@ def risk_validate() -> None:
         ("max_account_snapshot_age_seconds", str(limits.max_account_snapshot_age_seconds)),
     ):
         scope = limits.scopes.get(name)
-        table.add_row(name, value, scope.value if scope else "-")
+        declared = limits.declared.get(name)
+        table.add_row(
+            name,
+            value,
+            (
+                f"{declared} {limits.budget_currency}"
+                if declared is not None and limits.convertible
+                else "-"
+            ),
+            scope.value if scope else "-",
+        )
     console.print(table)
 
     console.print(
-        f"\nAllocatable: [bold]{limits.campaign_budget - limits.campaign_reserve}[/bold] "
-        f"(budget {limits.campaign_budget} less a reserve of {limits.campaign_reserve} that is "
-        f"never spent)."
+        f"\nAllocatable: [bold]{limits.campaign_budget - limits.campaign_reserve} "
+        f"{limits.limit_currency}[/bold] (budget {limits.campaign_budget} less a reserve of "
+        f"{limits.campaign_reserve} that is never spent)."
     )
     console.print(
         "A child layer may narrow a parent limit and may never widen one; configuration "
@@ -3050,16 +3175,17 @@ def allocation_validate(
         return
 
     service = _allocation_service()
-    limits = service.limits()
-    campaign = service.campaign_snapshot(_now())
+    account = service.account_snapshot(_now())
+    limits = service.limits(account=account, as_of=account.as_of if account else None)
+    campaign = service.campaign_snapshot(_now(), account=account)
 
     console.print("\n[bold]CAMPAIGN AND ALLOCATION POLICY[/bold]")
     console.print(f"Campaign       : {campaign.campaign_id}")
-    console.print(f"Currency       : {campaign.currency}")
     console.print(f"Budget source  : {campaign.budget_source}")
     console.print("Model involved : [green]none[/green] — allocation is deterministic")
+    _print_currency_model(limits)
 
-    table = Table(title="Campaign", show_header=True, header_style="bold")
+    table = Table(title=f"Campaign ({campaign.currency})", show_header=True, header_style="bold")
     table.add_column("Setting")
     table.add_column("Value")
     for name, value in (
@@ -3073,18 +3199,35 @@ def allocation_validate(
     ):
         table.add_row(name, value)
     console.print(table)
+    if campaign.declared_budget is not None and campaign.declared_currency:
+        console.print(
+            f"Declared envelope: [bold]{campaign.declared_budget} "
+            f"{campaign.declared_currency}[/bold] — the money the operator actually holds. It "
+            f"is not converted in place and never loses its currency."
+        )
 
-    account = service.account_snapshot(_now())
     if account is None:
         console.print(
             "[yellow]No account snapshot.[/yellow]  Capture one with "
             "'risk capture-account'. Without it, allocation fails closed rather than "
-            "assuming the money is there."
+            "assuming the money is there — and, where the campaign trades a currency the "
+            "account is not based in, there is no exchange rate either."
         )
     else:
+        spendable = account.spendable_in(
+            limits.target_currency,
+            as_of=account.as_of,
+            max_rate_age_seconds=float(limits.max_fx_rate_age_seconds),
+        )
+        converted = (
+            f", {spendable.converted_amount} {spendable.to_currency}"
+            if spendable is not None and spendable.ok
+            else ""
+        )
         console.print(
             f"Account snapshot: {account.snapshot_id} "
-            f"(as of {account.as_of.isoformat()}, spendable {_or_dash(account.spendable)})"
+            f"(as of {account.as_of.isoformat()}, spendable "
+            f"{_or_dash(account.spendable)} {account.currency}{converted})"
         )
 
     console.print(

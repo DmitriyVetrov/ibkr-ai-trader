@@ -456,11 +456,24 @@ class CampaignCapital(ImmutableModel):
 
     campaign_id: Identifier
     as_of: UtcDatetime
+    #: What every figure here is in: the currency the campaign trades, which is
+    #: what a reservation's committed capital is denominated in.
     currency: str = Field(min_length=3, max_length=8)
     schema_version: Identifier = RESERVATIONS_SCHEMA_VERSION
 
-    budget: Money = Field(ge=0)
-    reserve: Money = Field(ge=0)
+    #: The envelope in ``currency``. ``None`` when no allocation run has yet
+    #: recorded a converted envelope: the configuration states the budget in
+    #: the operator's own currency, and turning that into this one needs a rate
+    #: that only an account capture supplies. A campaign whose budget is
+    #: unknown in this currency reports the reservations it holds and declines
+    #: to compute what is left, rather than subtracting dollars from euro.
+    budget: Money | None = Field(default=None, ge=0)
+    reserve: Money | None = Field(default=None, ge=0)
+    #: The envelope as configured, in the operator's own currency. Always
+    #: present, because it needs no rate to be true.
+    declared_budget: Money = Field(ge=0)
+    declared_reserve: Money = Field(ge=0)
+    declared_currency: str = Field(min_length=3, max_length=8)
 
     authorized_total: Money = Field(default=Decimal("0"), ge=0)
     consumed_total: Money = Field(default=Decimal("0"), ge=0)
@@ -479,14 +492,30 @@ class CampaignCapital(ImmutableModel):
     #: available, and not in a position either.
     locked_by_unknown: Money = Field(default=Decimal("0"), ge=0)
     #: May be negative if a broker correction consumed past the envelope. That
-    #: is a real state worth reporting, not one to clamp away.
-    available: Money = Decimal("0")
+    #: is a real state worth reporting, not one to clamp away. ``None`` when
+    #: the envelope is not known in this currency - "we cannot say" rather than
+    #: a figure arrived at by subtracting one currency from another.
+    available: Money | None = None
 
     reservation_count: int = Field(default=0, ge=0)
     unknown_count: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
+    def _an_envelope_and_what_is_left_of_it_travel_together(self) -> CampaignCapital:
+        if (self.budget is None) != (self.available is None):
+            raise ValueError(
+                "budget and available must both be known or both be unknown: 'available' is "
+                "budget less what is committed, and reporting one without the other invites "
+                "a reader to compute the difference from a figure in another currency"
+            )
+        if (self.budget is None) != (self.reserve is None):
+            raise ValueError("budget and reserve must both be known or both be unknown")
+        return self
+
+    @model_validator(mode="after")
     def _available_is_what_is_left(self) -> CampaignCapital:
+        if self.budget is None or self.reserve is None:
+            return self
         expected = self.budget - self.reserve - self.committed_total
         if self.available != expected:
             raise ValueError(
@@ -497,7 +526,10 @@ class CampaignCapital(ImmutableModel):
         return self
 
     @property
-    def allocatable(self) -> Decimal:
+    def allocatable(self) -> Decimal | None:
+        """The envelope less its reserve, or ``None`` if the envelope is unknown."""
+        if self.budget is None or self.reserve is None:
+            return None
         return self.budget - self.reserve
 
     @property

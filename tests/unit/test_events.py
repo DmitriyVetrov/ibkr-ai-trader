@@ -149,10 +149,11 @@ def test_position_closed_carries_pnl_and_reason() -> None:
         event_id="e1",
         occurred_at=NOW,
         position_id="p1",
-        realized_pnl_eur=Decimal("180.00"),
+        currency="USD",
+        realized_pnl=Decimal("180.00"),
         exit_reason=ExitReason.TRAILING_STOP,
     )
-    assert isinstance(event.realized_pnl_eur, Decimal)
+    assert isinstance(event.realized_pnl, Decimal)
 
 
 @pytest.mark.unit
@@ -162,7 +163,8 @@ def test_event_money_rejects_binary_float() -> None:
             event_id="e1",
             occurred_at=NOW,
             position_id="p1",
-            realized_pnl_eur=180.0,
+            currency="USD",
+            realized_pnl=180.0,
             exit_reason=ExitReason.TRAILING_STOP,
         )
 

@@ -312,7 +312,7 @@ class OperationsService:
             positions_near_expiration=(),
             daily_pnl_status=daily["status"],
             daily_loss=daily["loss"],
-            daily_loss_limit=str(self._config.risk.max_daily_loss_eur),
+            daily_loss_limit=str(self._config.risk.max_daily_loss),
             daily_loss_exceeded=daily["exceeded"],
             blocked_settlements=tuple(self._blocked_settlements()),
         )
@@ -465,7 +465,7 @@ class OperationsService:
         return {
             "status": state.daily_pnl_status,
             "loss": None if loss is None else str(loss),
-            "exceeded": loss is not None and loss >= self._config.risk.max_daily_loss_eur,
+            "exceeded": loss is not None and loss >= self._config.risk.max_daily_loss,
         }
 
     def _telemetry_state(self) -> str:

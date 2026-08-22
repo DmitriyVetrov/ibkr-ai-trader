@@ -181,7 +181,7 @@ class AllocationEngine:
                 )
                 continue
 
-            decision = self._size(candidate, working, account, evaluation, rank)
+            decision = self._size(candidate, working, account, evaluation, rank, as_of)
             results.append(decision)
 
             if decision.outcome is AllocationOutcome.APPROVED:
@@ -198,8 +198,15 @@ class AllocationEngine:
         account: AccountSnapshot | None,
         evaluation: RiskEvaluation,
         rank: int,
+        as_of: datetime,
     ) -> CandidateAllocation:
-        """Compute the quantity as the floor of the tightest ceiling."""
+        """Compute the quantity as the floor of the tightest ceiling.
+
+        Every ceiling here is in the campaign's traded currency. The limits
+        arrived converted, the campaign's own figures are already in it, and
+        the account's balance - the one input still in another currency - is
+        converted below at the rate captured with it.
+        """
         limits = self._limits
         unit_cost = evaluation.unit_cost
         unit_max_loss = evaluation.unit_max_loss
@@ -231,9 +238,29 @@ class AllocationEngine:
         units_by_direction = max_units(directional_room, unit_cost)
         units_by_contract_cap = limits.max_contracts_per_trade
 
+        # The account's balance is in the account's own currency and the unit
+        # cost is in the traded one. Dividing one by the other without a rate
+        # is how a position gets sized by the exchange rate: EUR 5,000 of
+        # buying power would authorise as many contracts as USD 5,000 does,
+        # which is wrong by 17% at today's rate and wrong by an unbounded
+        # amount at some future one.
+        #
+        # A conversion that failed produces no ceiling *and no size*: the risk
+        # engine has already rejected this candidate with FX_RATE_UNAVAILABLE,
+        # and sizing it against an unconverted balance here would compute a
+        # quantity for a trade that is not permitted.
         units_by_buying_power: int | None = None
         if account is not None and account.spendable is not None:
-            units_by_buying_power = max_units(account.spendable, unit_cost)
+            conversion = account.spendable_in(
+                limits.target_currency,
+                as_of=as_of,
+                max_rate_age_seconds=float(limits.max_fx_rate_age_seconds),
+            )
+            units_by_buying_power = (
+                max_units(conversion.value, unit_cost)
+                if conversion is not None and conversion.ok
+                else 0
+            )
 
         ceilings: list[tuple[int, AllocationReason]] = [
             (units_by_budget, AllocationReason.LIMITED_BY_BUDGET),

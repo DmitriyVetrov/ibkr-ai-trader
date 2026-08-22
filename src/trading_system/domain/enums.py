@@ -56,6 +56,8 @@ __all__ = [
     "ExitRunStatus",
     "ExpectedMagnitude",
     "ExpirationSelectionPolicy",
+    "FxRateOrigin",
+    "FxStatus",
     "HealthComponent",
     "HealthDomain",
     "HealthStatus",
@@ -376,6 +378,17 @@ class RiskReasonCode(StrEnum):
     #: A conversion was required and no deterministic rate is configured. An
     #: arbitrary rate would be an invented price.
     FX_CONVERSION_UNAVAILABLE = "FX_CONVERSION_UNAVAILABLE"
+    #: A conversion was required, a rate source exists, and it reported no rate
+    #: for this pair. Deliberately distinct from the code above: "nobody
+    #: configured a source" and "the source we have does not know this pair"
+    #: send an operator to different places, and neither is 1.0.
+    FX_RATE_UNAVAILABLE = "FX_RATE_UNAVAILABLE"
+    #: A rate was found and was older than policy permits at the decision
+    #: instant. A stale rate is not a rate; it is a rate from another market.
+    FX_RATE_STALE = "FX_RATE_STALE"
+    #: A rate was found and cannot be used - zero, negative, or a sentinel the
+    #: broker uses for "no value". Never repaired, never rounded up to 1.
+    FX_RATE_INVALID = "FX_RATE_INVALID"
     #: Ranked, but below the configured floor for deserving capital.
     BELOW_MIN_OPPORTUNITY_SCORE = "BELOW_MIN_OPPORTUNITY_SCORE"
     #: Realised profit and loss for the day is not tracked at all, so the
@@ -574,6 +587,55 @@ class DataType(StrEnum):
     CORPORATE_EVENT = "CORPORATE_EVENT"
     FUNDAMENTAL_SNAPSHOT = "FUNDAMENTAL_SNAPSHOT"
     REGULATORY_EVENT = "REGULATORY_EVENT"
+
+
+@unique
+class FxRateOrigin(StrEnum):
+    """Where a foreign-exchange rate actually came from.
+
+    Recorded on every conversion, because "converted at 1.17" is not an
+    auditable statement until it says *who said 1.17*. There is deliberately no
+    member meaning "assumed", "default" or "parity": a rate nobody supplied is
+    an absent rate, and an absent rate is a refusal rather than a number.
+    """
+
+    #: IBKR's own per-currency ``ExchangeRate`` rows, which arrive with the
+    #: account summary that ``$LEDGER:ALL`` already requests. The rate and the
+    #: balance it converts therefore come from one read at one instant.
+    BROKER_ACCOUNT_LEDGER = "BROKER_ACCOUNT_LEDGER"
+    #: A simulated rate from the offline broker. Deliberately not 1.0, and
+    #: every artifact carrying it is stamped simulated.
+    SIMULATED = "SIMULATED"
+    #: A rate injected by a test fixture or an explicitly configured override.
+    #: Never a production path: a rate in a configuration file is a rate nobody
+    #: refreshed.
+    CONFIGURED = "CONFIGURED"
+    #: Both sides are the same currency, so no rate was needed and none was
+    #: used. The only circumstance in which a factor of exactly 1 is honest.
+    IDENTITY = "IDENTITY"
+    #: Derived by inverting a rate quoted the other way round.
+    INVERTED = "INVERTED"
+
+
+@unique
+class FxStatus(StrEnum):
+    """The outcome of one attempted conversion.
+
+    Four states, not two, for the same reason the data layer keeps "missing"
+    and "zero" apart: an operator whose rate is stale needs a different fix
+    from one whose broker never quoted the pair, and neither of them is served
+    by a converted figure that looks fine.
+    """
+
+    #: A usable rate was found and applied. The only status that carries a
+    #: converted amount.
+    VALID = "VALID"
+    #: No rate for this pair, in either direction. Not zero, not one.
+    UNAVAILABLE = "UNAVAILABLE"
+    #: A rate exists and was older than policy permits at the decision instant.
+    STALE = "STALE"
+    #: A rate exists and is not a usable number.
+    INVALID = "INVALID"
 
 
 @unique

@@ -322,7 +322,14 @@ class PurchaseCard(ImmutableModel):
 
     # how much
     quantity: int = Field(ge=1)
-    requested_allocation_eur: Money = Field(ge=0)
+    #: Capital committed for this trade, in :attr:`currency` - the currency the
+    #: contract is quoted and settled in, which is not necessarily the currency
+    #: the operator's capital is held in. The conversion from one to the other
+    #: happened upstream, at allocation, and is recorded on that artifact.
+    requested_allocation: Money = Field(ge=0)
+    #: Stated, never implied. A monetary figure whose currency has to be
+    #: inferred from a field name is the defect this field exists to remove.
+    currency: str = Field(min_length=3, max_length=8)
 
     # guard rails
     risk_limits: dict[str, str] = Field(default_factory=dict)
@@ -341,40 +348,55 @@ class PurchaseCard(ImmutableModel):
 # 6. Allocation (specification section 10)
 # ---------------------------------------------------------------------------
 class AllocationEntry(ImmutableModel):
-    """Budget granted to one opportunity. Zero is a valid, expected outcome."""
+    """Budget granted to one opportunity. Zero is a valid, expected outcome.
+
+    ``allocated`` is in the parent decision's ``currency``, which is the
+    currency the campaign trades in rather than the one its budget is declared
+    in. The two coincide only when no conversion was needed.
+    """
 
     opportunity_id: Identifier
     ticker: Ticker
     rank: int = Field(ge=1)
     opportunity_score: float = Field(ge=0.0, le=100.0)
-    allocated_eur: Money = Field(ge=0)
+    allocated: Money = Field(ge=0)
 
 
 class AllocationDecision(ImmutableModel):
     """Deterministic split of the campaign budget across opportunities.
 
     Identical inputs must produce an identical decision.
+
+    Every figure here is in :attr:`currency` - the currency this campaign
+    *trades* in. Where the operator's capital is held in a different currency,
+    the budget below is the converted equivalent and the declared original is
+    on the allocation run that produced this, together with the rate. Both are
+    kept: the converted figure is what a position is sized against, and the
+    declared one is what the operator actually has.
     """
 
     allocation_id: Identifier
     campaign_id: Identifier
     as_of: UtcDatetime
-    total_budget_eur: Money = Field(ge=0)
-    allocated_eur: Money = Field(ge=0)
-    reserve_eur: Money = Field(ge=0)
+    #: What all three figures below are denominated in. Stated rather than
+    #: encoded in the field names, so redenominating a campaign changes a value
+    #: and not a schema.
+    currency: str = Field(min_length=3, max_length=8)
+    total_budget: Money = Field(ge=0)
+    allocated: Money = Field(ge=0)
+    reserve: Money = Field(ge=0)
     entries: list[AllocationEntry] = Field(default_factory=list)
     versions: SystemVersions
 
     @model_validator(mode="after")
     def _budget_balances(self) -> AllocationDecision:
-        entry_total = sum((e.allocated_eur for e in self.entries), Decimal("0"))
-        if entry_total != self.allocated_eur:
+        entry_total = sum((e.allocated for e in self.entries), Decimal("0"))
+        if entry_total != self.allocated:
             raise ValueError(
-                f"entry allocations ({entry_total}) do not sum to allocated_eur "
-                f"({self.allocated_eur})"
+                f"entry allocations ({entry_total}) do not sum to allocated ({self.allocated})"
             )
-        if self.allocated_eur + self.reserve_eur != self.total_budget_eur:
-            raise ValueError("allocated_eur + reserve_eur must equal total_budget_eur")
+        if self.allocated + self.reserve != self.total_budget:
+            raise ValueError("allocated + reserve must equal total_budget")
         return self
 
 
@@ -536,9 +558,16 @@ class PositionSnapshot(ImmutableModel):
     legs: list[OptionLeg] = Field(min_length=1)
     quantity: int
     average_entry_price: Money | None = Field(default=None, gt=0)
-    market_value_eur: Money | None = None
-    unrealized_pnl_eur: Money | None = None
-    realized_pnl_eur: Money | None = None
+    #: Broker-reported valuation, in :attr:`currency` - the currency the
+    #: contract is quoted in. Not the account's base currency, and not
+    #: converted into it: this is what the broker said about the position, and
+    #: converting a reported figure would put a rate in a record of an
+    #: observation.
+    market_value: Money | None = None
+    unrealized_pnl: Money | None = None
+    realized_pnl: Money | None = None
+    #: Stated, never inferred from a field name.
+    currency: str | None = Field(default=None, min_length=3, max_length=8)
     days_to_expiration: int | None = None
     thesis_status: ThesisStatus = ThesisStatus.UNKNOWN
     source: Identifier
@@ -594,10 +623,12 @@ class TradeSnapshot(ImmutableModel):
     order_intent_id: Identifier | None = None
     exit_decision_id: Identifier | None = None
 
-    realized_pnl_eur: Money | None = None
+    #: The trade's result, in :attr:`currency` - the currency it settled in.
+    realized_pnl: Money | None = None
     r_multiple: float | None = None
-    max_favorable_excursion_eur: Money | None = None
-    max_adverse_excursion_eur: Money | None = None
+    max_favorable_excursion: Money | None = None
+    max_adverse_excursion: Money | None = None
+    currency: str | None = Field(default=None, min_length=3, max_length=8)
     exit_reason: ExitReason | None = None
     versions: SystemVersions
 
@@ -647,7 +678,27 @@ class BrokerContract(ImmutableModel):
 
 
 class BrokerAccount(ImmutableModel):
-    """Account-level state as reported by the broker."""
+    """Account-level state as reported by the broker.
+
+    ``currency`` is the account's **base** currency - what the broker reports
+    account-level figures in - and every unsuffixed monetary field below is in
+    it. It is emphatically not the currency the account trades in: an account
+    based in EUR can hold USD cash and USD-denominated options, which is the
+    ordinary case for a European account trading US listings.
+
+    Two fields keep that distinction visible rather than implied:
+
+    ``cash_by_currency``
+        What the account actually holds, per currency, unconverted. An account
+        with EUR 5,000 and USD 0 says exactly that; nothing here converts one
+        into the other or presents a total that quietly did.
+    ``exchange_rates``
+        How many units of the **base** currency one unit of each other currency
+        buys, as the broker itself reported it. Present so a figure in one
+        currency can be compared with a figure in another *explicitly*, and
+        absent when the broker said nothing - in which case no comparison is
+        made at all.
+    """
 
     account_id: BrokerSymbol
     currency: str = Field(min_length=3, max_length=8)
@@ -664,8 +715,34 @@ class BrokerAccount(ImmutableModel):
     unrealized_pnl: Money | None = None
     realized_pnl: Money | None = None
 
+    #: Cash held, keyed by currency code. Never summed across currencies.
+    cash_by_currency: dict[str, Money] = Field(default_factory=dict)
+    #: ``1 <key> = <value> <base currency>``, as the broker reported it. A
+    #: currency the broker did not quote is simply absent: there is no entry
+    #: standing for "we assumed parity", because no such entry would be true.
+    exchange_rates: dict[str, Money] = Field(default_factory=dict)
+
     #: Every tag the broker returned, unparsed, for audit and later use.
+    #: Per-currency ledger rows are keyed ``TAG:CCY`` so that a tag reported
+    #: once per currency does not overwrite itself in arrival order.
     raw_tags: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _the_base_currency_is_not_quoted_against_itself(self) -> BrokerAccount:
+        base = self.currency.upper()
+        if base in {code.upper() for code in self.exchange_rates}:
+            raise ValueError(
+                f"{base} is the account's base currency, so an exchange rate into itself is "
+                f"not an observation. Storing one would put an editable factor where the "
+                f"identity belongs"
+            )
+        bad = sorted(code for code, rate in self.exchange_rates.items() if rate <= 0)
+        if bad:
+            raise ValueError(
+                f"exchange rate(s) for {', '.join(bad)} are not positive. A broker that "
+                f"reported no rate must be recorded as having reported none, never as zero"
+            )
+        return self
 
 
 class BrokerPosition(ImmutableModel):

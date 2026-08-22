@@ -86,7 +86,9 @@ def test_environment_overrides_defaults(monkeypatch: pytest.MonkeyPatch) -> None
 @pytest.mark.unit
 def test_configuration_loads(system_config: SystemConfig) -> None:
     assert system_config.application.config_version
-    assert system_config.campaign.budget_eur == Decimal("5000")
+    assert system_config.campaign.budget == Decimal("5000")
+    assert system_config.campaign.budget_currency == "EUR"
+    assert system_config.campaign.target_currency == "USD"
     assert system_config.risk.dte_min == 14
     assert system_config.risk.dte_max == 30
 
@@ -94,13 +96,13 @@ def test_configuration_loads(system_config: SystemConfig) -> None:
 @pytest.mark.unit
 def test_money_in_config_is_decimal_not_float(system_config: SystemConfig) -> None:
     for value in (
-        system_config.campaign.budget_eur,
-        system_config.risk.min_option_price_eur,
-        system_config.risk.max_daily_loss_eur,
+        system_config.campaign.budget,
+        system_config.risk.min_option_price,
+        system_config.risk.max_daily_loss,
     ):
         assert isinstance(value, Decimal)
     # 0.30 as a binary float is 0.29999...; as an exact decimal it is not.
-    assert system_config.risk.min_option_price_eur == Decimal("0.30")
+    assert system_config.risk.min_option_price == Decimal("0.30")
 
 
 @pytest.mark.unit
@@ -186,7 +188,7 @@ def test_unquoted_decimal_in_config_is_rejected(tmp_config_dir: Path) -> None:
     risk = tmp_config_dir / "risk.yaml"
     risk.write_text(
         risk.read_text(encoding="utf-8").replace(
-            'min_option_price_eur: "0.30"', "min_option_price_eur: 0.30"
+            'min_option_price: "0.30"', "min_option_price: 0.30"
         )
     )
 

@@ -548,7 +548,7 @@ def test_the_payload_carries_no_budget_or_risk_information(
     make_service(llm_client=client).run(as_of=RESEARCH_NOW, dry_run=True)
 
     sent = client.requests[0].user_content.lower()
-    for forbidden in ("campaign_budget", "budget_eur", "max_allocation", "position_size"):
+    for forbidden in ("campaign_budget", "budget_currency", "max_allocation", "position_size"):
         assert forbidden not in sent
 
 

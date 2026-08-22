@@ -208,7 +208,15 @@ def test_the_capital_returns_to_the_campaign(lifecycle) -> None:
     assert run.result.capital_returned == Decimal("1210.00")
     assert before.committed_total == Decimal("1210.00")
     assert after.committed_total == Decimal("0")
-    assert after.available > before.available
+
+    # Committed capital is what actually moved, and it is the figure this test
+    # is about. `available` is deliberately unknown here: it is the envelope
+    # less what is committed, the envelope is declared in the currency the
+    # operator holds, and this fixture wires no allocation ledger for the
+    # converted one to be read from. Reporting the declared figure in the
+    # traded currency's place would be the subtraction this milestone removed.
+    assert before.available is None and after.available is None
+    assert before.declared_budget == after.declared_budget == Decimal("5000")
 
 
 def test_the_reservation_records_what_was_spent_as_well_as_what_came_back(

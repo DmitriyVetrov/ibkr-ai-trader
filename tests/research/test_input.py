@@ -133,15 +133,25 @@ _CONTRACT_IDENTIFYING_FIELDS = frozenset(
 _CAPITAL_FIELDS = frozenset(
     {
         "budget",
-        "budget_eur",
-        "campaign_budget_eur",
-        "allocated_eur",
+        "budget_currency",
+        "campaign_budget",
+        "allocated",
         "allocation",
-        "requested_allocation_eur",
+        "requested_allocation",
         "quantity",
         "position_size",
         "risk_limits",
-        "max_allocation_per_trade_eur",
+        "max_allocation_per_trade",
+        # The campaign's own currency machinery. Research must not be able to
+        # express which unit of account a trade settles in, or at what rate:
+        # both reach the money, and both are the campaign's decision.
+        #
+        # A bare ``currency`` is deliberately NOT banned - a fundamental's
+        # reporting currency is an ordinary fact about a filing, and a test
+        # that fires on legitimate data teaches people to delete the test. Same
+        # reasoning as ``market_capitalization`` above.
+        "target_currency",
+        "fx_rate",
     }
 )
 

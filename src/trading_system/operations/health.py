@@ -487,7 +487,7 @@ def _risk_state(inputs: HealthInputs) -> ComponentHealth:
         summary=summaries[inputs.daily_pnl_status],
         facts={
             "daily_pnl_status": inputs.daily_pnl_status.value,
-            "max_daily_loss": str(inputs.config.risk.max_daily_loss_eur),
+            "max_daily_loss": str(inputs.config.risk.max_daily_loss),
         },
     )
 

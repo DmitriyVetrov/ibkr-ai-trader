@@ -2,16 +2,17 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://trading-system.local/schemas/allocation_decision.json",
   "title": "AllocationDecision",
-  "description": "Deterministic split of the campaign budget. Identical inputs must produce an identical decision. allocated_eur + reserve_eur must equal total_budget_eur.",
+  "description": "Deterministic split of the campaign budget. Identical inputs must produce an identical decision. allocated + reserve must equal total_budget. Every figure is in 'currency', which is the currency the campaign TRADES in; where the operator's capital is held in another currency, total_budget is the converted equivalent and the declared original travels on the allocation run with the rate that produced it.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "allocation_id",
     "campaign_id",
     "as_of",
-    "total_budget_eur",
-    "allocated_eur",
-    "reserve_eur",
+    "currency",
+    "total_budget",
+    "allocated",
+    "reserve",
     "entries",
     "versions"
   ],
@@ -19,9 +20,13 @@
     "allocation_id": { "type": "string", "minLength": 1 },
     "campaign_id": { "type": "string", "minLength": 1 },
     "as_of": { "type": "string", "format": "date-time" },
-    "total_budget_eur": { "$ref": "#/$defs/money" },
-    "allocated_eur": { "$ref": "#/$defs/money" },
-    "reserve_eur": {
+    "currency": {
+      "description": "What every figure here is denominated in. Stated, never inferred from a field name.",
+      "type": "string", "minLength": 3, "maxLength": 8
+    },
+    "total_budget": { "$ref": "#/$defs/money" },
+    "allocated": { "$ref": "#/$defs/money" },
+    "reserve": {
       "description": "Deliberately unallocated capital. A non-zero reserve is the normal outcome.",
       "$ref": "#/$defs/money"
     },
@@ -36,14 +41,14 @@
     "allocation_entry": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["opportunity_id", "ticker", "rank", "opportunity_score", "allocated_eur"],
+      "required": ["opportunity_id", "ticker", "rank", "opportunity_score", "allocated"],
       "properties": {
         "opportunity_id": { "type": "string", "minLength": 1 },
         "ticker": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
         "rank": { "type": "integer", "minimum": 1 },
         "opportunity_score": { "type": "number", "minimum": 0, "maximum": 100 },
-        "allocated_eur": {
-          "description": "Zero is valid and expected: a ranked opportunity need not be funded.",
+        "allocated": {
+          "description": "Zero is valid and expected: a ranked opportunity need not be funded. In the parent decision's currency.",
           "$ref": "#/$defs/money"
         }
       }

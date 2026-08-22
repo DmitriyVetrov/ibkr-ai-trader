@@ -262,20 +262,34 @@ class ExecutionValidator:
             )
 
     def _check_currency(self, checks: _Checks, allocation: CampaignAllocation) -> None:
-        accepted = {self._campaign.currency.upper()} | {
-            code.upper() for code in self._campaign.currency_policy.treat_as_campaign_currency
-        }
+        """Whether this contract is quoted in the currency the campaign trades.
+
+        An instrument price is never converted, here least of all: the number
+        this stage is about to turn into a limit price has to be the one the
+        exchange expects. Milestone 7 has already made the same check against
+        the same target currency; repeating it is deliberate, because this is
+        the stage where being wrong costs money rather than an authorisation.
+
+        Note what is *not* checked: the currency the operator's capital is held
+        in. That conversion happened at allocation, against a rate captured
+        with the account, and its result is what authorised the amount this
+        order spends. Re-converting here would apply a second rate to a figure
+        that was already committed.
+        """
+        target = self._campaign.target_currency
         currencies = {leg.currency.upper() for leg in allocation.legs if leg.currency}
         if allocation.currency:
             currencies.add(allocation.currency.upper())
-        unsupported = sorted(currencies - accepted)
+        unsupported = sorted(currencies - {target})
         if unsupported:
             checks.refuse(
                 ExecutionReasonCode.CURRENCY_MISMATCH,
-                f"contract is quoted in {', '.join(unsupported)} and the campaign is "
-                f"denominated in {self._campaign.currency}. No FX rate source is configured, "
-                f"and converting at an invented rate would size a position wrongly by an "
-                f"amount nobody recorded. This is Milestone 7's refusal, preserved",
+                f"contract is quoted in {', '.join(unsupported)} and this campaign trades in "
+                f"{target}. An instrument price is never converted: the limit price that "
+                f"reaches the broker has to be in the contract's own currency, so a converted "
+                f"one would be the wrong number on the wire. Set "
+                f"campaign.currency_policy.target_currency to the currency this campaign "
+                f"actually trades. This is Milestone 7's refusal, preserved",
             )
 
     def _check_price(

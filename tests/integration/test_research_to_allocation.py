@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_FLOOR, Decimal
 from pathlib import Path
 
 import pytest
@@ -179,7 +179,11 @@ def _option_market(repo: FilesystemDataRepository) -> None:
                 source=_metadata("ibkr:NVDA"),
                 symbol="NVDA",
                 security_type=SecurityType.STOCK,
-                currency="EUR",
+                # A US listing is quoted in dollars. The account backing this
+                # chain is based in EUR, which is the ordinary case rather than
+                # an awkward one: the two are connected by the rate the account
+                # capture below reads from the broker.
+                currency="USD",
                 last=Decimal("180.00"),
                 close=Decimal("179.10"),
                 volume=Decimal("240000000"),
@@ -219,7 +223,7 @@ def _option_market(repo: FilesystemDataRepository) -> None:
                     right=right,
                     contract_id=int(strike) * (1 if right is OptionRight.CALL else 2),
                     exchange="SMART",
-                    currency="EUR",
+                    currency="USD",
                     multiplier=100,
                     trading_class="NVDA",
                 ),
@@ -454,13 +458,26 @@ def test_the_campaign_accounting_balances_end_to_end(workflow) -> None:
     _, _, _, allocation_run = _run_everything(workflow)
     result = allocation_run.result
 
-    assert result.budget == Decimal("5000")
-    assert result.reserve == Decimal("1000.00")
+    # The declared envelope is what the operator holds, and it never changes.
+    assert result.declared_budget == Decimal("5000")
+    assert result.declared_currency == "EUR"
+
+    # What the campaign may spend is that envelope in the currency it trades,
+    # converted once at the rate the simulated broker reported alongside the
+    # balance. The identity has to hold in the traded currency, because that is
+    # the currency every reservation on it is denominated in.
+    assert result.currency == "USD"
+    assert result.fx is not None and result.fx.ok
+    # Rounded DOWN, deliberately: a ceiling rounded up would permit marginally
+    # more than the policy states, every time, in the direction nobody notices.
+    assert result.budget == (result.declared_budget * result.fx.rate).quantize(
+        Decimal("0.01"), rounding=ROUND_FLOOR
+    )
     assert (
         result.allocated_before + result.allocated_this_run + result.available_after
         == result.budget - result.reserve
     )
-    assert result.allocated_this_run <= Decimal("4000.00")
+    assert result.allocated_this_run <= result.budget - result.reserve
 
 
 def test_the_versions_of_every_policy_are_stamped(workflow, system_config) -> None:
@@ -558,7 +575,8 @@ def test_the_milestone_one_projection_validates(workflow, load_schema) -> None:
         format_checker=Draft202012Validator.FORMAT_CHECKER,
     ).validate(projected.model_dump(mode="json"))
 
-    assert projected.allocated_eur + projected.reserve_eur == projected.total_budget_eur
+    assert projected.allocated + projected.reserve == projected.total_budget
+    assert projected.currency == "USD"
     assert projected.entries[0].ticker == "NVDA"
 
 

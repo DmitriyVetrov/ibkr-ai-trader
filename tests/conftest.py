@@ -38,6 +38,7 @@ from trading_system.domain.enums import (
     ExitAction,
     ExitReason,
     ExpectedMagnitude,
+    FxRateOrigin,
     LegAction,
     MarketHypothesis,
     OptionRight,
@@ -71,6 +72,8 @@ from trading_system.domain.models import (
     UniverseCandidate,
     UniverseSelection,
 )
+from trading_system.fx.convert import convert as fx_convert
+from trading_system.fx.models import FxRate, FxRateTable
 from trading_system.infrastructure.clock import FixedClock
 from trading_system.infrastructure.settings import (
     SystemConfig,
@@ -81,6 +84,45 @@ from trading_system.infrastructure.settings import (
 
 #: Fixed instant used across the suite so nothing depends on wall-clock time.
 FIXED_NOW = datetime(2026, 8, 10, 14, 30, tzinfo=UTC)
+
+#: The exchange rate every fixture in the suite converts at.
+#:
+#: Stated explicitly rather than defaulted, and deliberately **not** 1.0. A
+#: test rate of parity would let every cross-currency defect in the system pass
+#: the whole suite and show up only against a real account, which is precisely
+#: the failure mode this rate exists to prevent. 1.10 keeps the arithmetic
+#: legible: the shipped EUR 5,000 campaign becomes USD 5,500.
+TEST_EUR_USD = Decimal("1.10")
+
+#: The account's own currency, and the currency the shipped campaign trades.
+#: They differ on purpose. A European account holding euro and buying US-listed
+#: options priced in dollars is the ordinary case, not an awkward one.
+TEST_ACCOUNT_CURRENCY = "EUR"
+TEST_TARGET_CURRENCY = "USD"
+
+TEST_FX_RATES = FxRateTable(
+    rates=(
+        FxRate(
+            base_currency=TEST_ACCOUNT_CURRENCY,
+            quote_currency=TEST_TARGET_CURRENCY,
+            rate=TEST_EUR_USD,
+            as_of=FIXED_NOW,
+            origin=FxRateOrigin.CONFIGURED,
+            source="TEST_FIXTURE",
+        ),
+    )
+)
+
+#: The conversion those rates produce, for fixtures that record one rather than
+#: performing one.
+TEST_FX_CONVERSION = fx_convert(
+    Decimal(1),
+    from_currency=TEST_ACCOUNT_CURRENCY,
+    to_currency=TEST_TARGET_CURRENCY,
+    rates=TEST_FX_RATES,
+    as_of=FIXED_NOW,
+    max_age_seconds=None,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -946,8 +988,9 @@ def purchase_card(
         expected_magnitude=ExpectedMagnitude.MODERATE,
         expected_horizon_days=21,
         quantity=2,
-        requested_allocation_eur=Decimal("1200.00"),
-        risk_limits={"max_allocation_per_trade_eur": "1500", "max_loss_pct": "50.0"},
+        requested_allocation=Decimal("1200.00"),
+        currency="USD",
+        risk_limits={"max_allocation_per_trade": "1500 EUR", "max_loss_pct": "50.0"},
         entry_conditions=["Bid-ask spread below 8%"],
         exit_policy={"trailing_stop_pct": "30.0", "close_at_dte": "7"},
         thesis_invalidation_conditions=["Guidance withdrawn or cut"],
@@ -964,16 +1007,17 @@ def allocation_decision(versions: SystemVersions) -> AllocationDecision:
         allocation_id="allocation-001",
         campaign_id="campaign-001",
         as_of=FIXED_NOW,
-        total_budget_eur=Decimal("5000"),
-        allocated_eur=Decimal("1200.00"),
-        reserve_eur=Decimal("3800.00"),
+        currency="USD",
+        total_budget=Decimal("5000"),
+        allocated=Decimal("1200.00"),
+        reserve=Decimal("3800.00"),
         entries=[
             AllocationEntry(
                 opportunity_id="card-001",
                 ticker="NVDA",
                 rank=1,
                 opportunity_score=94.0,
-                allocated_eur=Decimal("1200.00"),
+                allocated=Decimal("1200.00"),
             )
         ],
         versions=versions,
@@ -991,12 +1035,16 @@ def account_snapshot():
         captured_at=FIXED_NOW,
         broker="SIMULATOR",
         account_id="DU0000000",
+        # The account's BASE currency: where the operator's money actually is.
+        # The campaign trades USD, and the rate below is what connects them.
         currency="EUR",
         trading_mode=TradingMode.PAPER,
         cash=Decimal("100000.00"),
         net_liquidation=Decimal("100000.00"),
         buying_power=Decimal("400000.00"),
         available_funds=Decimal("98000.00"),
+        cash_by_currency={"EUR": Decimal("100000.00"), "USD": Decimal("0.00")},
+        fx_rates=TEST_FX_RATES,
         positions=[
             AccountPosition(
                 symbol="SPY",
@@ -1014,45 +1062,37 @@ def account_snapshot():
 
 @pytest.fixture
 def campaign_snapshot():
-    """A Milestone 7 campaign: EUR 5,000 with a 20% reserve, nothing committed."""
+    """A Milestone 7 campaign: EUR 5,000 declared, USD 5,500 to spend.
+
+    The figures are in the currency the campaign *trades*, because that is what
+    a reservation costs and what every limit is compared against. The declared
+    original travels alongside: the operator holds euro, and a record showing
+    only dollars could not say how much of their own money is committed.
+
+    This fixture used to be EUR 5,000 flat, and a companion fixture
+    re-denominated the US-listed contract into EUR so that anything downstream
+    could be authorised at all — the shipped campaign refused every USD option.
+    Both are gone: a EUR account trading USD options is now the ordinary case
+    rather than one the fixtures had to work around.
+    """
     from trading_system.risk.models import CampaignSnapshot
 
     return CampaignSnapshot(
         campaign_id="campaign-001",
         as_of=FIXED_NOW,
-        currency="EUR",
-        budget=Decimal("5000"),
-        reserve=Decimal("1000.00"),
+        currency="USD",
+        budget=Decimal("5500.00"),
+        reserve=Decimal("1100.00"),
+        declared_budget=Decimal("5000"),
+        declared_currency="EUR",
+        fx=TEST_FX_CONVERSION,
         open_positions=[],
         realized_pnl_today=None,
     )
 
 
 @pytest.fixture
-def eur_contract_selection(contract_selection_result):
-    """The Milestone 6 selection, priced in the campaign's own currency.
-
-    The shipped ``contract_selection_result`` is a US-listed contract quoted in
-    USD, and the shipped campaign is denominated in EUR with no FX rate source
-    configured — so the risk engine rejects it with ``CURRENCY_MISMATCH``. That
-    is the correct behaviour and is asserted directly in
-    ``tests/risk/test_engine.py``; converting at an invented rate would size a
-    position wrongly by an amount nobody recorded.
-
-    The allocation fixtures below need an *approved* authorisation to describe
-    the boundary with, so this re-denominates the same contract rather than
-    weakening the currency policy to accommodate a fixture.
-    """
-    legs = [leg.model_copy(update={"currency": "EUR"}) for leg in contract_selection_result.legs]
-    cost = contract_selection_result.cost
-    assert cost is not None
-    return contract_selection_result.model_copy(
-        update={"legs": legs, "cost": cost.model_copy(update={"currency": "EUR"})}
-    )
-
-
-@pytest.fixture
-def allocation_candidate(eur_contract_selection, strategy_decision_record):
+def allocation_candidate(contract_selection_result, strategy_decision_record):
     """A Milestone 7 purchase candidate, carried across from Milestone 6.
 
     Built through the real builder rather than by hand: the contract tests
@@ -1069,7 +1109,7 @@ def allocation_candidate(eur_contract_selection, strategy_decision_record):
     assert specification is not None
 
     return build_candidate(
-        eur_contract_selection,
+        contract_selection_result,
         specification,
         CampaignRankingConfig(),
         decision=strategy_decision_record,
@@ -1083,7 +1123,9 @@ def risk_evaluation(allocation_candidate, campaign_snapshot, account_snapshot):
     from trading_system.risk.engine import RiskEngine
     from trading_system.risk.limits import resolve_limits
 
-    limits = resolve_limits(load_config(default_config_dir()))
+    limits = resolve_limits(
+        load_config(default_config_dir()), fx_rates=TEST_FX_RATES, as_of=FIXED_NOW
+    )
     return RiskEngine(limits).evaluate(
         allocation_candidate,
         campaign_snapshot,
@@ -1109,7 +1151,9 @@ def campaign_allocation(
     from trading_system.risk.exposure import would_add
     from trading_system.risk.limits import resolve_limits
 
-    limits = resolve_limits(load_config(default_config_dir()))
+    limits = resolve_limits(
+        load_config(default_config_dir()), fx_rates=TEST_FX_RATES, as_of=FIXED_NOW
+    )
     [decision] = AllocationEngine(limits, RiskEngine(limits)).allocate(
         [allocation_candidate],
         campaign_snapshot,
@@ -1193,8 +1237,12 @@ def allocation_run(versions: SystemVersions, campaign_snapshot, campaign_allocat
         trading_mode=TradingMode.PAPER,
         campaign_before=campaign_snapshot,
         account_snapshot_id=campaign_allocation.account_snapshot_id,
+        currency=campaign_snapshot.currency,
         budget=campaign_snapshot.budget,
         reserve=campaign_snapshot.reserve,
+        declared_budget=campaign_snapshot.declared_budget,
+        declared_currency=campaign_snapshot.declared_currency,
+        fx=campaign_snapshot.fx,
         allocated_before=campaign_snapshot.allocated,
         allocated_this_run=campaign_allocation.capital_committed,
         available_after=campaign_snapshot.available - campaign_allocation.capital_committed,
@@ -1216,7 +1264,7 @@ def risk_decision(versions: SystemVersions) -> RiskDecision:
         as_of=FIXED_NOW,
         outcome=RiskOutcome.APPROVED,
         reason_codes=[RiskReasonCode.OK],
-        evaluated_limits={"campaign_budget_eur": "5000", "open_positions": "0"},
+        evaluated_limits={"campaign_budget": "5000 EUR", "open_positions": "0"},
         trading_mode=TradingMode.PAPER,
         versions=versions,
     )
@@ -1279,8 +1327,8 @@ def position_snapshot(contract_selection: ContractSelection) -> PositionSnapshot
         legs=list(contract_selection.legs),
         quantity=2,
         average_entry_price=Decimal("5.95"),
-        market_value_eur=Decimal("1250.00"),
-        unrealized_pnl_eur=Decimal("60.00"),
+        market_value=Decimal("1250.00"),
+        unrealized_pnl=Decimal("60.00"),
         days_to_expiration=18,
         source="SIMULATOR",
     )
@@ -1315,10 +1363,10 @@ def trade_snapshot(versions: SystemVersions) -> TradeSnapshot:
         risk_decision_id="risk-001",
         order_intent_id="intent-001",
         exit_decision_id="exit-001",
-        realized_pnl_eur=Decimal("180.00"),
+        realized_pnl=Decimal("180.00"),
         r_multiple=0.6,
-        max_favorable_excursion_eur=Decimal("260.00"),
-        max_adverse_excursion_eur=Decimal("-95.00"),
+        max_favorable_excursion=Decimal("260.00"),
+        max_adverse_excursion=Decimal("-95.00"),
         exit_reason=ExitReason.TRAILING_STOP,
         versions=versions,
     )

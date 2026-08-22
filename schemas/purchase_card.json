@@ -16,7 +16,8 @@
     "expected_magnitude",
     "expected_horizon_days",
     "quantity",
-    "requested_allocation_eur",
+    "requested_allocation",
+    "currency",
     "thesis_invalidation_conditions",
     "research_report_id",
     "strategy_decision_id",
@@ -35,7 +36,11 @@
     "expected_horizon_days": { "type": "integer", "minimum": 1, "maximum": 365 },
 
     "quantity": { "type": "integer", "minimum": 1 },
-    "requested_allocation_eur": { "$ref": "#/$defs/money" },
+    "requested_allocation": {
+      "description": "Capital committed for this trade, in 'currency' - the currency the contract is quoted and settled in, which need not be the currency the operator's capital is held in.",
+      "$ref": "#/$defs/money"
+    },
+    "currency": { "type": "string", "minLength": 3, "maxLength": 8 },
 
     "risk_limits": { "type": "object", "additionalProperties": { "type": "string" } },
     "entry_conditions": { "type": "array", "items": { "type": "string" } },

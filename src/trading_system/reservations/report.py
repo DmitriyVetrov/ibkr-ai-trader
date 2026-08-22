@@ -28,6 +28,17 @@ __all__ = [
 ]
 
 
+def _or_unknown(value: object) -> str:
+    """A figure, or a phrase that cannot be mistaken for one.
+
+    ``None`` here means the envelope is not known in the currency the campaign
+    trades, which is a different fact from zero and from any number. Printing
+    a bare ``None`` invites a reader to treat it as an outage; naming it says
+    what to do about it.
+    """
+    return "unknown" if value is None else str(value)
+
+
 def render_capital(capital: CampaignCapital) -> str:
     """The campaign's capital position, with uncertainty called out separately."""
     lines = [
@@ -35,22 +46,37 @@ def render_capital(capital: CampaignCapital) -> str:
         "",
         f"Campaign   : {capital.campaign_id}",
         f"As of      : {capital.as_of.isoformat()}",
-        f"Currency   : {capital.currency}",
+        f"Currency   : {capital.currency}   (what this campaign trades)",
+        f"Declared   : {capital.declared_budget} {capital.declared_currency}"
+        f"   (what the operator holds)",
         "",
-        f"Budget           : {capital.budget}",
-        f"Policy reserve   : {capital.reserve}",
-        f"Allocatable      : {capital.allocatable}",
+        f"Budget           : {_or_unknown(capital.budget)}",
+        f"Policy reserve   : {_or_unknown(capital.reserve)}",
+        f"Allocatable      : {_or_unknown(capital.allocatable)}",
         "",
         f"Authorised total : {capital.authorized_total}",
         f"Consumed         : {capital.consumed_total}   (in positions)",
         f"Released         : {capital.released_total}   (returned to the campaign)",
         f"Committed        : {capital.committed_total}   (cannot be spent again)",
-        f"Available        : {capital.available}",
+        f"Available        : {_or_unknown(capital.available)}",
         "",
         f"Reservations     : {capital.reservation_count}",
         f"Unresolved       : {capital.unknown_count}",
         f"Locked by UNKNOWN: {capital.locked_by_unknown}",
     ]
+    if capital.budget is None:
+        lines.extend(
+            [
+                "",
+                f"The envelope is unknown in {capital.currency}. It is declared in "
+                f"{capital.declared_currency}, and",
+                "turning one into the other needs a rate this command holds no broker to",
+                "fetch. The converted figure is read from the last allocation run, which",
+                "recorded it with the rate that produced it — so run 'risk capture-account'",
+                "and then 'allocation run'. Nothing is subtracted across currencies in the",
+                "meantime.",
+            ]
+        )
     if capital.constrained_by_uncertainty:
         lines.extend(
             [

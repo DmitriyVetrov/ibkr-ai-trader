@@ -100,16 +100,22 @@ def test_a_run_cannot_authorise_the_same_euro_twice(allocate, priced):
         max_new_positions_per_run=5,
     )
 
-    assert _committed(decisions) <= Decimal("4000.00")
+    # The allocatable envelope is EUR 4,000 declared, USD 4,400 converted.
+    assert _committed(decisions) <= Decimal("4400.00")
 
 
 def test_later_candidates_see_the_reduced_budget(allocate, priced):
-    """Concentration is relaxed so this is a test about the budget alone."""
+    """Concentration is relaxed so this is a test about the budget alone.
+
+    USD 4,400 allocatable, USD 1,600 a unit: two fit, the third does not, and
+    the third is refused because the money ran out rather than because a limit
+    was breached.
+    """
     decisions = allocate(
         [
-            priced("1400.00", symbol="AAA", score=95.0),
-            priced("1400.00", symbol="BBB", score=90.0),
-            priced("1400.00", symbol="CCC", score=85.0),
+            priced("1600.00", symbol="AAA", score=95.0),
+            priced("1600.00", symbol="BBB", score=90.0),
+            priced("1600.00", symbol="CCC", score=85.0),
         ],
         max_new_positions_per_run=5,
         max_underlying_concentration_pct=100.0,
@@ -120,12 +126,17 @@ def test_later_candidates_see_the_reduced_budget(allocate, priced):
     outcomes = _outcomes(decisions)
     assert outcomes["AAA"] is AllocationOutcome.APPROVED
     assert outcomes["BBB"] is AllocationOutcome.APPROVED
-    assert outcomes["CCC"] is not AllocationOutcome.APPROVED, "4,000 does not cover three"
-    assert _committed(decisions) == Decimal("2800.00")
+    assert outcomes["CCC"] is not AllocationOutcome.APPROVED, "4,400 does not cover three"
+    assert _committed(decisions) == Decimal("3200.00")
 
 
 def test_more_opportunities_than_capital_is_a_normal_outcome(allocate, priced):
-    """Ten valid candidates, EUR 5,000: most of them get nothing, correctly."""
+    """Ten valid candidates, EUR 5,000 of capital: most get nothing, correctly.
+
+    The envelope is USD 4,400 allocatable, so three contracts at USD 1,400 fit
+    and the rest do not. Nothing here is refused because a limit was breached —
+    the money simply ran out, which is the ordinary answer.
+    """
     decisions = allocate(
         [priced("1400.00", symbol=f"SYM{index}", score=95.0 - index) for index in range(10)],
         max_new_positions_per_run=10,
@@ -135,8 +146,8 @@ def test_more_opportunities_than_capital_is_a_normal_outcome(allocate, priced):
     )
 
     approved = [d for d in decisions if d.outcome is AllocationOutcome.APPROVED]
-    assert len(approved) == 2
-    assert _committed(decisions) == Decimal("2800.00")
+    assert len(approved) == 3
+    assert _committed(decisions) == Decimal("4200.00")
     assert len(decisions) == 10, "every candidate is still recorded, funded or not"
 
 

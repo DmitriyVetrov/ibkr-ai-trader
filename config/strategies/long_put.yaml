@@ -36,8 +36,8 @@ required_option_fields:
 
 require_option_liquidity: true
 
-min_option_price_eur: "0.50"
-max_option_price_eur: "25.00"
+min_option_price: "0.50"
+max_option_price: "25.00"
 min_implied_volatility: 0.15
 max_implied_volatility: 1.20
 

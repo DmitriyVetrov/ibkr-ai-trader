@@ -305,14 +305,21 @@ def test_available_is_the_budget_less_the_reserve_less_what_is_committed() -> No
     capital = CampaignCapital(
         campaign_id="campaign-001",
         as_of=NOW,
-        currency="EUR",
-        budget=Decimal("5000.00"),
-        reserve=Decimal("1000.00"),
+        currency="USD",
+        budget=Decimal("5500.00"),
+        reserve=Decimal("1100.00"),
+        declared_budget=Decimal("5000.00"),
+        declared_reserve=Decimal("1000.00"),
+        declared_currency="EUR",
         committed_total=Decimal("1190.00"),
-        available=Decimal("2810.00"),
+        available=Decimal("3210.00"),
     )
-    assert capital.available == Decimal("2810.00")
-    assert capital.allocatable == Decimal("4000.00")
+    assert capital.available == Decimal("3210.00")
+    assert capital.allocatable == Decimal("4400.00")
+    # The operator's own figure is kept beside the converted one, in the
+    # currency it is actually held in.
+    assert capital.declared_budget == Decimal("5000.00")
+    assert capital.declared_currency == "EUR"
 
 
 def test_a_campaign_view_that_does_not_add_up_is_refused() -> None:
@@ -320,11 +327,14 @@ def test_a_campaign_view_that_does_not_add_up_is_refused() -> None:
         CampaignCapital(
             campaign_id="campaign-001",
             as_of=NOW,
-            currency="EUR",
-            budget=Decimal("5000.00"),
-            reserve=Decimal("1000.00"),
+            currency="USD",
+            budget=Decimal("5500.00"),
+            reserve=Decimal("1100.00"),
+            declared_budget=Decimal("5000.00"),
+            declared_reserve=Decimal("1000.00"),
+            declared_currency="EUR",
             committed_total=Decimal("1190.00"),
-            available=Decimal("4000.00"),
+            available=Decimal("4400.00"),
         )
 
 
@@ -333,12 +343,59 @@ def test_capital_locked_by_uncertainty_is_reported_separately() -> None:
     capital = CampaignCapital(
         campaign_id="campaign-001",
         as_of=NOW,
-        currency="EUR",
-        budget=Decimal("5000.00"),
-        reserve=Decimal("1000.00"),
+        currency="USD",
+        budget=Decimal("5500.00"),
+        reserve=Decimal("1100.00"),
+        declared_budget=Decimal("5000.00"),
+        declared_reserve=Decimal("1000.00"),
+        declared_currency="EUR",
         committed_total=Decimal("1000.00"),
         locked_by_unknown=Decimal("1000.00"),
-        available=Decimal("3000.00"),
+        available=Decimal("3400.00"),
         unknown_count=1,
     )
     assert capital.constrained_by_uncertainty is True
+
+
+def test_an_envelope_unknown_in_the_traded_currency_reports_no_available_figure() -> None:
+    """ "We cannot say" beats a figure arrived at by subtracting two currencies.
+
+    A reservation's committed capital is in the currency the campaign trades;
+    the configured budget is in the currency the operator holds. Where nothing
+    has recorded the converted envelope - no allocation run has been made, or
+    the last one was made against a different target currency - the honest
+    answer is that the envelope is unknown here, not that it is the declared
+    figure wearing the traded currency's label.
+    """
+    capital = CampaignCapital(
+        campaign_id="campaign-001",
+        as_of=NOW,
+        currency="USD",
+        declared_budget=Decimal("5000.00"),
+        declared_reserve=Decimal("1000.00"),
+        declared_currency="EUR",
+        committed_total=Decimal("1190.00"),
+    )
+
+    assert capital.budget is None
+    assert capital.available is None
+    assert capital.allocatable is None
+    # The declared figures need no rate to be true, so they are always there.
+    assert capital.declared_budget == Decimal("5000.00")
+
+
+def test_an_envelope_without_what_is_left_of_it_cannot_be_built() -> None:
+    """Reporting one and not the other invites the subtraction being avoided."""
+    with pytest.raises(ValidationError, match="both be known or both be unknown"):
+        CampaignCapital(
+            campaign_id="campaign-001",
+            as_of=NOW,
+            currency="USD",
+            budget=Decimal("5500.00"),
+            reserve=Decimal("1100.00"),
+            declared_budget=Decimal("5000.00"),
+            declared_reserve=Decimal("1000.00"),
+            declared_currency="EUR",
+            committed_total=Decimal("0"),
+            available=None,
+        )

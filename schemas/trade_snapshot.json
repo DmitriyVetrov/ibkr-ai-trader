@@ -18,25 +18,77 @@
     "versions"
   ],
   "properties": {
-    "trade_id": { "type": "string", "minLength": 1 },
-    "underlying": { "type": "string", "pattern": "^[A-Z0-9.\\-]+$" },
-    "strategy_type": { "enum": ["LONG_CALL", "LONG_PUT", "LONG_STRADDLE", "LONG_STRANGLE"] },
-    "opened_at": { "type": ["string", "null"], "format": "date-time" },
-    "closed_at": { "type": ["string", "null"], "format": "date-time" },
-    "final_state": { "$ref": "#/$defs/position_state" },
-
-    "purchase_card_id": { "type": "string", "minLength": 1 },
-    "research_report_id": { "type": "string", "minLength": 1 },
-    "strategy_decision_id": { "type": "string", "minLength": 1 },
-    "allocation_id": { "type": "string", "minLength": 1 },
-    "risk_decision_id": { "type": "string", "minLength": 1 },
-    "order_intent_id": { "type": ["string", "null"] },
-    "exit_decision_id": { "type": ["string", "null"] },
-
-    "realized_pnl_eur": { "$ref": "#/$defs/nullable_money" },
-    "r_multiple": { "type": ["number", "null"] },
-    "max_favorable_excursion_eur": { "$ref": "#/$defs/nullable_money" },
-    "max_adverse_excursion_eur": { "$ref": "#/$defs/nullable_money" },
+    "trade_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "underlying": {
+      "type": "string",
+      "pattern": "^[A-Z0-9.\\-]+$"
+    },
+    "strategy_type": {
+      "enum": [
+        "LONG_CALL",
+        "LONG_PUT",
+        "LONG_STRADDLE",
+        "LONG_STRANGLE"
+      ]
+    },
+    "opened_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "closed_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "final_state": {
+      "$ref": "#/$defs/position_state"
+    },
+    "purchase_card_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "research_report_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "strategy_decision_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "allocation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "risk_decision_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "order_intent_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "exit_decision_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "r_multiple": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
     "exit_reason": {
       "enum": [
         "TRAILING_STOP",
@@ -48,10 +100,36 @@
         null
       ]
     },
-    "versions": { "$ref": "#/$defs/system_versions" }
+    "versions": {
+      "$ref": "#/$defs/system_versions"
+    },
+    "realized_pnl": {
+      "$ref": "#/$defs/nullable_money"
+    },
+    "max_favorable_excursion": {
+      "$ref": "#/$defs/nullable_money"
+    },
+    "max_adverse_excursion": {
+      "$ref": "#/$defs/nullable_money"
+    },
+    "currency": {
+      "description": "The currency this trade settled in. Stated, never inferred.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 3,
+      "maxLength": 8
+    }
   },
   "$defs": {
-    "nullable_money": { "type": ["string", "null"], "pattern": "^-?[0-9]+(\\.[0-9]+)?$" },
+    "nullable_money": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
     "position_state": {
       "enum": [
         "DISCOVERED",
@@ -77,16 +155,42 @@
     "system_versions": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["application_version", "config_version"],
+      "required": [
+        "application_version",
+        "config_version"
+      ],
       "properties": {
-        "application_version": { "type": "string", "minLength": 1 },
-        "config_version": { "type": "string", "minLength": 1 },
-        "strategy_spec_version": { "type": ["string", "null"] },
-        "agent_version": { "type": ["string", "null"] },
-        "model_id": { "type": ["string", "null"] },
+        "application_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "config_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "strategy_spec_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "data_source_versions": {
           "type": "object",
-          "additionalProperties": { "type": "string" }
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     }

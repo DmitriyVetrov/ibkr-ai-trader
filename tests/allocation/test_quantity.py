@@ -166,12 +166,12 @@ def test_multiple_contracts(allocate, priced):
 
 
 def test_the_exact_budget_boundary_is_funded(allocate, priced, make_campaign, make_reservation):
-    """4,000 allocatable, 3,395 committed, 605 left: exactly one more unit.
+    """4,400 allocatable, 3,795 committed, 605 left: exactly one more unit.
 
     The held reservation is a different underlying, a different strategy and a
     different direction, so the only ceiling in play is the campaign budget.
     """
-    campaign = make_campaign(open_positions=[_unrelated(make_reservation, "3395.00")])
+    campaign = make_campaign(open_positions=[_unrelated(make_reservation, "3795.00")])
 
     [decision] = allocate([priced("605.00")], campaign=campaign)
 
@@ -184,8 +184,8 @@ def test_the_exact_budget_boundary_is_funded(allocate, priced, make_campaign, ma
 def test_the_budget_exceeded_by_one_cent_funds_nothing(
     allocate, priced, make_campaign, make_reservation
 ):
-    """3,395.01 committed leaves 604.99 — one cent short of a single unit."""
-    campaign = make_campaign(open_positions=[_unrelated(make_reservation, "3395.01")])
+    """3,795.01 committed leaves 604.99 — one cent short of a single unit."""
+    campaign = make_campaign(open_positions=[_unrelated(make_reservation, "3795.01")])
 
     [decision] = allocate([priced("605.00")], campaign=campaign)
 
@@ -289,12 +289,14 @@ def test_the_calculation_records_every_ceiling_it_considered(allocate, priced):
     calculation = decision.calculation
 
     assert calculation is not None
-    assert calculation.units_by_budget == 6
+    # USD 4,400 allocatable / 605 = 7; the risk and per-trade ceilings bind
+    # first. Every figure here is the shipped EUR limit converted once.
+    assert calculation.units_by_budget == 7
     assert calculation.units_by_risk == 2
     assert calculation.units_by_trade_cap == 2
     assert calculation.units_by_underlying_concentration == 2
     assert calculation.units_by_strategy_concentration == 4
-    assert calculation.units_by_directional_exposure == 5
+    assert calculation.units_by_directional_exposure == 6
     assert calculation.units_by_contract_cap == 20
     assert calculation.quantity == min(
         calculation.units_by_budget,

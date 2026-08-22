@@ -27,10 +27,12 @@ from trading_system.domain.enums import (
     StrategyType,
     TradingMode,
 )
+from trading_system.fx.models import FxRateTable
 from trading_system.risk.engine import RiskEngine
+from trading_system.risk.limits import resolve_limits
 from trading_system.risk.models import RiskEvaluation
 
-from .conftest import NOW
+from .conftest import NOW, eur_usd_rates
 
 pytestmark = pytest.mark.unit
 
@@ -108,10 +110,15 @@ def test_insufficient_campaign_budget_is_rejected(
 def test_the_reserve_is_never_spendable(
     risk_limits, make_candidate, make_campaign, make_account, make_reservation
 ):
-    """4,000 of a 5,000 budget is allocatable; the last 1,000 is not."""
+    """USD 4,400 of a USD 5,500 envelope is allocatable; the last 1,100 is not.
+
+    The figures are the shipped EUR 5,000 / EUR 1,000 converted at the suite's
+    test rate. They are stated in the traded currency because that is what a
+    reservation costs and what the limit is compared against.
+    """
     campaign = make_campaign(
         open_positions=[
-            make_reservation(capital_committed=Decimal("4000.00"), max_loss=Decimal("0"))
+            make_reservation(capital_committed=Decimal("4400.00"), max_loss=Decimal("0"))
         ]
     )
 
@@ -124,9 +131,11 @@ def test_the_reserve_is_never_spendable(
 def test_max_allocation_per_trade_is_enforced_on_a_single_unit(
     risk_limits, make_candidate, make_campaign, make_account, make_leg
 ):
+    # The ceiling is EUR 1,500 declared, USD 1,650 converted. One unit at
+    # USD 1,700 is over it.
     expensive = make_candidate(
-        price_overrides={"unit_cost": Decimal("1600.00")},
-        legs=[make_leg(bid=Decimal("15.95"), ask=Decimal("16.00"))],
+        price_overrides={"unit_cost": Decimal("1700.00")},
+        legs=[make_leg(bid=Decimal("16.95"), ask=Decimal("17.00"))],
     )
 
     evaluation = _evaluate(risk_limits, expensive, make_campaign(), account=make_account())
@@ -140,7 +149,7 @@ def test_max_risk_per_trade_is_enforced(
     """Max loss is the debit, so an over-large debit breaches the risk cap too."""
     evaluation = _evaluate(
         risk_limits,
-        make_candidate(price_overrides={"unit_cost": Decimal("1600.00")}),
+        make_candidate(price_overrides={"unit_cost": Decimal("1700.00")}),
         make_campaign(),
         account=make_account(),
     )
@@ -497,39 +506,152 @@ def test_an_upstream_quality_failure_is_respected_not_re_graded(
     assert RiskReasonCode.DATA_QUALITY_FAILED in _codes(evaluation)
 
 
-def test_a_foreign_currency_is_refused_rather_than_converted(
+def test_an_instrument_in_another_currency_is_refused_rather_than_converted(
     risk_limits, make_candidate, make_campaign, make_account, make_leg
 ):
-    candidate = make_candidate(legs=[make_leg(currency="USD")], price_overrides={"currency": "USD"})
+    """A price is never converted, in either direction.
+
+    The asymmetry with the capital limits - which *are* converted - is
+    deliberate and is about what happens to the number next. A limit is
+    compared and then discarded; a price becomes the limit price on an order,
+    and the exchange expects that figure in the contract's own currency. A
+    converted one would not be a rounding difference, it would be the wrong
+    number on the wire.
+    """
+    candidate = make_candidate(legs=[make_leg(currency="EUR")], price_overrides={"currency": "EUR"})
 
     evaluation = _evaluate(risk_limits, candidate, make_campaign(), account=make_account())
 
     assert RiskReasonCode.CURRENCY_MISMATCH in _codes(evaluation)
 
 
-def test_the_shipped_configuration_refuses_a_us_listed_contract(
-    risk_limits, make_candidate, make_campaign, make_account, make_leg
+def test_the_shipped_configuration_accepts_a_us_listed_contract(
+    risk_limits, make_candidate, make_campaign, make_account
 ):
-    """A real operational consequence, pinned so it cannot surprise anyone.
+    """The operational consequence that changed, pinned so it cannot regress.
 
-    The shipped campaign is denominated in EUR with no FX rate source, and the
-    shipped universe is US-listed. A USD-quoted option is therefore refused —
-    every time, by design. Converting at an invented rate would size a position
-    wrongly by an amount nobody recorded, so the honest answer is no.
+    This test used to assert the opposite: the shipped EUR campaign refused
+    every USD option, every time, and the only ways forward were to redenominate
+    the campaign or to declare a dollar equal to a euro.
 
-    Two ways forward, both explicit: quote the campaign in the currency it
-    actually trades, or add the currency to
-    ``campaign.currency_policy.treat_as_campaign_currency`` and accept that the
-    two are being treated as one unit of account.
+    Neither is what the system does now. The capital stays declared in EUR - the
+    operator's IBKR base currency is unchanged and does not need to change - and
+    the campaign trades USD because that is what a US-listed option is quoted
+    in. An explicit rate connects them. A currency mismatch between an account
+    and a campaign is the expected state, not an error.
     """
-    usd = make_candidate(legs=[make_leg(currency="USD")], price_overrides={"currency": "USD"})
+    usd = make_candidate()
 
-    refused = _evaluate(risk_limits, usd, make_campaign(), account=make_account())
-    assert RiskReasonCode.CURRENCY_MISMATCH in _codes(refused)
+    evaluation = _evaluate(risk_limits, usd, make_campaign(), account=make_account())
 
-    permitted = risk_limits.model_copy(update={"accepted_currencies": ["EUR", "USD"]})
-    allowed = _evaluate(permitted, usd, make_campaign(), account=make_account())
-    assert allowed.outcome is RiskOutcome.APPROVED
+    assert evaluation.outcome is RiskOutcome.APPROVED
+    assert RiskReasonCode.CURRENCY_MISMATCH not in _codes(evaluation)
+    assert evaluation.fx is not None and evaluation.fx.ok, (
+        "the verdict records the rate it rested on, so a stored authorisation "
+        "can be re-derived without loading a configuration that has since moved"
+    )
+
+
+def test_without_a_rate_nothing_is_authorised_and_nothing_is_assumed_equal(
+    unconvertible_limits, make_candidate, make_campaign, make_account
+):
+    """Case 2 and Case 6: no rate, no authorisation, no parity.
+
+    The candidate is well-formed and affordable. What is missing is the one
+    thing that would let a EUR envelope be compared with a USD price, and its
+    absence is a rejection rather than an assumption.
+    """
+    account = make_account(fx_rates=FxRateTable())
+
+    evaluation = _evaluate(unconvertible_limits, make_candidate(), make_campaign(), account=account)
+
+    assert evaluation.outcome is RiskOutcome.REJECTED
+    assert RiskReasonCode.FX_RATE_UNAVAILABLE in _codes(evaluation)
+
+
+def test_a_stale_rate_is_its_own_reason_code(
+    system_config, make_candidate, make_campaign, make_account
+):
+    """ "We could not find a rate" and "the rate is old" want different fixes."""
+    window = system_config.campaign.currency_policy.max_rate_age_seconds
+    old = NOW - timedelta(seconds=window + 1)
+    limits = resolve_limits(system_config, fx_rates=eur_usd_rates(as_of=old), as_of=NOW)
+
+    evaluation = _evaluate(
+        limits,
+        make_candidate(),
+        make_campaign(),
+        account=make_account(fx_rates=eur_usd_rates(as_of=old)),
+    )
+
+    assert RiskReasonCode.FX_RATE_STALE in _codes(evaluation)
+    assert RiskReasonCode.FX_RATE_UNAVAILABLE not in _codes(evaluation)
+
+
+def test_no_capacity_check_runs_when_the_limits_are_in_another_currency(
+    unconvertible_limits, make_candidate, make_campaign, make_account
+):
+    """The rejection arrives *before* any figure is compared with any other.
+
+    Skipping the capacity checks rather than running them against unconverted
+    figures is the point: a comparison of EUR 5,000 against a USD price would
+    produce a verdict, and the verdict would be wrong by the exchange rate
+    while looking exactly like a clean one.
+    """
+    evaluation = _evaluate(
+        unconvertible_limits,
+        make_candidate(),
+        make_campaign(),
+        account=make_account(fx_rates=FxRateTable()),
+    )
+
+    names = {check.name for check in evaluation.checks}
+    assert "campaign_currency_conversion" in names
+    assert "campaign_budget" not in names
+    assert "broker_available_funds" not in names
+
+
+def test_the_account_balance_is_converted_before_it_is_compared(
+    risk_limits, make_candidate, make_campaign, make_account
+):
+    """Case 4, and the comparison that used to read 5,000 EUR against a dollar.
+
+    The account holds EUR and the contract costs USD. The check that decides
+    whether the broker has the money records both figures and the rate between
+    them, so the arithmetic can be checked by hand from the stored artifact.
+    """
+    evaluation = _evaluate(
+        risk_limits,
+        make_candidate(),
+        make_campaign(),
+        account=make_account(available_funds=Decimal("1000.00"), buying_power=None, cash=None),
+    )
+
+    funds = next(c for c in evaluation.checks if c.name == "broker_available_funds")
+    assert funds.limit == "1100.00", "EUR 1,000 x 1.10, not EUR 1,000 read as dollars"
+    assert "1000.00 EUR" in (funds.detail or "")
+    assert "1.10" in (funds.detail or "")
+
+
+def test_an_account_the_broker_quotes_no_rate_for_cannot_be_spent_against(
+    risk_limits, make_candidate, make_campaign, make_account
+):
+    """The limits converted; the balance did not. That is still a refusal.
+
+    The two conversions are separate facts that happen to share a rate today.
+    A snapshot carrying no rates at all still fails, and it fails naming the
+    account rather than the campaign, because that is where the fix is.
+    """
+    evaluation = _evaluate(
+        risk_limits,
+        make_candidate(),
+        make_campaign(),
+        account=make_account(fx_rates=FxRateTable()),
+    )
+
+    assert RiskReasonCode.FX_RATE_UNAVAILABLE in _codes(evaluation)
+    failed = next(c for c in evaluation.checks if c.name == "account_currency_conversion")
+    assert failed.outcome is RiskCheckOutcome.FAIL
 
 
 def test_legs_in_two_currencies_are_refused(
@@ -538,7 +660,7 @@ def test_legs_in_two_currencies_are_refused(
     candidate = make_candidate(
         risk_profile=make_profile(strategy=StrategyType.LONG_STRADDLE, leg_count=2),
         strategy=StrategyType.LONG_STRADDLE,
-        legs=[make_leg(), make_leg(leg_index=1, right="PUT", currency="USD")],
+        legs=[make_leg(), make_leg(leg_index=1, right="PUT", currency="EUR")],
     )
 
     evaluation = _evaluate(risk_limits, candidate, make_campaign(), account=make_account())
@@ -611,7 +733,8 @@ def test_configuration_can_make_an_untracked_daily_loss_block_a_trade(
 def test_a_breached_daily_loss_limit_is_rejected(
     risk_limits, make_candidate, make_campaign, make_account
 ):
-    campaign = make_campaign(realized_pnl_today=Decimal("-800.00"))
+    # The limit is EUR 750 declared, USD 825 converted.
+    campaign = make_campaign(realized_pnl_today=Decimal("-900.00"))
 
     evaluation = _evaluate(risk_limits, make_candidate(), campaign, account=make_account())
 

@@ -61,6 +61,7 @@ from trading_system.domain.models import (
     Ticker,
     UtcDatetime,
 )
+from trading_system.fx.models import FxConversion
 from trading_system.risk.models import (
     ALLOCATION_SCHEMA_VERSION,
     CampaignSnapshot,
@@ -310,7 +311,7 @@ class CampaignAllocation(ImmutableModel):
             ticker=self.symbol,
             rank=self.rank,
             opportunity_score=self.opportunity_score.total,
-            allocated_eur=self.capital_committed,
+            allocated=self.capital_committed,
         )
 
 
@@ -359,8 +360,24 @@ class AllocationRunResult(ImmutableModel):
     campaign_before: CampaignSnapshot
     account_snapshot_id: Identifier | None = None
 
+    #: What every monetary figure on this run is in: the campaign's **traded**
+    #: currency. Where the operator's capital is held in another currency,
+    #: ``budget`` below is the converted equivalent and ``declared_budget``
+    #: keeps the original. Both are recorded because they answer different
+    #: questions - what the operator has, and what this campaign may spend.
+    currency: str = Field(default="EUR", min_length=3, max_length=8)
     budget: Money = Field(ge=0)
     reserve: Money = Field(ge=0)
+    #: The envelope as configured, in ``declared_currency``. Never converted in
+    #: place: the source figure keeps its currency for the life of the record.
+    declared_budget: Money | None = Field(default=None, ge=0)
+    declared_currency: str | None = Field(default=None, min_length=3, max_length=8)
+    #: The conversion that produced ``budget`` from ``declared_budget``, rate
+    #: and source included, so the arithmetic can be checked by hand. ``None``
+    #: on runs from before the FX layer, and on runs that needed no conversion
+    #: only in the sense that the identity is still recorded rather than
+    #: omitted.
+    fx: FxConversion | None = None
     allocated_before: Money = Field(ge=0)
     allocated_this_run: Money = Field(default=Decimal("0"), ge=0)
     available_after: Money = Field(ge=0)
@@ -447,20 +464,26 @@ class AllocationRunResult(ImmutableModel):
         rest of the chain was built against (``schemas/allocation_decision.json``),
         exactly as a research report projects onto ``research_report.json``.
 
-        ``reserve_eur`` there means *everything not allocated* — the policy
+        ``reserve`` there means *everything not allocated* — the policy
         reserve plus whatever was left unspent — because that model's invariant
-        is ``allocated + reserve == budget``. The two figures are kept apart on
-        this record, where the distinction is meaningful.
+        is ``allocated + reserve == total_budget``. The two figures are kept
+        apart on this record, where the distinction is meaningful.
+
+        The currency is this run's own: the campaign's **traded** currency, and
+        the one every figure on the run is already in. The declared budget and
+        the rate that converted it stay on the run, which is the audit artifact;
+        the narrow boundary carries what a downstream stage has to spend.
         """
         entries = [a.to_allocation_entry() for a in self.approvals]
-        allocated = sum((e.allocated_eur for e in entries), Decimal("0"))
+        allocated = sum((e.allocated for e in entries), Decimal("0"))
         return AllocationDecision(
             allocation_id=self.run_id,
             campaign_id=self.campaign_id,
             as_of=self.as_of,
-            total_budget_eur=self.budget,
-            allocated_eur=allocated + self.allocated_before,
-            reserve_eur=self.budget - allocated - self.allocated_before,
+            currency=self.currency,
+            total_budget=self.budget,
+            allocated=allocated + self.allocated_before,
+            reserve=self.budget - allocated - self.allocated_before,
             entries=entries,
             versions=self.versions,
         )

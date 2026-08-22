@@ -79,8 +79,8 @@ def risk_profile_of(specification: StrategySpecification) -> StrategyRiskProfile
         leg_count=specification.structure.leg_count,
         dte_min=specification.dte_min,
         dte_max=specification.dte_max,
-        min_option_price_eur=specification.min_option_price_eur,
-        max_option_price_eur=specification.max_option_price_eur,
+        min_option_price=specification.min_option_price,
+        max_option_price=specification.max_option_price,
         max_bid_ask_spread_pct=specification.max_bid_ask_spread_pct,
     )
 

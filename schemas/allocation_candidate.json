@@ -472,8 +472,8 @@
         "leg_count",
         "dte_min",
         "dte_max",
-        "min_option_price_eur",
-        "max_option_price_eur",
+        "min_option_price",
+        "max_option_price",
         "max_bid_ask_spread_pct"
       ],
       "properties": {
@@ -518,12 +518,12 @@
           "type": "integer",
           "minimum": 0
         },
-        "min_option_price_eur": {
+        "min_option_price": {
           "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
           "type": "string",
           "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
         },
-        "max_option_price_eur": {
+        "max_option_price": {
           "description": "Exact decimal as a string. Never a JSON number: binary floating point has no place in accounting.",
           "type": "string",
           "pattern": "^-?[0-9]+(\\.[0-9]+)?$"

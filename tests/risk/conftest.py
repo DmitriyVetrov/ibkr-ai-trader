@@ -26,6 +26,7 @@ from trading_system.domain.enums import (
     DailyPnLStatus,
     Direction,
     ExpectedMagnitude,
+    FxRateOrigin,
     LegAction,
     MarketHypothesis,
     MaxLossBasis,
@@ -34,6 +35,7 @@ from trading_system.domain.enums import (
     StrategyType,
     TradingMode,
 )
+from trading_system.fx.models import FxRate, FxRateTable
 from trading_system.infrastructure.settings import SystemConfig
 from trading_system.risk.limits import resolve_limits
 from trading_system.risk.models import (
@@ -54,11 +56,64 @@ from trading_system.risk.models import (
 NOW = datetime(2026, 8, 10, 14, 30, tzinfo=UTC)
 EXPIRATION = date(2026, 8, 31)
 
+#: The exchange rate every test in this suite converts at.
+#:
+#: Injected explicitly, exactly as the brief requires: deterministic tests get a
+#: **stated** rate rather than a convenient one, and it is deliberately not 1.0.
+#: A test rate of parity would let every cross-currency defect in the system
+#: pass the whole suite and fail only against a real account.
+#:
+#: 1.10 is chosen so the arithmetic stays legible by hand - the shipped EUR
+#: 5,000 campaign becomes USD 5,500, its EUR 1,500 per-trade ceiling becomes
+#: USD 1,650 - which matters because these are the numbers every boundary test
+#: in the suite sits one cent either side of.
+TEST_EUR_USD = Decimal("1.10")
+
+
+def eur_usd_rates(as_of: datetime = NOW, rate: Decimal = TEST_EUR_USD) -> FxRateTable:
+    """A EUR/USD rate table for a test to hand to a snapshot or a resolution.
+
+    Marked :attr:`FxRateOrigin.CONFIGURED`, which is the origin reserved for a
+    rate that came from a fixture or an explicit override rather than from a
+    broker. Nothing in production constructs one, and the origin travels onto
+    every artifact built from it, so a stored record can never leave a reader
+    wondering whether a rate was real.
+    """
+    return FxRateTable(
+        rates=(
+            FxRate(
+                base_currency="EUR",
+                quote_currency="USD",
+                rate=rate,
+                as_of=as_of,
+                origin=FxRateOrigin.CONFIGURED,
+                source="TEST_FIXTURE",
+            ),
+        )
+    )
+
 
 @pytest.fixture
 def risk_limits(system_config: SystemConfig) -> RiskLimits:
-    """The shipped limits, resolved across every layer."""
-    return resolve_limits(system_config)
+    """The shipped limits, resolved across every layer and converted once.
+
+    The shipped campaign declares its capital in EUR and trades in USD, so
+    these come back in USD at :data:`TEST_EUR_USD`. That is the configuration
+    the system actually ships, and testing the limits in a currency they are
+    never compared in would test a path nothing runs.
+    """
+    return resolve_limits(system_config, fx_rates=eur_usd_rates(), as_of=NOW)
+
+
+@pytest.fixture
+def unconvertible_limits(system_config: SystemConfig) -> RiskLimits:
+    """The same limits with no rate available at all.
+
+    What an operator gets before capturing an account, and what every candidate
+    is measured against when the broker quotes no rate: the declared figures,
+    labelled EUR, and marked not convertible.
+    """
+    return resolve_limits(system_config, fx_rates=None, as_of=NOW)
 
 
 @pytest.fixture
@@ -73,8 +128,8 @@ def make_profile() -> Callable[..., StrategyRiskProfile]:
             "leg_count": 1,
             "dte_min": 14,
             "dte_max": 30,
-            "min_option_price_eur": Decimal("0.30"),
-            "max_option_price_eur": Decimal("25.00"),
+            "min_option_price": Decimal("0.30"),
+            "max_option_price": Decimal("25.00"),
             "max_bid_ask_spread_pct": 10.0,
         }
         fields.update(overrides)
@@ -98,7 +153,10 @@ def make_leg() -> Callable[..., CandidateLeg]:
             "contract_id": 771234567,
             "trading_class": "NVDA",
             "exchange": "SMART",
-            "currency": "EUR",
+            # The instrument's own currency, which is what this campaign
+            # trades. An option on a US listing is quoted in dollars whatever
+            # currency the account holding it is based in.
+            "currency": "USD",
             "bid": Decimal("5.95"),
             "ask": Decimal("6.05"),
             "quote_as_of": NOW,
@@ -147,7 +205,7 @@ def make_candidate(
         price_fields: dict[str, Any] = {
             "available": True,
             "source": PriceSource.ASK_DEBIT,
-            "currency": "EUR",
+            "currency": "USD",
             "unit_cost": Decimal("605.00"),
             "max_leg_spread_pct": 1.67,
             "quote_as_of": NOW,
@@ -192,7 +250,12 @@ def make_candidate(
 
 @pytest.fixture
 def make_campaign() -> Callable[..., CampaignSnapshot]:
-    """An empty EUR 5,000 campaign holding a 20% reserve.
+    """An empty campaign: EUR 5,000 declared, USD 5,500 to spend.
+
+    The figures here are in the currency the campaign *trades*, because that is
+    what a reservation costs and what every limit is compared against. The
+    declared original travels alongside so the record never loses the currency
+    the operator actually holds.
 
     A realised figure implies ``daily_pnl_status=TRACKED`` unless a test says
     otherwise. The snapshot refuses a figure alongside any other status — that
@@ -205,9 +268,11 @@ def make_campaign() -> Callable[..., CampaignSnapshot]:
         fields: dict[str, Any] = {
             "campaign_id": "campaign-001",
             "as_of": NOW,
-            "currency": "EUR",
-            "budget": Decimal("5000"),
-            "reserve": Decimal("1000.00"),
+            "currency": "USD",
+            "budget": Decimal("5500.00"),
+            "reserve": Decimal("1100.00"),
+            "declared_budget": Decimal("5000"),
+            "declared_currency": "EUR",
             "open_positions": [],
             "realized_pnl_today": None,
         }
@@ -245,6 +310,10 @@ def make_account() -> Callable[..., AccountSnapshot]:
 
     Deliberately so: the campaign budget must bind long before the account
     does, which is the whole point of having a campaign envelope.
+
+    Based in EUR and carrying a EUR/USD rate, which is the shape a real
+    European account trading US options has. A test that wants the no-rate case
+    passes ``fx_rates=FxRateTable()``.
     """
 
     def _make(**overrides: Any) -> AccountSnapshot:
@@ -254,12 +323,16 @@ def make_account() -> Callable[..., AccountSnapshot]:
             "captured_at": NOW,
             "broker": "SIMULATOR",
             "account_id": "DU0000000",
+            # The account's BASE currency. It is not the currency the campaign
+            # trades, and the gap between the two is what the FX layer closes.
             "currency": "EUR",
             "trading_mode": TradingMode.PAPER,
             "cash": Decimal("100000.00"),
             "net_liquidation": Decimal("100000.00"),
             "buying_power": Decimal("400000.00"),
             "available_funds": Decimal("98000.00"),
+            "cash_by_currency": {"EUR": Decimal("100000.00"), "USD": Decimal("0.00")},
+            "fx_rates": eur_usd_rates(),
             "positions": [],
             "read_only": True,
             "orders_submitted": 0,

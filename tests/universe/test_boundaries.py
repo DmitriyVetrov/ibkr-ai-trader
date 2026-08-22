@@ -275,7 +275,7 @@ def test_the_selected_asset_model_has_no_option_or_money_field() -> None:
         "right",
         "strategy_type",
         "direction",
-        "allocated_eur",
+        "allocated",
         "quantity",
         "legs",
     ):
@@ -303,7 +303,7 @@ def test_the_agent_payload_never_mentions_capital(
     make_service(llm_client=client, symbols=["SPY"]).run(as_of=UNIVERSE_NOW, dry_run=True)
 
     sent = client.requests[0].user_content.lower()
-    for forbidden in ("campaign_budget", "budget_eur", "max_allocation", "position_size"):
+    for forbidden in ("campaign_budget", "budget_currency", "max_allocation", "position_size"):
         assert forbidden not in sent
 
 

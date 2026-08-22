@@ -15,23 +15,28 @@ Every command below is written as `python -m trading_system.cli …`. Prefix wit
 
 ## 0. The state of this checkout, right now
 
-Read this before you type anything. Four things about the working tree differ
-from what the repository ships, and all four are deliberate local operator
-changes that are **not committed**:
+Read this before you type anything. Three things about the working tree differ
+from what the repository ships, and all three are deliberate local operator
+changes:
 
 | What | Shipped | Here | Consequence |
 |---|---|---|---|
 | `config/execution.yaml` → `enabled` | `false` | **`true`** | The system-level order permission is ON. Only `--confirm` stands between a stored allocation and a real paper order. |
 | `.env` → `IBKR_READ_ONLY` | `true` | **`false`** | The IBKR API connection is no longer opened read-only, so IBKR itself will no longer refuse an order on our behalf. |
-| `config/campaign.yaml` → `treat_as_campaign_currency` | `[]` | **`[USD]`** | 1 USD is accounted as 1 EUR. No rate is applied because none is known. The EUR 5,000 envelope is therefore approximate. |
 | Working tree | clean | **dirty** | `readiness check` reports `NOT_READY`; a clean tree is required for live review. |
+
+The fourth entry that used to sit here — `treat_as_campaign_currency: [USD]`,
+which accounted one dollar as one euro — **is gone**. The setting no longer
+exists and a configuration carrying it fails to load. The campaign now declares
+its capital in EUR and trades in USD, with an explicit rate between them; see
+§9.4.
 
 `TRADING_MODE` is `PAPER` and both live guards are off, so LIVE remains
 refused in three independent places. But treat this checkout as **armed for
 paper trading**, not as a fresh clone.
 
-`make test` will show **seven expected failures** — every one of them a
-tripwire reporting one of the two flips above, and none of them a defect. They
+`make test` will show **three expected failures** — every one of them a
+tripwire reporting the execution flip above, and none of them a defect. They
 are enumerated in [§9.9](#99-make-test-fails). Anything else failing is real.
 
 To disarm, in order of speed — see [§10](#10-stopping-it).
@@ -323,6 +328,14 @@ python -m trading_system.cli allocation explain --symbol NVDA
 account's balance is irrelevant to it, except that an account holding less
 binds instead. The most restrictive relevant limit always wins.
 
+**And the campaign's currency is not the account's.** The envelope is declared
+in EUR — the money you actually hold — and spent in USD, because that is what a
+US-listed option is quoted in. `allocation validate` prints both, along with the
+rate between them and where it came from. If it prints `FX UNAVAILABLE`, run
+`risk capture-account` first: the rate is read from IBKR with the balance, and
+without one every candidate is rejected `FX_RATE_UNAVAILABLE` rather than sized
+against a figure in the wrong currency.
+
 Re-running over the same upstream artifacts is idempotent: the second run
 records `ALREADY_ALLOCATED` and reserves nothing. `NO_ALLOCATION` at the run
 level is the ordinary answer when the campaign is already committed — a valid
@@ -590,7 +603,9 @@ milestone is not built.
 | `NO_VALID_CONTRACT` | contract | we looked and nothing qualified |
 | `REQUIRED_DATA_UNAVAILABLE` | contract | we could not look. Usually: no option quotes |
 | `MISSING_DELTA` / `OPTION_LIQUIDITY_UNKNOWN` | contract | not estimated, not assumed zero |
-| `CURRENCY_MISMATCH` | risk | the contract is not in the campaign currency. See §9.4 |
+| `CURRENCY_MISMATCH` | risk | the contract is not quoted in the currency this campaign trades. See §9.4 |
+| `FX_RATE_UNAVAILABLE` | risk | no rate carries your capital into the traded currency. Capture an account. See §9.4 |
+| `FX_RATE_STALE` | risk | a rate exists and was too old at the decision instant. See §9.4 |
 | `ACCOUNT_SNAPSHOT_UNAVAILABLE` | allocation | run `risk capture-account` |
 | `ALREADY_ALLOCATED` | allocation | idempotent re-run. Reserved nothing |
 | `NO_ALLOCATION` | allocation | authorised nothing, usually because the campaign is committed |
@@ -756,22 +771,45 @@ Three things to know before editing that list:
    re-observation, not a new snapshot, so re-running collection over identical
    content will not clear a stale verdict.
 
-### 9.4 Every contract is rejected `CURRENCY_MISMATCH`
+### 9.4 Every contract is rejected `FX_RATE_UNAVAILABLE`
 
-The universe is US-listed, the campaign is denominated in EUR, and no FX rate
-source is configured. Converting at an invented rate would size a position
-wrongly by an amount nobody recorded, so `allow_conversion: true` deliberately
-fails to load.
+Not `CURRENCY_MISMATCH` — that was the old answer, and it is no longer the
+right one. The universe is US-listed and priced in USD, your capital is in EUR,
+and a mismatch between the two is the **expected** state rather than an error.
+What the system needs is a rate, and it has one place to get it from:
 
-Two explicit ways forward:
+```bash
+python -m trading_system.cli risk capture-account
+python -m trading_system.cli allocation validate    # prints the rate and its source
+```
 
-1. Denominate the campaign in the currency it actually trades.
-2. Add the currency to `campaign.currency_policy.treat_as_campaign_currency`
-   and accept that the two are being treated as one unit of account.
+IBKR reports a per-currency `ExchangeRate` with the account summary the capture
+already reads, so this costs no extra round trip. The rate is stored on the
+account snapshot, which binds it to the balance it converts: a stored
+authorisation can never have been made at a rate from a different moment.
 
-This checkout has taken option 2 for USD. What that asserts, explicitly: 1 USD
-is accounted as 1 EUR. The envelope is an approximate bound, and the error is
-in the conservative direction while EUR/USD is above parity.
+If it still fails, the reason code says which of three things is wrong:
+
+| Code | Meaning | Fix |
+|---|---|---|
+| `FX_RATE_UNAVAILABLE` | IBKR reported no rate for the pair, or no snapshot exists | Capture an account. If the capture shows no rates, the gateway is not reporting the ledger — check the account is funded and the connection is not read-limited |
+| `FX_RATE_STALE` | The rate was older than `campaign.currency_policy.max_rate_age_seconds` at the decision instant | Capture a fresh account snapshot |
+| `FX_RATE_INVALID` | A rate arrived and is not a usable number | Report it; nothing repairs a rate |
+
+**Nothing converts your cash.** Trading a USD instrument does not turn your EUR
+into dollars. Whether dollars must be acquired to settle a trade is IBKR's rule
+for your account type, not something this system decides or triggers. The rate
+exists so a EUR balance can be *compared* with a USD price.
+
+**You do not need to change your IBKR base currency.** Leave it EUR. Nothing in
+the automation reads it as a trading currency.
+
+`CURRENCY_MISMATCH` still exists and means something narrower now: the contract
+is quoted in a currency this campaign does not trade at all. An instrument price
+is never converted in either direction — the limit price that reaches IBKR has
+to be the number the exchange expects — so the fix is
+`campaign.currency_policy.target_currency`, which should name the currency the
+instruments are actually quoted in.
 
 ### 9.5 An execution is `UNKNOWN`
 
@@ -856,18 +894,15 @@ Caused by `execution.enabled: true`:
 - `tests/cleanup/test_gates.py::test_the_shipped_configuration_disables_execution`
 - `tests/readiness/test_configuration.py::test_the_shipped_execution_switch_is_reported_off`
 
-Caused by `treat_as_campaign_currency: [USD]`:
-
-- `tests/risk/test_engine.py::test_a_foreign_currency_is_refused_rather_than_converted`
-- `tests/risk/test_engine.py::test_the_shipped_configuration_refuses_a_us_listed_contract`
-- `tests/execution/test_validation.py::test_a_usd_contract_against_a_eur_campaign_is_refused`
-- `tests/execution/test_validation.py::test_every_failure_is_collected_not_just_the_first`
+The four that used to be caused by `treat_as_campaign_currency: [USD]` are
+gone: the setting no longer exists, and the currency behaviour it worked around
+is now the shipped behaviour rather than a local flip.
 
 To confirm nothing else is wrong, check them against the shipped policy —
-this reverts the flips, so re-apply them afterwards if you are still operating:
+this reverts the flip, so re-apply it afterwards if you are still operating:
 
 ```bash
-git stash push config/execution.yaml config/campaign.yaml
+git stash push config/execution.yaml
 make test
 git stash pop
 ```

@@ -113,7 +113,8 @@ def test_schema_requires_its_required_fields(
 @pytest.mark.contract
 def test_money_serialises_as_an_exact_string(purchase_card: PurchaseCard) -> None:
     payload = _dump(purchase_card)
-    assert payload["requested_allocation_eur"] == "1200.00"
+    assert payload["requested_allocation"] == "1200.00"
+    assert payload["currency"] == "USD", "the currency is stated, never read off a field name"
     assert isinstance(payload["contract"]["legs"][0]["strike"], str)
 
 
@@ -122,7 +123,7 @@ def test_schema_rejects_money_as_a_json_number(
     purchase_card: PurchaseCard, load_schema: Callable[[str], dict[str, Any]]
 ) -> None:
     payload = _dump(purchase_card)
-    payload["requested_allocation_eur"] = 1200.00
+    payload["requested_allocation"] = 1200.00
 
     with pytest.raises(ValidationError):
         _validator(load_schema("purchase_card")).validate(payload)
@@ -508,7 +509,8 @@ def test_allocation_covers_the_purchase_card(
     entry = next(
         e for e in allocation_decision.entries if e.opportunity_id == purchase_card.card_id
     )
-    assert entry.allocated_eur == purchase_card.requested_allocation_eur
+    assert entry.allocated == purchase_card.requested_allocation
+    assert allocation_decision.currency == purchase_card.currency
 
 
 @pytest.mark.contract
@@ -707,7 +709,7 @@ def test_the_milestone_6_artifacts_carry_no_position_size(
     """How much is the risk and allocation engines' answer, not this stage's."""
     for payload in (_dump(strategy_decision_record), _dump(contract_selection_result)):
         serialised = str(payload)
-        for forbidden in ("quantity", "allocated_eur", "requested_allocation", "buying_power"):
+        for forbidden in ("quantity", "allocated", "requested_allocation", "buying_power"):
             assert forbidden not in serialised
 
 
@@ -990,7 +992,7 @@ def test_the_candidate_carries_no_quantity_or_allocation(allocation_candidate) -
     """Quantity is introduced by the allocation engine, not before it."""
     payload = _dump(allocation_candidate)
 
-    for field in ("quantity", "capital_committed", "allocated_eur", "budget"):
+    for field in ("quantity", "capital_committed", "allocated", "budget"):
         assert field not in payload
 
 
@@ -1023,8 +1025,12 @@ def test_an_allocation_run_projects_onto_the_milestone_1_boundary(
 
     _validator(load_schema("allocation_decision")).validate(_dump(projected))
     assert projected.campaign_id == allocation_run.campaign_id
-    assert projected.total_budget_eur == allocation_run.budget
-    assert projected.allocated_eur + projected.reserve_eur == projected.total_budget_eur
+    assert projected.total_budget == allocation_run.budget
+    assert projected.allocated + projected.reserve == projected.total_budget
+    # The narrow boundary carries what a downstream stage has to spend, in the
+    # currency it spends it in. The declared original and the rate stay on the
+    # run, which is the audit artifact.
+    assert projected.currency == allocation_run.currency == "USD"
 
 
 @pytest.mark.contract
@@ -1274,10 +1280,18 @@ def test_a_strategy_position_projects_onto_the_milestone_1_position_snapshot(
         ],
         source="SIMULATOR",
         average_entry_price=_Decimal("5.95"),
+        market_value=_Decimal("1210.00"),
+        currency="USD",
     )
 
     _validator(load_schema("position_snapshot")).validate(_dump(projected))
     assert projected.quantity == 2
+    # The valuation and its currency travel together: they are one observation,
+    # and a figure labelled with a currency taken from somewhere else is a
+    # figure nobody can check. The account behind this is based in EUR, which
+    # is deliberately not what this says.
+    assert projected.market_value == _Decimal("1210.00")
+    assert projected.currency == "USD"
 
 
 def _broker_position_for(record):

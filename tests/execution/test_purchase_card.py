@@ -42,6 +42,7 @@ def card(approved_allocation, research_report, strategy_decision, versions) -> P
         strategy=strategy_decision,
         created_at=NOW,
         versions=versions,
+        campaign_currency="USD",
     )
 
 
@@ -59,7 +60,18 @@ def test_the_exact_quantity_is_preserved(card, approved_allocation) -> None:
 
 
 def test_the_capital_commitment_is_preserved(card, approved_allocation) -> None:
-    assert card.requested_allocation_eur == approved_allocation.capital_committed
+    assert card.requested_allocation == approved_allocation.capital_committed
+
+
+def test_the_card_states_the_currency_rather_than_implying_it(card, approved_allocation) -> None:
+    """A figure whose currency has to be read off a field name is not stated.
+
+    The card carries the currency the *allocation* was denominated in — the one
+    the contract is quoted and settled in — rather than the one the operator's
+    capital is held in. The conversion between them happened upstream, and its
+    rate is on the allocation run.
+    """
+    assert card.currency == approved_allocation.currency == "USD"
 
 
 def test_the_maximum_loss_is_carried_from_the_authorisation(card, approved_allocation) -> None:
@@ -113,6 +125,7 @@ def test_the_card_id_is_deterministic(
         strategy=strategy_decision,
         created_at=NOW,
         versions=versions,
+        campaign_currency="USD",
     )
     second = build_purchase_card(
         approved_allocation,
@@ -120,6 +133,7 @@ def test_the_card_id_is_deterministic(
         strategy=strategy_decision,
         created_at=NOW,
         versions=versions,
+        campaign_currency="USD",
     )
     assert first.card_id == second.card_id
 
@@ -136,6 +150,7 @@ def test_the_card_id_ignores_the_clock(
         strategy=strategy_decision,
         created_at=NOW + timedelta(hours=3),
         versions=versions,
+        campaign_currency="USD",
     )
     assert later.card_id == purchase_card_identifier(
         allocation_id=approved_allocation.allocation_id,
@@ -194,6 +209,7 @@ def test_a_rejected_allocation_cannot_be_minted(
             strategy=strategy_decision,
             created_at=NOW,
             versions=versions,
+            campaign_currency="USD",
         )
     assert error.value.reason_code is ExecutionReasonCode.ALLOCATION_NOT_APPROVED
 
@@ -210,6 +226,7 @@ def test_a_dry_run_allocation_authorises_nothing(
             strategy=strategy_decision,
             created_at=NOW,
             versions=versions,
+            campaign_currency="USD",
         )
     assert error.value.reason_code is ExecutionReasonCode.ALLOCATION_IS_DRY_RUN
 
@@ -240,6 +257,7 @@ def test_provenance_about_a_different_symbol_is_refused(
             strategy=strategy_decision,
             created_at=NOW,
             versions=versions,
+            campaign_currency="USD",
         )
     assert error.value.reason_code is ExecutionReasonCode.PROVENANCE_UNAVAILABLE
 
@@ -256,6 +274,7 @@ def test_a_strategy_decision_for_another_strategy_is_refused(
             strategy=mismatched,
             created_at=NOW,
             versions=versions,
+            campaign_currency="USD",
         )
     assert error.value.reason_code is ExecutionReasonCode.PROVENANCE_UNAVAILABLE
 

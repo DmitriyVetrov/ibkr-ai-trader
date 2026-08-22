@@ -660,12 +660,12 @@ class ContractSelector:
 
         price = _limit_price(candidate)
         if price is not None and (
-            price < specification.min_option_price_eur or price > specification.max_option_price_eur
+            price < specification.min_option_price or price > specification.max_option_price
         ):
             return (
                 ContractRejectionReason.OPTION_PRICE_OUT_OF_RANGE,
-                f"price {price} is outside [{specification.min_option_price_eur}, "
-                f"{specification.max_option_price_eur}]",
+                f"price {price} is outside [{specification.min_option_price}, "
+                f"{specification.max_option_price}]",
             )
 
         spread = candidate.spread_pct

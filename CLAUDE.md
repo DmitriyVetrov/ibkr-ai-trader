@@ -40,7 +40,7 @@ Beyond the twelve milestones, **orphan-position cleanup** is built: the controll
 PAPER-only closure of pre-existing broker holdings this system never opened, which is
 the other half of what an `ORPHAN_BROKER_POSITION` needs — it closes them without ever
 adopting them.
-5397 passing tests; ruff, ruff format and mypy clean.
+5539 passing tests; ruff, ruff format and mypy clean.
 
 **Not built, by design:** autonomous opportunity discovery on a cadence, the separate thesis
 monitor, live trading. The scheduler exists and runs, but `opportunity_scan` and
@@ -158,11 +158,20 @@ full tree; the boundaries that matter:
   and no selector; the selector half imports no agent and no LLM client, and a test asserts
   both transitively. `strategies/__init__.py` defers everything that touches a repository
   through `__getattr__`, for the same reason `research/__init__.py` does.
+- `fx/` — the only connection between the currency the operator holds and the currency the
+  campaign trades: `models · convert`. Pure, standard library and pydantic only, no clock and
+  no network, so it is importable from `risk/` without breaking that package's boundary test.
+  A conversion has four outcomes (`VALID / UNAVAILABLE / STALE / INVALID`) and only the first
+  carries a figure — the model refuses the others one, because a caller reading a defaulted
+  zero out of a conversion that did not happen is how money moves at the wrong rate. There is
+  **no default rate, no fallback and no parity shortcut anywhere in the package**, and the
+  identity is the only circumstance in which a factor of exactly 1 is produced.
 - `risk/` — the deterministic risk engine: *is this position permitted?* `models · limits ·
   exposure · guards · account · engine · store`. The engine is a pure function of its
   arguments — no clock, no broker, no repository, no model — so a stored verdict is
   reproducible. Account state arrives as a captured `AccountSnapshot`, never from a live
-  request.
+  request, and the exchange rates that carry the campaign into its traded currency arrive on
+  that same snapshot for the same reason.
 - `allocation/` — the deterministic allocation engine: *how many units?* `models ·
   candidates · campaign · scorer · budget_allocator · store · service · report`. It imports
   `risk/`, never the reverse, and a test asserts it. `allocation/service.py` is the single
@@ -417,6 +426,15 @@ Eight rules govern it, each with tests that fail loudly:
 - **The campaign is not the account.** EUR 5,000 is the shipped envelope; the paper account's
   balance is irrelevant to it. A million-euro balance cannot widen the campaign, and an
   account holding less than the campaign permits binds instead. Both directions are tested.
+- **The campaign's currency is not the account's either.** The envelope is *declared* in
+  `budget_currency` (EUR — what the operator holds) and *spent* in
+  `currency_policy.target_currency` (USD — what a US-listed option is quoted in). Both engines
+  work entirely in the target currency, because a single-currency comparison is the only kind
+  they can get right. The conversion is applied once in `resolve_limits`, with an explicit
+  rate captured from the broker, and the declared figures survive beside the converted ones.
+  Without a valid rate nothing is authorised, nothing is sized and nothing is sent —
+  `FX_RATE_UNAVAILABLE`, never parity. See "Three currencies" under *Conventions worth
+  keeping*.
 - **No AI decides money.** Neither engine has a parameter, field or import through which a
   model could speak. Confidence *bands* from validated upstream artifacts feed the ordering
   and can never change a quantity, a limit or a permission — a test asserts that two
@@ -451,7 +469,10 @@ nothing because the campaign is committed is the ordinary answer rather than a f
 look" are different facts.
 
 **The broker is touched in exactly one place.** `risk capture-account` reads the account once
-and stores an immutable `AccountSnapshot`; the engines read it back by id and hold no broker.
+and stores an immutable `AccountSnapshot` — including the per-currency balances and IBKR's own
+`ExchangeRate` rows, which arrive with the same cache-backed summary and cost no extra round
+trip. The engines read it back by id and hold no broker, so a conversion is bound to the
+balance it converts and can never come from a different instant.
 That is a safety property as well as an architectural one: Milestone 2 established that a
 second uncached round trip on one IBKR connection can go unanswered indefinitely, so a risk
 check that fetched its own account state could hang the process at the worst possible moment.
@@ -628,6 +649,14 @@ and reservation amounts are money. `ExecutionRecord.executed_capital` is in quot
 must never be used as money — `reservations/lifecycle.py::executed_capital` does the
 multiplication once, explicitly. A conversion needing a multiplier nobody reported yields
 `None`, never an assumed 100.
+
+**Currencies, likewise.** Everything here is in the *instrument's* currency, which is what
+the broker reported and is never converted: a valuation converted into the account's
+currency would put a rate inside a record of an observation. `PositionSnapshot.currency` is
+therefore passed to `to_position_snapshot()` **alongside** the figures it labels, by the
+caller that read both off the broker — one observation, one label. A reservation is in the
+campaign's *traded* currency, which is the same currency for the shipped configuration and
+is not the same fact.
 
 Every Milestone 9 artifact stores a **masked** account reference and a test asserts the full
 number never reaches a stored payload. The Milestone 7 `AccountSnapshot` keeps the broker's
@@ -1234,7 +1263,7 @@ python -m trading_system.cli contract history [--symbol NVDA]
 
 # Risk. Deterministic: no model is consulted. Submits 0 orders.
 python -m trading_system.cli risk validate              # the limits in force, by layer
-python -m trading_system.cli risk capture-account       # the ONE broker boundary
+python -m trading_system.cli risk capture-account       # the ONE broker boundary; captures FX too
 python -m trading_system.cli risk capture-account --simulated
 python -m trading_system.cli risk evaluate              # permitted? persists nothing
 python -m trading_system.cli risk show [--run-id <ID>]
@@ -1382,6 +1411,7 @@ pytest tests/research                           # evidence, dedup, validation, s
 pytest tests/strategy                           # registry, boundaries, validation, service, CLI
 pytest tests/strategies                         # one suite per strategy specification
 pytest tests/contract_selection                 # policy, point-in-time, determinism
+pytest tests/fx                                 # conversion, staleness, never-1:1, the boundary
 pytest tests/risk                               # limits, engine, account snapshots, boundaries
 pytest tests/allocation                         # quantity, allocator, scorer, service, CLI
 pytest tests/execution                          # state machine, idempotency, fills, boundaries
@@ -1749,15 +1779,56 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   `collection.option_quotes` states collection *breadth* (a DTE window, a strike band, a
   contract cap) and deliberately does **not** restate a target DTE, which would declare the
   same policy twice.
-- **The shipped EUR campaign refuses a USD-quoted contract, and that is correct.** The
-  universe is US-listed, the campaign is denominated in EUR, and no FX rate source is
-  configured — so every US option is rejected with `CURRENCY_MISMATCH`. Converting at an
-  invented rate would size a position wrongly by an amount nobody recorded. Two explicit ways
-  forward: denominate the campaign in the currency it actually trades, or add the currency to
-  `campaign.currency_policy.treat_as_campaign_currency` and accept that the two are being
-  treated as one unit of account. `allow_conversion: true` deliberately *fails to load* until a
-  deterministic rate source exists. `tests/risk/test_engine.py` pins the behaviour so it cannot
-  surprise anyone.
+- **Three currencies, and the difference between them is load-bearing.** The account holds
+  EUR, the campaign trades USD, and a US-listed option is quoted in USD. Those are three
+  separate facts and the system states each of them rather than inferring any from another:
+  `campaign.budget_currency` (what the operator holds), `campaign.currency_policy.target_currency`
+  (what this campaign trades), and the contract's own currency. **Changing the IBKR account's
+  base currency is not required and would change nothing here.**
+
+  An earlier version accepted `treat_as_campaign_currency: [USD]` on a EUR campaign, which
+  asserted that one dollar was one euro — a 1:1 conversion wearing the clothes of a policy
+  setting. It is gone, along with `allow_conversion`, and a configuration still carrying
+  either **fails to load** with a message naming the replacement. So does a `*_eur` key on a
+  figure that now holds dollars: `extra="forbid"` would reject it anyway, but only a specific
+  message tells an operator which of two currencies the value is now declared in.
+- **The conversion happens once, in `resolve_limits`, and every downstream comparison is
+  single-currency.** The declared limits are multiplied by one rate; the account balance is
+  converted by the same mechanism where it is compared. Converting per comparison would let
+  two limits derived from one rate disagree in the last digit depending on multiplication
+  order. Ceilings round **down** and the reserve rounds **up**, so allocatable capital can
+  only shrink under conversion, never grow. `RiskLimits.declared` keeps every source figure
+  in its own currency: the operator's EUR 5,000 is still EUR 5,000 in the record while the
+  campaign spends USD 5,500 of it.
+- **An instrument price is never converted, in either direction, and that asymmetry is
+  deliberate.** A limit is compared and discarded; a price becomes the limit price on an
+  order, and the exchange expects that figure in the contract's own currency. So a contract
+  quoted in something other than `target_currency` is `CURRENCY_MISMATCH` with a fix an
+  operator can act on, and `risk.yaml`'s `min_option_price`/`max_option_price` are in the
+  **target** currency while everything under `capital_currency` is in the account's.
+- **The rate comes from the broker, in the read that already happens.** `ib_async` asks for
+  `$LEDGER:ALL`, so IBKR's per-currency `ExchangeRate` rows arrive with the account summary
+  `risk capture-account` already reads — no new round trip, no new provider, and the rate is
+  bound to the very balance it converts. It rides on `AccountSnapshot`, so the engines stay
+  pure and a stored authorisation records the rate it rested on. **A missing, stale or
+  unusable rate is `FX_RATE_UNAVAILABLE` / `FX_RATE_STALE` / `FX_RATE_INVALID`**, the
+  candidate is rejected before any capacity check runs, no quantity is computed and no order
+  is built. There is no input to `fx/convert.py` that makes two different currencies convert
+  at 1.0 — `tests/fx/test_convert.py` asserts it directly.
+- **That same `$LEDGER:ALL` request is why `BrokerAccount.cash` was wrong.** `TotalCashValue`,
+  `UnrealizedPnL` and `RealizedPnL` arrive **once per currency**, and the old loop keyed on
+  the tag alone, so whichever currency came last stood in for the account. `LEDGER_TAGS` names
+  them and only the base-currency row feeds an account field; the rest populate
+  `cash_by_currency`, which is never summed — EUR 5,000 and USD 0 are two facts, and a total
+  would need a rate and would hide it.
+- **Nothing converts the operator's cash.** A USD campaign does not turn EUR into dollars.
+  Whether dollars must be acquired for a trade is the broker's settlement rule, and this
+  system neither triggers nor models it. The rate exists so a EUR balance can be *compared*
+  with a USD price.
+- **The simulator quotes a deliberately non-unity rate.** `SimulatedBrokerState.exchange_rates`
+  ships `USD -> 0.90` on a EUR base, and the test fixtures inject `EUR/USD = 1.10` explicitly.
+  A simulator or a fixture at parity would let every cross-currency defect pass the whole
+  suite and fail only against a real account.
 - **`risk.yaml`'s 300-second staleness window is measured against the decision instant, not
   wall clock.** The whole chain is anchored at one `as_of`, so a quote captured at that instant
   has age zero however long ago the run happened. That is what lets a strict risk-layer window

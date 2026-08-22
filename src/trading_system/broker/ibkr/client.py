@@ -98,6 +98,56 @@ ACCOUNT_TAGS = {
     "RealizedPnL": "realized_pnl",
 }
 
+#: Tags IBKR reports **once per currency** because ``ib_async`` asks for
+#: ``$LEDGER:ALL`` in its account-summary tag list. They arrive interleaved with
+#: the account-level rows and carry the same tag name, so a loop that keys on
+#: the tag alone overwrites them in arrival order and leaves whichever currency
+#: happened to come last standing in for the account. Every one of these is
+#: therefore accepted for a :class:`BrokerAccount` field only from the row whose
+#: currency is the account's base.
+LEDGER_TAGS = frozenset(
+    {
+        "AccruedCash",
+        "CashBalance",
+        "CorporateBondValue",
+        "ExchangeRate",
+        "FundValue",
+        "FutureOptionValue",
+        "FuturesPNL",
+        "IssuerOptionValue",
+        "MoneyMarketFundValue",
+        "MutualFundValue",
+        "NetDividend",
+        "NetLiquidationByCurrency",
+        "OptionMarketValue",
+        "RealCurrency",
+        "RealizedPnL",
+        "SettledCash",
+        "StockMarketValue",
+        "TBillValue",
+        "TBondValue",
+        "TotalCashValue",
+        "UnrealizedPnL",
+        "WarrantValue",
+    }
+)
+
+#: The currency IBKR uses on a ledger row that is already expressed in the
+#: account's base currency.
+_BASE_LEDGER_CURRENCY = "BASE"
+
+#: The per-currency tag that answers *what is one unit of this currency worth
+#: in the account's base currency?*. This is the system's FX rate source: it
+#: arrives with the account summary, which ``ib_async`` serves from its startup
+#: handshake cache, so obtaining it costs no additional round trip and the rate
+#: is bound to the very balance it converts.
+_EXCHANGE_RATE_TAG = "ExchangeRate"
+
+#: The per-currency cash figure. ``CashBalance`` is the settled-plus-unsettled
+#: cash for one currency; it is recorded unconverted and never summed across
+#: currencies, because EUR 5,000 plus USD 0 is two facts, not one number.
+_CASH_BALANCE_TAG = "CashBalance"
+
 _SECURITY_TYPE_CODES = {
     SecurityType.STOCK: "STK",
     SecurityType.INDEX: "IND",
@@ -536,30 +586,73 @@ class IBKRBroker(Broker):
 
         from trading_system.broker.ibkr.conversion import to_decimal
 
+        rows = [
+            row
+            for row in values
+            # A non-empty modelCode marks a what-if/model row, not real state.
+            if str(getattr(row, "tag", "") or "") and not str(getattr(row, "modelCode", "") or "")
+        ]
+        if not rows:
+            raise BrokerResponseError("IBKR returned an empty account summary")
+
+        # The base currency comes from an account-level row, never a ledger
+        # one. ``NetLiquidation`` is not a ledger tag, so its currency is the
+        # account's base by construction - unlike ``TotalCashValue``, which
+        # arrives once per currency and would name whichever came last.
+        base = next(
+            (
+                str(getattr(row, "currency", "") or "")
+                for row in rows
+                if str(row.tag) == "NetLiquidation"
+                and str(getattr(row, "currency", "") or "") not in ("", _BASE_LEDGER_CURRENCY)
+            ),
+            "",
+        ).upper()
+
         fields: dict[str, Any] = {}
         raw_tags: dict[str, str] = {}
-        currency: str | None = None
+        cash_by_currency: dict[str, Decimal] = {}
+        exchange_rates: dict[str, Decimal] = {}
 
-        for value in values:
-            tag = str(getattr(value, "tag", "") or "")
-            # A non-empty modelCode marks a what-if/model row, not real state.
-            if not tag or str(getattr(value, "modelCode", "") or ""):
+        for row in rows:
+            tag = str(row.tag)
+            row_currency = str(getattr(row, "currency", "") or "").upper()
+            raw_value = getattr(row, "value", None)
+            in_base = row_currency in ("", _BASE_LEDGER_CURRENCY) or (
+                bool(base) and row_currency == base
+            )
+
+            # Per-currency rows get a qualified key so a tag reported once per
+            # currency cannot overwrite itself. Account-level rows keep the
+            # bare tag they have always had.
+            raw_tags[tag if in_base else f"{tag}:{row_currency}"] = str(raw_value or "")
+
+            if tag == _EXCHANGE_RATE_TAG:
+                # IBKR quotes each currency *into* the base currency. The base
+                # against itself is 1 and is not an observation, so it is
+                # dropped rather than stored as an editable factor.
+                rate = to_decimal(raw_value)
+                if row_currency and not in_base and rate is not None and rate > 0:
+                    exchange_rates[row_currency] = rate
                 continue
-            raw_tags[tag] = str(getattr(value, "value", ""))
-            if tag in ACCOUNT_TAGS:
-                fields[ACCOUNT_TAGS[tag]] = to_decimal(getattr(value, "value", None))
-                if tag == "NetLiquidation":
-                    currency = str(getattr(value, "currency", "") or "") or None
 
-        if not raw_tags:
-            raise BrokerResponseError("IBKR returned an empty account summary")
+            if tag == _CASH_BALANCE_TAG:
+                amount = to_decimal(raw_value)
+                if amount is not None and row_currency != _BASE_LEDGER_CURRENCY:
+                    cash_by_currency[row_currency or base] = amount
+                continue
+
+            if tag in ACCOUNT_TAGS and (tag not in LEDGER_TAGS or in_base):
+                fields[ACCOUNT_TAGS[tag]] = to_decimal(raw_value)
 
         self._last_communication = self._clock.now()
         return BrokerAccount(
             account_id=self._account_id,
-            currency=currency or "USD",
+            currency=base or "USD",
             as_of=self._clock.now(),
             source=self.name,
+            cash_by_currency=cash_by_currency,
+            exchange_rates=exchange_rates,
             raw_tags=raw_tags,
             **fields,
         )

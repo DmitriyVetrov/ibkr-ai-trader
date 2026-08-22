@@ -151,6 +151,42 @@
         "string",
         "null"
       ]
+    },
+    "declared_budget": {
+      "description": "The envelope as configured, in declared_currency - the currency the operator actually holds. Never converted in place: the source figure keeps its own currency for the life of the record.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/money"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "declared_currency": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 3,
+      "maxLength": 8
+    },
+    "fx": {
+      "description": "The conversion that produced the figures above from the declared ones, rate and source included, so the arithmetic can be checked by hand.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/fx_conversion"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "currency": {
+      "description": "What every monetary figure on this run is in: the campaign's traded currency.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 8
     }
   },
   "$defs": {
@@ -414,7 +450,7 @@
               "FX_CONVERSION_UNAVAILABLE",
               "BELOW_MIN_OPPORTUNITY_SCORE",
               "DAILY_LOSS_NOT_TRACKED",
-          "DAILY_LOSS_UNKNOWN",
+              "DAILY_LOSS_UNKNOWN",
               "CONFIGURATION_ERROR"
             ]
           }
@@ -777,7 +813,7 @@
           "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
         },
         "daily_pnl_status": {
-          "description": "How far the realised figure can be relied on (Milestone 11). TRACKED means every position that closed today produced a usable result. UNKNOWN means positions closed and at least one did not — an absence of knowledge about a day on which money moved, and emphatically not zero loss. NOT_TRACKED means no profit-and-loss ledger was consulted.",
+          "description": "How far the realised figure can be relied on (Milestone 11). TRACKED means every position that closed today produced a usable result. UNKNOWN means positions closed and at least one did not \u2014 an absence of knowledge about a day on which money moved, and emphatically not zero loss. NOT_TRACKED means no profit-and-loss ledger was consulted.",
           "enum": [
             "TRACKED",
             "UNKNOWN",
@@ -790,6 +826,36 @@
           "items": {
             "type": "string"
           }
+        },
+        "declared_budget": {
+          "description": "The envelope as configured, in declared_currency - the currency the operator actually holds. Never converted in place.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "declared_currency": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 3,
+          "maxLength": 8
+        },
+        "fx": {
+          "description": "The conversion between the declared envelope and this one.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/fx_conversion"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -905,7 +971,7 @@
       }
     },
     "opportunity_score": {
-      "description": "A deterministic priority score with every component shown, so the total can be recomputed by hand. A band representative, never a probability, and it decides order only — never permission and never size.",
+      "description": "A deterministic priority score with every component shown, so the total can be recomputed by hand. A band representative, never a probability, and it decides order only \u2014 never permission and never size.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -1220,7 +1286,7 @@
             "FX_CONVERSION_UNAVAILABLE",
             "BELOW_MIN_OPPORTUNITY_SCORE",
             "DAILY_LOSS_NOT_TRACKED",
-          "DAILY_LOSS_UNKNOWN",
+            "DAILY_LOSS_UNKNOWN",
             "CONFIGURATION_ERROR",
             null
           ]
@@ -1372,7 +1438,7 @@
               "FX_CONVERSION_UNAVAILABLE",
               "BELOW_MIN_OPPORTUNITY_SCORE",
               "DAILY_LOSS_NOT_TRACKED",
-          "DAILY_LOSS_UNKNOWN",
+              "DAILY_LOSS_UNKNOWN",
               "CONFIGURATION_ERROR"
             ]
           }
@@ -1438,6 +1504,17 @@
             "null"
           ],
           "minLength": 1
+        },
+        "fx": {
+          "description": "The conversion that carried this campaign's capital into the currency the instrument is quoted in, recorded on the verdict so a rejection can name the rate it rested on without loading anything else.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/fx_conversion"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "allOf": [
@@ -1606,15 +1683,6 @@
           "description": "Whether an UNKNOWN daily figure blocks new capital (Milestone 11). Separate from require_daily_loss_tracking and defaulting to true: 'we have never tracked this' and 'we tracked it, positions closed today, and the number is not trustworthy' are different facts, and only the second is evidence that something is wrong.",
           "type": "boolean"
         },
-        "allow_currency_conversion": {
-          "type": "boolean"
-        },
-        "accepted_currencies": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
         "risk_config_version": {
           "type": "string",
           "minLength": 1
@@ -1633,6 +1701,46 @@
               "POSITION"
             ]
           }
+        },
+        "budget_currency": {
+          "description": "What the limits were declared in - the account's own currency.",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 8
+        },
+        "target_currency": {
+          "description": "What this campaign trades, and therefore what its limits must be expressed in before any of them can be compared with a price.",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 8
+        },
+        "limit_currency": {
+          "description": "The currency the money fields on THIS object are actually in. Equal to target_currency when the conversion succeeded and to budget_currency when it did not - never silently one while claiming the other.",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 8
+        },
+        "fx": {
+          "description": "The single conversion applied to every money limit, or the reason there is none. One rate for the whole set: converting per comparison would let two limits derived from one rate disagree in the last digit.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/fx_conversion"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "declared": {
+          "description": "Each money limit as configured, before conversion, keyed by field name. The source figures never lose their currency: 5000 stays 5000 EUR in the record even when the campaign spends 5850 USD of it.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/money"
+          }
+        },
+        "max_fx_rate_age_seconds": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
@@ -1677,6 +1785,123 @@
           }
         }
       }
+    },
+    "fx_conversion": {
+      "description": "One conversion attempt. Only a VALID status carries a figure: a number beside a failed conversion is how an unconverted amount gets spent.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "amount",
+        "from_currency",
+        "to_currency"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "VALID",
+            "UNAVAILABLE",
+            "STALE",
+            "INVALID"
+          ]
+        },
+        "amount": {
+          "$ref": "#/$defs/money"
+        },
+        "from_currency": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 8
+        },
+        "to_currency": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 8
+        },
+        "converted_amount": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rate": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rate_as_of": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "rate_origin": {
+          "oneOf": [
+            {
+              "enum": [
+                "BROKER_ACCOUNT_LEDGER",
+                "SIMULATED",
+                "CONFIGURED",
+                "IDENTITY",
+                "INVERTED"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rate_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rate_age_seconds": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "description": "A failed conversion carries no figure and no rate.",
+          "if": {
+            "properties": {
+              "status": {
+                "const": "UNAVAILABLE"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "converted_amount": {
+                "type": "null"
+              },
+              "rate": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

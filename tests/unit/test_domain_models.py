@@ -121,8 +121,8 @@ def test_monetary_field_accepts_exact_representations(value: object) -> None:
 
 @pytest.mark.unit
 def test_decimal_arithmetic_stays_exact(allocation_decision: AllocationDecision) -> None:
-    total = allocation_decision.allocated_eur + allocation_decision.reserve_eur
-    assert total == allocation_decision.total_budget_eur
+    total = allocation_decision.allocated + allocation_decision.reserve
+    assert total == allocation_decision.total_budget
     assert total == Decimal("5000")
 
 
@@ -285,21 +285,22 @@ def test_no_trade_is_a_valid_outcome(versions: SystemVersions) -> None:
 
 @pytest.mark.unit
 def test_allocation_books_must_balance(versions: SystemVersions) -> None:
-    with pytest.raises(ValidationError, match="must equal total_budget_eur"):
+    with pytest.raises(ValidationError, match="must equal total_budget"):
         AllocationDecision(
             allocation_id="a1",
             campaign_id="c1",
             as_of=NOW,
-            total_budget_eur=Decimal("5000"),
-            allocated_eur=Decimal("1000"),
-            reserve_eur=Decimal("1000"),
+            currency="USD",
+            total_budget=Decimal("5000"),
+            allocated=Decimal("1000"),
+            reserve=Decimal("1000"),
             entries=[
                 AllocationEntry(
                     opportunity_id="o1",
                     ticker="NVDA",
                     rank=1,
                     opportunity_score=90.0,
-                    allocated_eur=Decimal("1000"),
+                    allocated=Decimal("1000"),
                 )
             ],
             versions=versions,
@@ -313,16 +314,17 @@ def test_allocation_entries_must_sum_to_allocated(versions: SystemVersions) -> N
             allocation_id="a1",
             campaign_id="c1",
             as_of=NOW,
-            total_budget_eur=Decimal("5000"),
-            allocated_eur=Decimal("1000"),
-            reserve_eur=Decimal("4000"),
+            currency="USD",
+            total_budget=Decimal("5000"),
+            allocated=Decimal("1000"),
+            reserve=Decimal("4000"),
             entries=[
                 AllocationEntry(
                     opportunity_id="o1",
                     ticker="NVDA",
                     rank=1,
                     opportunity_score=90.0,
-                    allocated_eur=Decimal("750"),
+                    allocated=Decimal("750"),
                 )
             ],
             versions=versions,
@@ -336,21 +338,22 @@ def test_zero_allocation_is_valid(versions: SystemVersions) -> None:
         allocation_id="a1",
         campaign_id="c1",
         as_of=NOW,
-        total_budget_eur=Decimal("5000"),
-        allocated_eur=Decimal("0"),
-        reserve_eur=Decimal("5000"),
+        currency="USD",
+        total_budget=Decimal("5000"),
+        allocated=Decimal("0"),
+        reserve=Decimal("5000"),
         entries=[
             AllocationEntry(
                 opportunity_id="o1",
                 ticker="NVDA",
                 rank=1,
                 opportunity_score=72.0,
-                allocated_eur=Decimal("0"),
+                allocated=Decimal("0"),
             )
         ],
         versions=versions,
     )
-    assert decision.allocated_eur == Decimal("0")
+    assert decision.allocated == Decimal("0")
 
 
 @pytest.mark.unit

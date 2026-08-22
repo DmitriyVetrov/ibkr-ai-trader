@@ -463,6 +463,7 @@ class ExecutionService:
                 strategy=strategy,
                 created_at=now,
                 versions=self.versions(),
+                campaign_currency=self._config.campaign.target_currency,
             )
             risk_decision = build_risk_decision(
                 allocation, purchase_card_id=card.card_id, versions=self.versions()

@@ -190,6 +190,10 @@ class AllocationService:
         return self._account_repository
 
     @property
+    def config(self) -> SystemConfig:
+        return self._config
+
+    @property
     def contract_repository(self) -> ContractSelectionRepository:
         return self._contract_repository
 
@@ -201,9 +205,28 @@ class AllocationService:
     def data_root(self) -> Path:
         return self._data_root
 
-    def limits(self) -> RiskLimits:
-        """The limits in force right now, resolved across every layer."""
-        return resolve_limits(self._config, budget_override=self._settings.campaign_budget_eur)
+    def limits(
+        self, *, account: AccountSnapshot | None = None, as_of: datetime | None = None
+    ) -> RiskLimits:
+        """The limits in force, resolved across every layer and converted once.
+
+        ``account`` supplies the exchange rates. They come from the account
+        snapshot rather than from anywhere else because that is where they were
+        captured — in the same broker read as the balance they convert — and
+        because this package may not reach a broker to fetch its own.
+
+        Called without one, as ``risk validate`` does, the limits come back in
+        the currency they were *declared* in and marked not convertible. That
+        is the honest answer to "what are the limits" when nobody has looked up
+        a rate, and :meth:`RiskLimits.usable_against` is what stops those
+        figures being compared with a price.
+        """
+        return resolve_limits(
+            self._config,
+            budget_override=self._settings.campaign_budget,
+            fx_rates=account.fx_rates if account is not None else None,
+            as_of=as_of if as_of is not None else (account.as_of if account else None),
+        )
 
     def history(self, limit: int | None = None) -> list[AllocationHistoryEntry]:
         return self._allocation_repository.history(limit=limit)
@@ -227,7 +250,9 @@ class AllocationService:
             return self._strategy_repository.get(run_id)
         return self._strategy_repository.latest()
 
-    def campaign_snapshot(self, as_of: datetime) -> CampaignSnapshot:
+    def campaign_snapshot(
+        self, as_of: datetime, *, account: AccountSnapshot | None = None
+    ) -> CampaignSnapshot:
         """The campaign as it stood at ``as_of``, replayed from the ledger.
 
         Milestone 11 adds two facts to the replay, and both come from stores
@@ -242,16 +267,29 @@ class AllocationService:
         * **the day's realised result**, with its reliability alongside it. An
           unknown day is passed through as unknown, never as zero.
         """
-        budget, reserve, source = resolve_campaign_budget(
-            self._config.campaign, override=self._settings.campaign_budget_eur
+        declared_budget, declared_reserve, source = resolve_campaign_budget(
+            self._config.campaign, override=self._settings.campaign_budget
         )
+        # The envelope this campaign may actually spend is the declared one
+        # carried into the currency it trades. The declared figure is kept
+        # beside it: the operator holds euro, and a record that only showed
+        # dollars could not answer how much of their own money is committed.
+        limits = self.limits(account=account, as_of=as_of)
+        if limits.convertible:
+            budget = limits.campaign_budget
+            reserve = limits.campaign_reserve
+        else:
+            budget, reserve = declared_budget, declared_reserve
         state = self._campaign_pnl_state(as_of)
         return build_campaign_snapshot(
             self._allocation_repository.all_runs(),
             campaign_id=self._config.campaign.campaign_id,
-            currency=self._config.campaign.currency,
+            currency=limits.limit_currency,
             budget=budget,
             reserve=reserve,
+            declared_budget=declared_budget,
+            declared_currency=self._config.campaign.budget_currency,
+            fx=limits.fx,
             as_of=as_of,
             budget_source=source,
             realized_pnl_today=state.realized_pnl_today,
@@ -363,7 +401,18 @@ class AllocationService:
                 )
 
         candidates, build_failures = self._candidates(selection_run, wanted)
-        campaign = self.campaign_snapshot(as_of)
+
+        # The account is read *before* the campaign is replayed, because the
+        # exchange rates that carry the envelope into the traded currency are
+        # captured on it. Reversing the order would build a campaign snapshot
+        # that could not be converted and then convert it afterwards, which is
+        # how a figure ends up recorded in one currency and compared in another.
+        account = (
+            self._account_repository.get(account_snapshot_id)
+            if account_snapshot_id
+            else self.account_snapshot(as_of)
+        )
+        campaign = self.campaign_snapshot(as_of, account=account)
 
         if not candidates:
             return self._empty(
@@ -383,11 +432,6 @@ class AllocationService:
                 contract_run_id=selection_run.run_id,
             )
 
-        account = (
-            self._account_repository.get(account_snapshot_id)
-            if account_snapshot_id
-            else self.account_snapshot(as_of)
-        )
         if account is None and self._config.campaign.account.require_account_snapshot:
             return self._empty(
                 AllocationRunStatus.ACCOUNT_SNAPSHOT_UNAVAILABLE,
@@ -403,7 +447,7 @@ class AllocationService:
                 contract_run_id=selection_run.run_id,
             )
 
-        limits = self.limits()
+        limits = self.limits(account=account, as_of=as_of)
         engine = AllocationEngine(limits, RiskEngine(limits))
         decisions = engine.allocate(
             candidates,
@@ -448,8 +492,12 @@ class AllocationService:
             dry_run=dry_run,
             campaign_before=campaign,
             account_snapshot_id=account.snapshot_id if account else None,
+            currency=campaign.currency,
             budget=campaign.budget,
             reserve=campaign.reserve,
+            declared_budget=campaign.declared_budget,
+            declared_currency=campaign.declared_currency,
+            fx=campaign.fx,
             allocated_before=campaign.allocated,
             allocated_this_run=committed,
             available_after=campaign.available - committed,
@@ -660,8 +708,12 @@ class AllocationService:
             trading_mode=self._settings.trading_mode,
             dry_run=dry_run,
             campaign_before=state,
+            currency=state.currency,
             budget=state.budget,
             reserve=state.reserve,
+            declared_budget=state.declared_budget,
+            declared_currency=state.declared_currency,
+            fx=state.fx,
             allocated_before=state.allocated,
             available_after=state.available,
             contract_run_id=contract_run_id,

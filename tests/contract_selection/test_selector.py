@@ -673,7 +673,7 @@ def test_the_cost_carries_no_quantity_and_no_allocation(priced_chain, select) ->
     result = select()
 
     fields = set(ContractCostEstimate.model_fields)
-    for forbidden in ("quantity", "allocation", "allocated_eur", "budget", "position_size"):
+    for forbidden in ("quantity", "allocation", "allocated", "budget", "position_size"):
         assert forbidden not in fields
     assert result.cost is not None
 

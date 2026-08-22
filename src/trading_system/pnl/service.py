@@ -516,7 +516,7 @@ class PnLService:
                 1 for record in settlements if record.settlement.status is SettlementStatus.BLOCKED
             ),
             capital_returned=returned,
-            currency=self._config.campaign.currency,
+            currency=self._config.campaign.target_currency,
             pnl_ids=[record.pnl_id for record in results],
             settlement_ids=[record.settlement.settlement_id for record in settlements],
             daily_pnl_id=daily.daily_pnl_id if daily is not None else None,
@@ -619,7 +619,7 @@ class PnLService:
             session_date=session_date,
             timezone=timezone,
             status=status,
-            currency=self._config.campaign.currency,
+            currency=self._config.campaign.target_currency,
             realized_pnl=total,
             realized_gross_pnl=gross,
             total_commission=commission,

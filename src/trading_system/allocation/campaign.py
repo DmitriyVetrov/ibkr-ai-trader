@@ -30,6 +30,7 @@ from decimal import Decimal
 
 from trading_system.allocation.models import AllocationRunResult
 from trading_system.domain.enums import AllocationOutcome, BudgetSource, DailyPnLStatus
+from trading_system.fx.models import FxConversion
 from trading_system.risk.models import CampaignPosition, CampaignSnapshot
 
 __all__ = ["build_campaign_snapshot", "reservations_from"]
@@ -114,6 +115,9 @@ def build_campaign_snapshot(
     budget: Decimal,
     reserve: Decimal,
     as_of: datetime,
+    declared_budget: Decimal | None = None,
+    declared_currency: str | None = None,
+    fx: FxConversion | None = None,
     budget_source: BudgetSource = BudgetSource.CONFIG,
     realized_pnl_today: Decimal | None = None,
     daily_pnl_status: DailyPnLStatus = DailyPnLStatus.NOT_TRACKED,
@@ -130,6 +134,12 @@ def build_campaign_snapshot(
     without a ``TRACKED`` status, and the snapshot model refuses it: a comfortable
     number next to "we could not measure today" is exactly how an unmeasured
     day would pass a loss limit.
+
+    ``budget``/``currency`` are what this campaign may actually spend, in the
+    currency it trades. ``declared_budget``/``declared_currency``/``fx`` carry
+    the operator's own figure and the rate that reached the first pair, so the
+    conversion is recorded on the snapshot rather than reconstructed from
+    configuration that may since have changed.
     """
     return CampaignSnapshot(
         campaign_id=campaign_id,
@@ -137,6 +147,9 @@ def build_campaign_snapshot(
         currency=currency,
         budget=budget,
         reserve=reserve,
+        declared_budget=declared_budget,
+        declared_currency=declared_currency,
+        fx=fx,
         budget_source=budget_source.value,
         open_positions=reservations_from(
             runs,

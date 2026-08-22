@@ -73,8 +73,23 @@ class SimulatedBrokerState:
     """
 
     account_id: str = DEFAULT_ACCOUNT_ID
+    #: The account's **base** currency, exactly as a real European account
+    #: reports it. The simulator trades US-listed instruments quoted in USD
+    #: against it, so the offline path exercises the same cross-currency shape
+    #: production does rather than a tidier one.
     currency: str = "EUR"
     cash: Decimal = Decimal("100000.00")
+    #: Cash per currency, unconverted. Mirrors the real account's shape: the
+    #: capital is in the base currency and the USD balance is whatever is
+    #: actually held, which for a fresh account is nothing.
+    cash_by_currency: dict[str, Decimal] = field(
+        default_factory=lambda: {"EUR": Decimal("100000.00"), "USD": Decimal("0.00")}
+    )
+    #: ``1 <currency> = <rate>`` base units, as a broker would report it.
+    #: Deliberately **not** 1.0: a simulator that quoted parity would let a
+    #: conversion bug pass every offline test and fail only against the real
+    #: gateway. Every artifact built from it is stamped simulated.
+    exchange_rates: dict[str, Decimal] = field(default_factory=lambda: {"USD": Decimal("0.90")})
     net_liquidation: Decimal = Decimal("100000.00")
     buying_power: Decimal = Decimal("400000.00")
     available_funds: Decimal = Decimal("98000.00")
@@ -286,6 +301,8 @@ class SimulatedBroker(Broker):
             excess_liquidity=s.excess_liquidity,
             unrealized_pnl=s.unrealized_pnl,
             realized_pnl=s.realized_pnl,
+            cash_by_currency=dict(s.cash_by_currency),
+            exchange_rates=dict(s.exchange_rates),
         )
 
     def get_account_summary(self) -> dict[str, str]:

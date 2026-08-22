@@ -498,3 +498,105 @@ def test_reading_a_quote_submits_no_orders(broker_clock: FixedClock) -> None:
     broker.get_market_data("SPY")
 
     assert broker.orders_submitted == 0
+
+
+# ---------------------------------------------------------------------------
+# The per-currency ledger rows that arrive with every account summary
+# ---------------------------------------------------------------------------
+#
+# ``ib_async`` puts ``$LEDGER:ALL`` in its account-summary tag list, so IBKR
+# returns the cash tags once per currency alongside the account-level ones.
+# Everything below is about not letting those two kinds of row be confused.
+def ledger_summary() -> list[SimpleNamespace]:
+    """A EUR-based account holding euro and no dollars, as IBKR reports it.
+
+    ``TotalCashValue`` appears three times — once for the account (BASE) and
+    once per currency — which is exactly the shape that used to leave
+    ``BrokerAccount.cash`` holding whichever currency arrived last.
+    """
+    return [
+        account_value("NetLiquidation", "5000.00", "EUR"),
+        account_value("BuyingPower", "20000.00", "EUR"),
+        account_value("AvailableFunds", "5000.00", "EUR"),
+        account_value("TotalCashValue", "5000.00", "BASE"),
+        account_value("TotalCashValue", "5000.00", "EUR"),
+        account_value("TotalCashValue", "0.00", "USD"),
+        account_value("CashBalance", "5000.00", "EUR"),
+        account_value("CashBalance", "0.00", "USD"),
+        account_value("CashBalance", "5000.00", "BASE"),
+        account_value("ExchangeRate", "1.00", "EUR"),
+        account_value("ExchangeRate", "0.855", "USD"),
+        account_value("ExchangeRate", "1.00", "BASE"),
+    ]
+
+
+@pytest.mark.unit
+def test_a_per_currency_cash_row_does_not_stand_in_for_the_account(
+    broker_clock: FixedClock,
+) -> None:
+    """The bug this parsing exists to prevent, pinned as an inequality.
+
+    ``TotalCashValue`` is a ledger tag, so it arrives once per currency. A loop
+    keyed on the tag alone takes whichever came last — here USD 0.00 — and
+    reports an account holding EUR 5,000 as holding nothing.
+    """
+    broker = connect_fake(make_broker(broker_clock), FakeIB(summary=ledger_summary()))
+
+    account = broker.get_account()
+
+    assert account.currency == "EUR"
+    assert account.cash == Decimal("5000.00")
+    assert account.cash != Decimal("0.00"), "the USD ledger row must not stand in for the base"
+
+
+@pytest.mark.unit
+def test_the_per_currency_cash_is_recorded_separately_and_never_summed(
+    broker_clock: FixedClock,
+) -> None:
+    """EUR 5,000 and USD 0 are two facts. A total would need a rate."""
+    broker = connect_fake(make_broker(broker_clock), FakeIB(summary=ledger_summary()))
+
+    account = broker.get_account()
+
+    assert account.cash_by_currency == {"EUR": Decimal("5000.00"), "USD": Decimal("0.00")}
+
+
+@pytest.mark.unit
+def test_the_exchange_rates_arrive_with_the_balance_they_convert(broker_clock: FixedClock) -> None:
+    """No extra round trip: they are rows in a summary already being read.
+
+    That matters twice over. Milestone 2 established that a second uncached
+    request on one connection can go unanswered indefinitely, so a rate fetched
+    separately would be a real hazard; and a rate read at another instant could
+    convert a balance it does not belong to.
+    """
+    broker = connect_fake(make_broker(broker_clock), FakeIB(summary=ledger_summary()))
+
+    account = broker.get_account()
+
+    assert account.exchange_rates == {"USD": Decimal("0.855")}
+    assert "EUR" not in account.exchange_rates, "the base against itself is not an observation"
+    assert "BASE" not in account.exchange_rates
+
+
+@pytest.mark.unit
+def test_a_per_currency_row_keeps_its_own_key_in_the_raw_tags(broker_clock: FixedClock) -> None:
+    """Audit data that overwrote itself would be worse than none."""
+    broker = connect_fake(make_broker(broker_clock), FakeIB(summary=ledger_summary()))
+
+    account = broker.get_account()
+
+    assert account.raw_tags["TotalCashValue"] == "5000.00"
+    assert account.raw_tags["TotalCashValue:USD"] == "0.00"
+    assert account.raw_tags["ExchangeRate:USD"] == "0.855"
+
+
+@pytest.mark.unit
+def test_an_account_quoting_no_rates_reports_none_rather_than_one(broker_clock: FixedClock) -> None:
+    """A broker that said nothing must be recorded as having said nothing."""
+    summary = [row for row in ledger_summary() if row.tag != "ExchangeRate"]
+    broker = connect_fake(make_broker(broker_clock), FakeIB(summary=summary))
+
+    account = broker.get_account()
+
+    assert account.exchange_rates == {}

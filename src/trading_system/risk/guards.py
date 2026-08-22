@@ -29,6 +29,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from trading_system.domain.enums import (
+    FxStatus,
     MaxLossBasis,
     RiskCheckOutcome,
     RiskLimitScope,
@@ -46,12 +47,23 @@ from trading_system.risk.models import (
 __all__ = [
     "check_account_snapshot",
     "check_currency",
+    "check_currency_conversion",
     "check_data_quality",
     "check_point_in_time",
     "check_price",
     "check_trading_mode",
     "unit_max_loss",
 ]
+
+
+#: One failed conversion status maps to one reason code, because "stale" and
+#: "never quoted" send an operator to different places. Anything not listed -
+#: today only ``UNAVAILABLE`` - falls back to the unavailable code, which is
+#: the least specific claim and therefore the safe default.
+_FX_REASONS = {
+    FxStatus.STALE: RiskReasonCode.FX_RATE_STALE,
+    FxStatus.INVALID: RiskReasonCode.FX_RATE_INVALID,
+}
 
 
 def _passed(
@@ -432,22 +444,35 @@ def check_data_quality(candidate: AllocationCandidate) -> list[RiskCheck]:
 
 
 def check_currency(candidate: AllocationCandidate, limits: RiskLimits) -> list[RiskCheck]:
-    """Whether every figure is in a currency the campaign can spend.
+    """Whether this instrument is quoted in the currency the campaign trades.
 
-    No arbitrary rate is ever applied. Either a deterministic conversion is
-    configured, or a mismatch is a rejection — because a position sized through
-    an invented exchange rate is sized wrongly by an amount nobody recorded.
+    An instrument's price is **never converted**, in either direction, and that
+    is a deliberate asymmetry with the capital limits, which are. The reason is
+    what happens to the number downstream: a limit is compared, but a price
+    becomes the limit price on an order, and the exchange expects that figure
+    in the contract's own currency. Converting it would not be a rounding
+    difference, it would be the wrong number on the wire.
+
+    So the campaign's *target* currency is chosen to match the instruments it
+    trades — USD for US-listed options — and an instrument quoted in something
+    else is a rejection with a fix an operator can act on, rather than a
+    conversion nobody asked for.
+
+    There is no list here of currencies to treat as the campaign's own. The one
+    that used to exist accepted a foreign currency **without a rate**, which
+    asserted that a dollar and a euro were the same amount of money.
     """
-    accepted = set(limits.accepted_currencies)
+    target = limits.target_currency.upper()
     currencies = candidate.currencies
     price_currency = candidate.price.currency
     if price_currency:
         currencies = currencies | {price_currency}
+    currencies = {code.upper() for code in currencies}
 
     if len(currencies) > 1:
         return [
             _failed(
-                "currency",
+                "instrument_currency",
                 RiskLimitScope.CAMPAIGN,
                 RiskReasonCode.CURRENCY_MISMATCH,
                 "the legs of one structure are quoted in more than one currency",
@@ -456,44 +481,132 @@ def check_currency(candidate: AllocationCandidate, limits: RiskLimits) -> list[R
             )
         ]
 
-    foreign = sorted(currencies - accepted)
-    if not foreign:
+    foreign = sorted(currencies - {target})
+    if foreign:
         return [
-            _passed(
-                "currency",
+            _failed(
+                "instrument_currency",
                 RiskLimitScope.CAMPAIGN,
-                actual=", ".join(sorted(currencies)) or "unstated",
-                limit=", ".join(sorted(accepted)),
+                RiskReasonCode.CURRENCY_MISMATCH,
+                (
+                    f"quoted in {', '.join(foreign)} and this campaign trades in {target}. An "
+                    f"instrument price is never converted: the limit price that reaches the "
+                    f"broker has to be in the contract's own currency. Set "
+                    f"campaign.currency_policy.target_currency to the currency this campaign "
+                    f"actually trades"
+                ),
+                actual=", ".join(foreign),
+                limit=target,
             )
         ]
 
-    if limits.allow_currency_conversion:
-        return [
-            _failed(
-                "currency",
-                RiskLimitScope.CAMPAIGN,
-                RiskReasonCode.FX_CONVERSION_UNAVAILABLE,
-                (
-                    "conversion is permitted by policy but no deterministic rate source is "
-                    "configured; converting at an arbitrary rate would invent a price"
-                ),
-                actual=", ".join(foreign),
-                limit=", ".join(sorted(accepted)),
-            )
-        ]
     return [
-        _failed(
-            "currency",
+        _passed(
+            "instrument_currency",
             RiskLimitScope.CAMPAIGN,
-            RiskReasonCode.CURRENCY_MISMATCH,
-            (
-                f"priced in {', '.join(foreign)}, which the campaign does not accept as its "
-                f"own currency, and conversion is disabled"
-            ),
-            actual=", ".join(foreign),
-            limit=", ".join(sorted(accepted)),
+            actual=", ".join(sorted(currencies)) or "unstated",
+            limit=target,
         )
     ]
+
+
+def check_currency_conversion(
+    limits: RiskLimits, account: AccountSnapshot | None, *, as_of: datetime
+) -> list[RiskCheck]:
+    """Whether the operator's capital reached the currency this campaign trades.
+
+    The campaign's money is declared in the account's currency and every
+    comparison downstream is against a price in the traded currency. When those
+    differ, a rate has to carry one to the other, and this is the check that
+    says whether one did.
+
+    It fails **closed**, with the reason naming what went wrong rather than a
+    single catch-all: a stale rate wants a fresh capture, an absent one wants a
+    broker that quotes the pair, and telling an operator "currency mismatch"
+    for either sends them to look at their campaign file, which is fine.
+
+    A campaign trading its own currency still produces a check here. It records
+    an identity conversion, so the artifact says explicitly that no rate was
+    needed rather than leaving a reader to notice the absence of one.
+    """
+    checks: list[RiskCheck] = []
+    fx = limits.fx
+
+    if fx is None or not fx.ok:
+        detail = fx.detail if fx is not None else "no conversion was attempted"
+        status = fx.status if fx is not None else FxStatus.UNAVAILABLE
+        reason = _FX_REASONS.get(status, RiskReasonCode.FX_RATE_UNAVAILABLE)
+        return [
+            _failed(
+                "campaign_currency_conversion",
+                RiskLimitScope.CAMPAIGN,
+                reason,
+                (
+                    f"this campaign's capital is declared in {limits.budget_currency} and it "
+                    f"trades in {limits.target_currency}, and no valid rate carried one to "
+                    f"the other: {detail}. Nothing is authorised, sized or sent - a figure "
+                    f"compared across a currency without a rate is wrong by that rate"
+                ),
+                actual=(fx.status.value if fx is not None else "NOT_ATTEMPTED"),
+                limit=FxStatus.VALID.value,
+            )
+        ]
+
+    checks.append(
+        _passed(
+            "campaign_currency_conversion",
+            RiskLimitScope.CAMPAIGN,
+            actual=f"{limits.budget_currency}->{limits.target_currency} @ {fx.rate}",
+            limit=f"rate age <= {limits.max_fx_rate_age_seconds}s",
+            detail=fx.describe(),
+        )
+    )
+
+    # The account is converted separately from the limits, because they are
+    # separate facts that merely happen to share a rate today. An account based
+    # in a third currency is a configuration nobody has yet, and it would fail
+    # here rather than convert through an assumption.
+    if account is None:
+        return checks
+
+    conversion = account.spendable_in(
+        limits.target_currency,
+        as_of=as_of,
+        max_rate_age_seconds=float(limits.max_fx_rate_age_seconds),
+    )
+    if conversion is None:
+        # No balance at all. check_account_snapshot already reports that as
+        # INVALID_ACCOUNT_SNAPSHOT; reporting it twice under an FX heading
+        # would send an operator to look at exchange rates for a missing cash
+        # figure.
+        return checks
+
+    if not conversion.ok:
+        checks.append(
+            _failed(
+                "account_currency_conversion",
+                RiskLimitScope.CAMPAIGN,
+                _FX_REASONS.get(conversion.status, RiskReasonCode.FX_RATE_UNAVAILABLE),
+                (
+                    f"the account holds {account.currency} and this campaign spends "
+                    f"{limits.target_currency}, and the balance could not be expressed in "
+                    f"it: {conversion.detail}"
+                ),
+                actual=conversion.status.value,
+                limit=FxStatus.VALID.value,
+            )
+        )
+    else:
+        checks.append(
+            _passed(
+                "account_currency_conversion",
+                RiskLimitScope.CAMPAIGN,
+                actual=f"{conversion.converted_amount} {conversion.to_currency}",
+                limit=f"{account.spendable} {account.currency}",
+                detail=conversion.describe(),
+            )
+        )
+    return checks
 
 
 # ---------------------------------------------------------------------------

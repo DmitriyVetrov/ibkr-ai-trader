@@ -33,8 +33,9 @@ from __future__ import annotations
 from datetime import datetime
 
 from trading_system.data.hashing import stable_hash
-from trading_system.domain.enums import TradingMode
+from trading_system.domain.enums import FxRateOrigin, TradingMode
 from trading_system.domain.models import BrokerAccount, BrokerPosition
+from trading_system.fx.models import FxRate, FxRateTable
 from trading_system.risk.models import (
     AccountPosition,
     AccountSnapshot,
@@ -42,7 +43,41 @@ from trading_system.risk.models import (
     build_account_snapshot_payload,
 )
 
-__all__ = ["build_account_snapshot"]
+__all__ = ["build_account_snapshot", "fx_rate_table"]
+
+
+def fx_rate_table(account: BrokerAccount) -> FxRateTable:
+    """The broker's own exchange rates, as point-in-time observations.
+
+    IBKR quotes each currency *into* the account's base currency, so a row
+    reading ``USD -> 0.855`` on a EUR account means one dollar buys 0.855 euro.
+    That direction is recorded literally rather than inverted here; the
+    conversion layer inverts on demand and marks the result as derived, so a
+    stored artifact always says which direction the broker actually quoted.
+
+    Rates take their instant from the account read that produced them. That is
+    the whole point of building them here rather than fetching them separately:
+    a balance and the rate that converts it are one observation, and there is
+    no path by which the two could come from different moments.
+    """
+    return FxRateTable(
+        rates=tuple(
+            FxRate(
+                base_currency=code,
+                quote_currency=account.currency,
+                rate=rate,
+                as_of=account.as_of,
+                origin=(
+                    FxRateOrigin.SIMULATED
+                    if account.source == "SIMULATOR"
+                    else FxRateOrigin.BROKER_ACCOUNT_LEDGER
+                ),
+                source=account.source,
+            )
+            for code, rate in sorted(account.exchange_rates.items())
+            if code.upper() != account.currency.upper()
+        )
+    )
 
 
 def build_account_snapshot(
@@ -84,6 +119,8 @@ def build_account_snapshot(
         account_id=account.account_id,
         currency=account.currency,
         trading_mode=trading_mode,
+        cash_by_currency=dict(account.cash_by_currency),
+        fx_rates=fx_rate_table(account),
         cash=account.cash,
         net_liquidation=account.net_liquidation,
         buying_power=account.buying_power,

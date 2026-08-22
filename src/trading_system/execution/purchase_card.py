@@ -155,6 +155,7 @@ def build_purchase_card(
     strategy: StrategyDecision,
     created_at: datetime,
     versions: SystemVersions,
+    campaign_currency: str,
 ) -> PurchaseCard:
     """Mint the Milestone 1 purchase card for an approved authorisation.
 
@@ -162,6 +163,12 @@ def build_purchase_card(
     function must stay pure, and the *why* of a trade belongs to the artifacts
     that decided it. The card copies their conclusions verbatim — an execution
     layer that restated a hypothesis would be writing research.
+
+    ``campaign_currency`` is the currency this campaign trades, and it is only
+    a fallback: the card records the currency the *allocation* was denominated
+    in wherever the allocation states one, because that is the currency the
+    money was actually authorised in. Passing it in rather than reading a
+    configuration keeps this function pure.
     """
     if allocation.outcome is not AllocationOutcome.APPROVED:
         raise PurchaseCardError(
@@ -239,7 +246,8 @@ def build_purchase_card(
         expected_horizon_days=research.expected_horizon_days,
         # --- how much: copied from the authorisation, never recomputed -------
         quantity=allocation.quantity,
-        requested_allocation_eur=allocation.capital_committed,
+        requested_allocation=allocation.capital_committed,
+        currency=allocation.currency or campaign_currency,
         risk_limits=_limits_of(allocation),
         thesis_invalidation_conditions=list(research.invalidation_conditions),
         research_report_id=research.report_id,

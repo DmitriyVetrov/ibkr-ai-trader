@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.risk.conftest import eur_usd_rates
 from trading_system.allocation.service import AllocationService
 from trading_system.allocation.store import AllocationStoreError, FilesystemAllocationRepository
 from trading_system.domain.enums import (
@@ -101,7 +102,9 @@ def _selection(
                 trading_class=symbol,
                 contract_id=abs(hash(symbol)) % 10_000_000,
                 exchange="SMART",
-                currency="EUR",
+                # The instrument's own currency: a US-listed option is quoted
+                # in dollars, whatever currency the account holding it is in.
+                currency="USD",
                 strike_policy=StrikeSelectionPolicy.TARGET_DELTA,
                 selection_reason="TARGET_DELTA: closest to the configured target",
                 bid=Decimal("5.95"),
@@ -133,7 +136,7 @@ def _selection(
         cost=(
             ContractCostEstimate(
                 available=True,
-                currency="EUR",
+                currency="USD",
                 estimated_debit=Decimal(debit),
                 estimated_mid_debit=Decimal(debit),
                 max_leg_spread_pct=1.67,
@@ -214,11 +217,16 @@ def _account(**overrides) -> AccountSnapshot:
         "captured_at": NOW,
         "broker": "SIMULATOR",
         "account_id": "DU0000000",
+        # The account's base currency. The campaign trades USD; the rate
+        # captured with the balance is what connects the two, and without it
+        # nothing here would be authorised at all.
         "currency": "EUR",
         "trading_mode": TradingMode.PAPER,
         "cash": Decimal("100000.00"),
         "buying_power": Decimal("400000.00"),
         "available_funds": Decimal("98000.00"),
+        "cash_by_currency": {"EUR": Decimal("100000.00"), "USD": Decimal("0.00")},
+        "fx_rates": eur_usd_rates(),
         "simulated": True,
     }
     fields.update(overrides)
@@ -308,7 +316,16 @@ def test_the_run_records_the_state_it_decided_against(service):
     result = service().run().result
 
     assert result.campaign_before.as_of == NOW
-    assert result.campaign_before.budget == Decimal("5000")
+    # What the campaign may spend, in the currency it spends it in...
+    assert result.campaign_before.currency == "USD"
+    assert result.campaign_before.budget == Decimal("5500.00")
+    # ...and what the operator actually holds, in theirs. Both are recorded:
+    # a run showing only dollars could not answer how much of the operator's
+    # own money is committed, and one showing only euro could not be checked
+    # against the dollar figures it authorised.
+    assert result.campaign_before.declared_budget == Decimal("5000")
+    assert result.campaign_before.declared_currency == "EUR"
+    assert result.campaign_before.fx is not None and result.campaign_before.fx.ok
     assert result.account_snapshot_id is not None
 
 

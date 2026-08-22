@@ -194,7 +194,7 @@ class ReservationService:
             opportunity_id=allocation.opportunity_id,
             symbol=allocation.symbol,
             strategy=allocation.strategy,
-            currency=allocation.currency or self._config.campaign.currency,
+            currency=allocation.currency or self._config.campaign.target_currency,
             authorized_amount=allocation.capital_committed,
             authorized_max_loss=allocation.total_max_loss,
             authorized_quantity=allocation.quantity,
@@ -387,6 +387,16 @@ class ReservationService:
         reported separately because an operator asking "why can I not open
         another position" deserves to see that the reason is an unresolved
         order rather than a spent budget.
+
+        **The envelope may be unknown here, and that is not a failure.** A
+        reservation's committed capital is in the currency the campaign trades;
+        the configured budget is in the currency the operator holds. Turning
+        one into the other needs a rate, and this service holds no broker to
+        get one from. So the converted envelope is read from the **last
+        allocation run**, which recorded it together with the rate that
+        produced it, and where no run has recorded one the budget and what is
+        left of it are reported as unknown rather than as the declared figure
+        pretending to be a converted one.
         """
         now = as_of or self._clock.now()
         campaign = self._config.campaign
@@ -400,21 +410,44 @@ class ReservationService:
         released = sum((r.released_amount for r in reservations), Decimal("0"))
         committed = sum((r.committed_amount for r in reservations), Decimal("0"))
         unknown = [r for r in reservations if r.locked_by_uncertainty]
+        envelope = self._converted_envelope()
+        budget, reserve = envelope if envelope is not None else (None, None)
         return CampaignCapital(
             campaign_id=campaign.campaign_id,
             as_of=now,
-            currency=campaign.currency,
-            budget=campaign.budget_eur,
-            reserve=campaign.reserve_eur,
+            currency=campaign.target_currency,
+            budget=budget,
+            reserve=reserve,
+            declared_budget=campaign.budget,
+            declared_reserve=campaign.reserve,
+            declared_currency=campaign.budget_currency,
             authorized_total=authorized,
             consumed_total=consumed,
             released_total=released,
             committed_total=committed,
             locked_by_unknown=sum((r.committed_amount for r in unknown), Decimal("0")),
-            available=campaign.budget_eur - campaign.reserve_eur - committed,
+            available=(
+                budget - reserve - committed if budget is not None and reserve is not None else None
+            ),
             reservation_count=len(reservations),
             unknown_count=len(unknown),
         )
+
+    def _converted_envelope(self) -> tuple[Decimal, Decimal] | None:
+        """The envelope in the traded currency, as the last run recorded it.
+
+        Read from the ledger rather than recomputed, for the same reason the
+        campaign's committed capital is: the run is what actually governed the
+        authorisations these reservations descend from, and a figure recomputed
+        today at today's rate would not be the one they were made against.
+        """
+        campaign = self._config.campaign
+        latest = self._allocations().latest()
+        if latest is None:
+            return None
+        if latest.currency.upper() != campaign.target_currency:
+            return None
+        return latest.budget, latest.reserve
 
     # --- internals ---------------------------------------------------------
     def _allocations(self) -> AllocationRepository:

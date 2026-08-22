@@ -199,15 +199,30 @@ def test_legs_spanning_expirations_are_refused(check, approved_allocation) -> No
 # ---------------------------------------------------------------------------
 # Money
 # ---------------------------------------------------------------------------
-def test_a_usd_contract_against_a_eur_campaign_is_refused(check, approved_allocation) -> None:
+def test_a_contract_this_campaign_does_not_trade_is_refused(check, approved_allocation) -> None:
     """Milestone 7's refusal, preserved rather than undone.
 
-    Converting at an invented rate would size a position wrongly by an amount
-    nobody recorded.
+    An instrument price is never converted, here least of all: the number this
+    stage is about to turn into a limit price has to be the one the exchange
+    expects. A converted one would not be a rounding difference, it would be
+    the wrong number on the wire.
+
+    Note what this no longer checks. The campaign's capital is held in EUR and
+    the contract settles in USD, and that mismatch is fine — it was resolved at
+    allocation, against a captured rate, and re-converting here would apply a
+    second rate to a figure that was already committed. What is refused is a
+    contract quoted in a currency the campaign does not trade at all.
     """
-    legs = [approved_allocation.legs[0].model_copy(update={"currency": "USD"})]
-    validation = check(approved_allocation.model_copy(update={"legs": legs, "currency": "USD"}))
+    legs = [approved_allocation.legs[0].model_copy(update={"currency": "GBP"})]
+    validation = check(approved_allocation.model_copy(update={"legs": legs, "currency": "GBP"}))
     assert ExecutionReasonCode.CURRENCY_MISMATCH in _codes(validation)
+
+
+def test_the_contract_the_campaign_does_trade_passes(check, approved_allocation) -> None:
+    """A EUR account sending a USD order is the ordinary case, not an error."""
+    validation = check(approved_allocation)
+
+    assert ExecutionReasonCode.CURRENCY_MISMATCH not in _codes(validation)
 
 
 def test_a_missing_reference_price_is_refused(check, approved_allocation) -> None:
@@ -376,7 +391,7 @@ def test_every_failure_is_collected_not_just_the_first(check, approved_allocatio
         update={
             "quantity": 0,
             "unit_cost": None,
-            "legs": [approved_allocation.legs[0].model_copy(update={"currency": "USD"})],
+            "legs": [approved_allocation.legs[0].model_copy(update={"currency": "GBP"})],
         }
     )
     codes = _codes(check(broken))

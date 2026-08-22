@@ -124,7 +124,7 @@ def test_every_strategy_has_liquidity_and_price_limits(
     assert specification.min_open_interest > 0
     assert specification.min_daily_volume > 0
     assert specification.max_bid_ask_spread_pct > 0
-    assert specification.min_option_price_eur <= specification.max_option_price_eur
+    assert specification.min_option_price <= specification.max_option_price
 
 
 @pytest.mark.parametrize("strategy", list(StrategyType), ids=lambda s: s.value)
@@ -272,13 +272,13 @@ def test_a_strategy_cannot_raise_the_global_spread_ceiling(system_config: System
 
 def test_a_strategy_cannot_raise_the_global_price_ceiling(system_config: SystemConfig) -> None:
     expensive = system_config.strategies["long_call"].model_copy(
-        update={"max_option_price_eur": Decimal("500.00")}
+        update={"max_option_price": Decimal("500.00")}
     )
     config = system_config.model_copy(
         update={"strategies": {**system_config.strategies, "long_call": expensive}}
     )
 
-    with pytest.raises(StrategyRegistryError, match="max_option_price_eur"):
+    with pytest.raises(StrategyRegistryError, match="max_option_price"):
         StrategyRegistry.from_config(config)
 
 
@@ -331,7 +331,7 @@ def test_the_agent_view_describes_structure_and_never_a_contract(
         "contract_id",
         "delta",
         "min_open_interest",
-        "max_option_price_eur",
+        "max_option_price",
     ):
         assert forbidden not in StrategyOption.model_fields, f"the agent view exposes {forbidden}"
 

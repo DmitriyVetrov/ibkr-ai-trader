@@ -74,6 +74,8 @@ from trading_system.domain.models import (
     Ticker,
     UtcDatetime,
 )
+from trading_system.fx.convert import convert
+from trading_system.fx.models import FxConversion, FxRateTable
 
 __all__ = [
     "ALLOCATION_SCHEMA_VERSION",
@@ -180,6 +182,16 @@ class AccountSnapshot(ImmutableModel):
     unrealized_pnl: Money | None = None
     realized_pnl: Money | None = None
 
+    #: Cash per currency, exactly as the broker reported it and never summed.
+    #: An account holding EUR 5,000 and USD 0 records two figures; there is no
+    #: total here, because a total would need a rate and would hide it.
+    cash_by_currency: dict[str, Money] = Field(default_factory=dict)
+    #: The rates the broker quoted **in the same read** as the balances above.
+    #: Capturing them together is what makes a conversion point-in-time honest:
+    #: a balance can never be converted with a rate from another instant,
+    #: because there is no other instant's rate on this artifact to reach for.
+    fx_rates: FxRateTable = Field(default_factory=FxRateTable)
+
     positions: list[AccountPosition] = Field(default_factory=list)
     #: Whether the broker connection that produced this was read-only. An
     #: authorisation resting on a snapshot from a writable connection is not
@@ -224,10 +236,17 @@ class AccountSnapshot(ImmutableModel):
 
     @property
     def spendable(self) -> Decimal | None:
-        """What the broker says is actually available, or ``None`` if unsaid.
+        """What the broker says is actually available, in the **base** currency.
 
         The most conservative of the figures the broker reported. ``None`` is
         propagated rather than replaced: an unknown balance is not a large one.
+
+        This figure is in :attr:`currency`, which is the account's base
+        currency and is *not* necessarily the currency a campaign trades in.
+        Comparing it against an instrument price without going through
+        :meth:`spendable_in` is the cross-currency comparison this milestone
+        exists to remove, so the property name deliberately does not read like
+        a number that is ready to compare.
         """
         figures = [
             value
@@ -235,6 +254,33 @@ class AccountSnapshot(ImmutableModel):
             if value is not None
         ]
         return min(figures) if figures else None
+
+    def spendable_in(
+        self, currency: str, *, as_of: datetime, max_rate_age_seconds: float | None
+    ) -> FxConversion | None:
+        """Available funds expressed in ``currency``, or the reason they are not.
+
+        ``None`` means the broker reported no balance at all - a different fact
+        from "we hold nothing" and from "we could not convert it", and the
+        caller has an ``INVALID_ACCOUNT_SNAPSHOT`` check for it already.
+
+        Otherwise the answer is always an :class:`FxConversion`, including when
+        the currencies match: a same-currency result records the identity
+        explicitly, so every comparison downstream reads its figure from a
+        conversion rather than sometimes from one and sometimes from a raw
+        balance.
+        """
+        available = self.spendable
+        if available is None:
+            return None
+        return convert(
+            available,
+            from_currency=self.currency,
+            to_currency=currency,
+            rates=self.fx_rates,
+            as_of=as_of,
+            max_age_seconds=max_rate_age_seconds,
+        )
 
 
 def account_snapshot_identifier(
@@ -274,6 +320,14 @@ def build_account_snapshot_payload(
         str(account.buying_power),
         str(account.available_funds),
         str(account.excess_liquidity),
+        # The rates are part of the observation, not decoration on it. Two
+        # captures of an unchanged balance at different rates convert to
+        # different capital, so an id derived from the balance alone would
+        # collide two genuinely different facts and the immutable store would
+        # refuse the second - the same lesson allocation records about the
+        # campaign's committed state and execution about the ledger's.
+        sorted(f"{code}={rate}" for code, rate in account.exchange_rates.items()),
+        sorted(f"{code}={amount}" for code, amount in account.cash_by_currency.items()),
         sorted(
             f"{p.symbol}|{p.security_type.value}|{p.contract_id}|{p.quantity}|{p.average_cost}"
             for p in positions
@@ -323,16 +377,40 @@ class CampaignSnapshot(ImmutableModel):
     ``allocated + available + reserve == budget`` holds exactly, in decimal, and
     is checked here rather than trusted — an accounting identity that only
     holds most of the time is not an accounting identity.
+
+    **Which currency.** ``currency`` is what this campaign *trades* in, and
+    every figure here is in it: the reservations replayed from the ledger are
+    the cost of contracts, and a contract costs what it is quoted in. Where the
+    operator's capital is held in a different currency, ``budget`` is the
+    converted equivalent, ``declared_budget`` keeps the original, and ``fx``
+    records the rate that connects them.
+
+    A rate that moves therefore moves the envelope, and that is correct rather
+    than a defect: EUR 5,000 buys a different number of dollars this week than
+    last, while a reservation made last week stays the number of dollars it
+    actually committed. Within one run the rate is fixed — it is captured with
+    the account — so the arithmetic is reproducible.
+
+    When no valid rate exists the budget is **not** converted, ``currency``
+    stays the declared one, and the risk engine refuses every candidate before
+    any of these figures is compared with a price.
     """
 
     campaign_id: Identifier
     as_of: UtcDatetime
+    #: What every figure below is in — the currency this campaign trades.
     currency: str = Field(min_length=3, max_length=8)
     schema_version: Identifier = ALLOCATION_SCHEMA_VERSION
 
     budget: Money = Field(ge=0)
     #: Held back by policy and never allocated. A non-zero reserve is normal.
     reserve: Money = Field(ge=0)
+    #: The envelope as configured, in ``declared_currency``, never converted in
+    #: place. The operator's own money keeps its own currency in the record.
+    declared_budget: Money | None = Field(default=None, ge=0)
+    declared_currency: str | None = Field(default=None, min_length=3, max_length=8)
+    #: The conversion between the two, or the reason there is none.
+    fx: FxConversion | None = None
     budget_source: Identifier = "CONFIG"
     open_positions: list[CampaignPosition] = Field(default_factory=list)
     #: Realised profit and loss for the day, when it is tracked. ``None`` means
@@ -558,8 +636,10 @@ class StrategyRiskProfile(ImmutableModel):
 
     dte_min: int = Field(ge=0)
     dte_max: int = Field(ge=0)
-    min_option_price_eur: Money = Field(ge=0)
-    max_option_price_eur: Money = Field(ge=0)
+    #: The option price band, in the instrument's own currency (the
+    #: campaign's target currency). Never converted.
+    min_option_price: Money = Field(ge=0)
+    max_option_price: Money = Field(ge=0)
     max_bid_ask_spread_pct: float = Field(ge=0.0)
 
 
@@ -771,14 +851,55 @@ class PortfolioExposure(ImmutableModel):
 
 
 class RiskLimits(ImmutableModel):
-    """Every limit in force for one evaluation, already resolved.
+    """Every limit in force for one evaluation, already resolved and converted.
 
     The *effective* value of each limit — the tighter of every layer that
     declares it — so a consumer never has to remember to intersect them and
     cannot forget to. ``scopes`` records which layer each effective value came
     from, so "why is the ceiling 1500 when risk.yaml says 1500 and the campaign
     says 1200" is answerable from the artifact.
+
+    **Every money field below is in** :attr:`limit_currency`. That is not a
+    detail: the limits are *declared* in the operator's own currency and the
+    instruments are *quoted* in the currency they trade in, and this object is
+    where the two are reconciled — once, explicitly, with the rate recorded.
+
+    .. code-block:: text
+
+        declared     1500 EUR    budget_currency, from campaign.yaml / risk.yaml
+             |
+             |  fx: one conversion, one rate, recorded
+             v
+        effective    1755 USD    target_currency == limit_currency
+             |
+             v
+        compared against a USD option price
+
+    When the conversion did **not** succeed, ``limit_currency`` stays the
+    budget currency and :attr:`convertible` is false. The figures are then the
+    declared ones and must not be compared against an instrument price; the
+    engine's FX check fails the candidate before any comparison is reached, and
+    :meth:`usable_against` exists so that claim is checkable rather than
+    remembered.
     """
+
+    #: What the limits were declared in — the account's own currency.
+    budget_currency: str = Field(default="EUR", min_length=3, max_length=8)
+    #: What this campaign trades in, and therefore what its limits have to be
+    #: expressed in before any of them can be compared with a price.
+    target_currency: str = Field(default="EUR", min_length=3, max_length=8)
+    #: The currency the money fields on *this object* are actually in. Equal to
+    #: ``target_currency`` when the conversion succeeded and to
+    #: ``budget_currency`` when it did not — never silently one while claiming
+    #: the other.
+    limit_currency: str = Field(default="EUR", min_length=3, max_length=8)
+    #: The single conversion applied to every money field, or the reason there
+    #: is none. Recorded so a stored authorisation names the rate it rested on.
+    fx: FxConversion | None = None
+    #: Each money limit as it was configured, before conversion, keyed by field
+    #: name. The source figure never loses its currency: 5000 stays 5000 EUR in
+    #: the record even when the campaign spends 5850 USD of it.
+    declared: dict[str, Money] = Field(default_factory=dict)
 
     campaign_budget: Money = Field(ge=0)
     campaign_reserve: Money = Field(ge=0)
@@ -808,12 +929,60 @@ class RiskLimits(ImmutableModel):
     #: is not trustworthy" are different facts, and only the second is evidence
     #: that something is wrong.
     block_on_unknown_daily_loss: bool = True
-    allow_currency_conversion: bool = False
-    accepted_currencies: list[str] = Field(default_factory=list)
+    #: How old the rate converting these limits may be at the decision instant.
+    max_fx_rate_age_seconds: int = Field(default=86400, ge=0)
 
     risk_config_version: Identifier
     campaign_id: Identifier
     scopes: dict[str, RiskLimitScope] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _the_stated_currency_matches_what_actually_happened(self) -> RiskLimits:
+        budget, target = self.budget_currency.upper(), self.target_currency.upper()
+        limit = self.limit_currency.upper()
+        if self.convertible:
+            if limit != target:
+                raise ValueError(
+                    f"limits claim to be in {limit} after a successful conversion into "
+                    f"{target}. A limit labelled with a currency it is not in is exactly the "
+                    f"defect this field exists to prevent"
+                )
+        elif limit != budget:
+            raise ValueError(
+                f"no valid conversion, so these limits are still the declared ones in "
+                f"{budget}, but they are labelled {limit}"
+            )
+        if self.fx is not None and (
+            self.fx.from_currency.upper() != budget or self.fx.to_currency.upper() != target
+        ):
+            raise ValueError(
+                f"the recorded conversion is {self.fx.from_currency}->{self.fx.to_currency} "
+                f"but these limits are declared in {budget} and traded in {target}"
+            )
+        return self
+
+    @property
+    def convertible(self) -> bool:
+        """Whether the declared limits reached the traded currency at all."""
+        return self.fx is not None and self.fx.ok
+
+    @property
+    def needs_conversion(self) -> bool:
+        return self.budget_currency.upper() != self.target_currency.upper()
+
+    def usable_against(self, instrument_currency: str | None) -> bool:
+        """Whether these limits may be compared with a price in this currency.
+
+        The one question every capacity check is really asking. It is false
+        when the conversion failed, and false when the instrument is quoted in
+        something other than what this campaign trades — both of which are
+        rejections rather than approximations.
+        """
+        if not self.convertible:
+            return False
+        if instrument_currency is None:
+            return True
+        return instrument_currency.upper() == self.limit_currency.upper()
 
     def concentration_cap(self, percentage: float) -> Decimal:
         """A percentage of the campaign budget, exact to the cent.
@@ -854,7 +1023,13 @@ class RiskEvaluation(ImmutableModel):
     unit_cost: Money | None = Field(default=None, ge=0)
     unit_max_loss: Money | None = Field(default=None, ge=0)
     max_loss_basis: MaxLossBasis | None = None
+    #: The instrument's own currency, which is what ``unit_cost`` is in.
     currency: str | None = None
+    #: The conversion that carried this campaign's capital into the currency
+    #: above, recorded on the verdict rather than only on the limits, so an
+    #: explanation of a rejection can name the rate without loading anything
+    #: else. ``None`` on artifacts written before the FX layer existed.
+    fx: FxConversion | None = None
 
     campaign_snapshot_as_of: UtcDatetime | None = None
     account_snapshot_id: Identifier | None = None

@@ -6,13 +6,22 @@
 #
 # A strategy in config/strategies/ may NARROW the DTE window below, never
 # widen it; loading refuses to start if one tries.
-config_version: "2026.08.10-1"
+config_version: "2026.08.22-1"
 
 # --- capital ---------------------------------------------------------------
-max_allocation_per_trade_eur: "1500"
+#
+# These are the operator's own money, so they are declared in the operator's
+# own currency. That is NOT the currency the system trades in: this campaign
+# buys US-listed options quoted in USD, and every figure below is converted
+# into that currency once, explicitly, at a rate captured from the broker.
+# A missing rate is FX_RATE_UNAVAILABLE and nothing is authorised - never a
+# comparison of 1500 EUR against a dollar price as though they were the same.
+capital_currency: EUR
+
+max_allocation_per_trade: "1500"
 max_open_positions: 5
-max_total_open_risk_eur: "4000"
-max_daily_loss_eur: "750"
+max_total_open_risk: "4000"
+max_daily_loss: "750"
 
 # --- concentration (percent of campaign budget) ----------------------------
 max_underlying_concentration_pct: 30.0
@@ -20,8 +29,14 @@ max_strategy_concentration_pct: 50.0
 max_directional_exposure_pct: 70.0
 
 # --- instrument quality ----------------------------------------------------
-min_option_price_eur: "0.30"
-max_option_price_eur: "25.00"
+#
+# The price band is in the campaign's TARGET currency, not capital_currency
+# above: an option's price is quoted in the contract's own currency and is
+# never converted, because the limit price we send the broker has to be the
+# number the exchange expects. A 0.30-25.00 band on a USD option means
+# USD 0.30 to USD 25.00.
+min_option_price: "0.30"
+max_option_price: "25.00"
 max_bid_ask_spread_pct: 10.0
 min_open_interest: 500
 min_daily_volume: 100

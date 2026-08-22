@@ -107,10 +107,13 @@ class ContractSelected(DomainEvent):
 # Allocation and risk
 # ---------------------------------------------------------------------------
 class BudgetAllocated(DomainEvent):
+    """Capital committed, in the currency the campaign trades in."""
+
     event_type: Literal["BUDGET_ALLOCATED"] = "BUDGET_ALLOCATED"
     allocation_id: Identifier
-    allocated_eur: Money
-    reserve_eur: Money
+    currency: str = Field(min_length=3, max_length=8)
+    allocated: Money
+    reserve: Money
 
 
 class RiskEvaluated(DomainEvent):
@@ -186,9 +189,12 @@ class ExitTriggered(DomainEvent):
 
 
 class PositionClosed(DomainEvent):
+    """The result, in the currency the trade settled in."""
+
     event_type: Literal["POSITION_CLOSED"] = "POSITION_CLOSED"
     position_id: Identifier
-    realized_pnl_eur: Money
+    currency: str = Field(min_length=3, max_length=8)
+    realized_pnl: Money
     exit_reason: ExitReason
 
 

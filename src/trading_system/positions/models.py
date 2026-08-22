@@ -773,6 +773,11 @@ class StrategyPosition(ImmutableModel):
         market_value: Decimal | None = None,
         unrealized_pnl: Decimal | None = None,
         realized_pnl: Decimal | None = None,
+        #: What the three figures above are in. Passed in with them, by the
+        #: caller that read them off the broker, because they are one
+        #: observation: a valuation labelled with a currency taken from
+        #: somewhere else is a valuation nobody can check.
+        currency: str | None = None,
         average_entry_price: Decimal | None = None,
         days_to_expiration: int | None = None,
         data_quality: DataQuality = DataQuality.OK,
@@ -810,9 +815,10 @@ class StrategyPosition(ImmutableModel):
             legs=legs,
             quantity=int(self.filled_quantity),
             average_entry_price=average_entry_price,
-            market_value_eur=market_value,
-            unrealized_pnl_eur=unrealized_pnl,
-            realized_pnl_eur=realized_pnl,
+            market_value=market_value,
+            unrealized_pnl=unrealized_pnl,
+            realized_pnl=realized_pnl,
+            currency=currency,
             days_to_expiration=days_to_expiration,
             thesis_status=ThesisStatus.UNKNOWN,
             source=source,

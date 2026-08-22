@@ -69,6 +69,22 @@ A large account balance can never widen the campaign. A small one *can* narrow
 it — where the broker reports less available capital than the campaign
 permits, the account wins. **The most restrictive relevant limit always wins.**
 
+And the account's *currency* is not the campaign's either. The comparison above
+only means anything once both sides are in one currency:
+
+```
+account balance     EUR 1,000,000   base currency, from the broker
+campaign envelope   EUR 5,000       declared, budget_currency
+      |
+      |  x EUR/USD, captured with the balance
+      v
+what may be spent   USD 5,500       target_currency, and what a price is in
+```
+
+Both conversions use the same captured rate and both are recorded. Neither
+happens without one: `FX_RATE_UNAVAILABLE` is the answer, and it is a rejection
+rather than a smaller number.
+
 ## The limit hierarchy
 
 ```
@@ -144,6 +160,12 @@ estimate. An unquantified loss is not a small one.
    generated from those and is never written by hand.
 4. If it constrains size as well as permission, add its ceiling to
    `QuantityCalculation` so "why this many" stays answerable from the record.
+5. **Decide which currency it is in, and say so.** A *capital* limit is
+   declared in `budget_currency` and belongs in `resolve_limits`' `declared`
+   dict so it is converted with the others; an *instrument* limit (a price
+   band, a spread) is already in the target currency and must never be
+   converted. Getting this wrong is invisible: the limit still binds, just at
+   the wrong number, and only against a real account at a real rate.
 
 ## What Milestone 7 hands to Milestone 8
 
@@ -166,9 +188,35 @@ order id anywhere in it, and a test asserts their absence. Milestone 8 decides
   Milestone 7 cannot know whether an order filled. Double-authorising the same
   capital is the failure worth preventing; releasing stale reservations belongs
   to the milestone that learns what happened to them.
-* **A USD-quoted contract is refused under the shipped EUR campaign.** That is
-  the currency policy working as designed — no FX rate is invented. See
-  `config/campaign.yaml`.
+* **Three currencies, and never fewer.** The campaign's capital is *declared*
+  in `campaign.budget_currency` (EUR — what the operator holds) and *spent* in
+  `campaign.currency_policy.target_currency` (USD — what a US-listed option is
+  quoted in). Both engines work entirely in the target currency, because a
+  single-currency comparison is the only kind they can get right.
+
+  The conversion happens **once**, in `resolve_limits`, against every money
+  limit at the same rate. Do not convert per comparison: two limits derived
+  from one rate would disagree in the last digit depending on multiplication
+  order. `RiskLimits.declared` keeps the source figures in their own currency,
+  and `RiskLimits.limit_currency` says which currency the object's money fields
+  are actually in — check `usable_against()` before comparing any of them with
+  a price rather than assuming.
+
+  The rate comes from `AccountSnapshot.fx_rates`, captured in the same broker
+  read as the balance it converts. **Never fetch one here** — these packages
+  hold no broker, and a rate from a different instant would let a replay reach
+  a different verdict. Without a valid rate the answer is `FX_RATE_UNAVAILABLE`
+  and nothing is authorised or sized; `fx/convert.py` has no input that makes
+  two different currencies convert at 1.0, and adding one would undo the
+  milestone.
+
+  **An instrument price is never converted, in either direction.** A limit is
+  compared and discarded; a price becomes the limit price on an order, and the
+  exchange expects the contract's own currency. A contract quoted in something
+  else is `CURRENCY_MISMATCH` with a fix an operator can act on. This is why
+  `risk.yaml`'s `min_option_price`/`max_option_price` sit apart from everything
+  under `capital_currency`: they are in the *target* currency and are not
+  capital limits.
 * **Correlation is not modelled.** Concentration rules are explicit and
   countable: per underlying, per strategy, per direction, plus a position
   count. Do not add a correlation matrix here; it would claim a precision

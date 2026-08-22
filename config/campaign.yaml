@@ -17,17 +17,23 @@
 # Monetary values are quoted strings or integers so they parse as exact
 # decimals. An unquoted 0.50 would be a binary float and is rejected.
 campaign_id: campaign-001
-currency: EUR
 
-budget_eur: "5000"
+# --- the money the operator actually has -----------------------------------
+#
+# Declared in the currency it is actually held in. This is NOT the currency
+# this campaign trades in; see currency_policy.target_currency below. The
+# figure is never converted in place and never loses its currency: a converted
+# equivalent is derived beside it, per run, at a rate captured from the broker.
+budget_currency: EUR
+budget: "5000"
 
 # Fraction of the budget held back and never allocated. The allocator must not
 # spend the whole budget merely because candidates exist. Maximum campaign
 # utilisation is the complement of this and is deliberately not stated twice.
 reserve_fraction: 0.20
 
-min_allocation_eur: "250"
-max_allocation_per_trade_eur: "1500"
+min_allocation: "250"
+max_allocation_per_trade: "1500"
 max_open_positions: 5
 
 # Opportunities scoring below this never reach allocation.
@@ -39,7 +45,7 @@ min_opportunity_score: 70.0
 # can we afford to lose". For a long-debit structure the two coincide, but the
 # engine keeps them separate so the first strategy where they diverge does not
 # quietly inherit the wrong limit.
-max_risk_per_trade_eur: "1500"
+max_risk_per_trade: "1500"
 
 # --- position and concentration limits -------------------------------------
 limits:
@@ -67,27 +73,40 @@ account:
   require_daily_loss_tracking: false
 
 # --- currency policy --------------------------------------------------------
+#
+#     budget_currency   EUR      what the operator holds        (above)
+#           |
+#           |  x EUR/USD, captured from the broker with the balance it converts
+#           v
+#     target_currency   USD      what this campaign trades      (here)
+#           ==
+#     instrument        USD      what the option is quoted in
+#
+# The conversion happens once, before any comparison between account capital
+# and an instrument price. Risk, allocation and position sizing then work
+# entirely in the target currency, so no comparison anywhere crosses a currency
+# without a rate behind it.
+#
+# There is deliberately NO setting here that makes two currencies equal. The
+# one that used to - treat_as_campaign_currency - asserted "1 USD is accounted
+# as 1 EUR" and has been removed; a configuration still carrying it fails to
+# load with a message saying so. If no valid rate is available the answer is
+# FX_RATE_UNAVAILABLE and nothing is authorised, sized or sent.
+#
+# The rate source is the broker itself: IBKR reports a per-currency
+# ExchangeRate with the account summary this system already reads, so the rate
+# costs no extra round trip and cannot come from a different instant than the
+# balance it converts. No rate is configured here, because a rate in a file is
+# a rate nobody refreshed.
 currency_policy:
-  # No deterministic FX source is configured, so a price in another currency is
-  # a rejection rather than a conversion at an arbitrary rate.
-  allow_conversion: false
-  # Currencies a contract may be quoted in and still be treated as the campaign
-  # currency without conversion. Empty means: only the campaign currency.
-  # USD is listed because the shipped universe is US-listed and the paper
-  # account reports in EUR; treating the two as interchangeable would be
-  # inventing a rate, so this list is deliberately empty by default.
-  #
-  # LOCAL OPERATOR CHANGE — DO NOT COMMIT WITHOUT A DECISION.
-  # USD is listed so the US-listed universe can actually be priced against this
-  # campaign. What this asserts, explicitly: 1 USD is accounted as 1 EUR. No
-  # rate is applied because none is known — the alternative to this line is not
-  # a correct conversion, it is CURRENCY_MISMATCH on every contract forever.
-  # The envelope is therefore an approximate bound in a paper campaign, and the
-  # error is in the conservative direction while EUR/USD is above parity.
-  # Remove this and denominate the campaign in USD once the test fixtures in
-  # tests/allocation and tests/risk are moved off EUR.
-  treat_as_campaign_currency:
-    - USD
+  # Determined by the instruments this campaign targets, not by the account's
+  # base currency. Changing the IBKR account's base currency is not required
+  # and would not affect this line.
+  target_currency: USD
+  # How old the rate may be at the decision instant. A day: a campaign envelope
+  # is not a limit price. The quote freshness that actually gates a trade is
+  # risk.yaml's max_market_data_age_seconds, which is far stricter.
+  max_rate_age_seconds: 86400
 
 # --- allocation policy ------------------------------------------------------
 allocation:
@@ -96,8 +115,11 @@ allocation:
   # and replaceable, which is why the policy is named rather than implied.
   policy: PRIORITY_FIRST_FIT
   # Stamped onto every stored allocation, so a past authorisation traces to the
-  # exact policy that produced it.
-  policy_version: "1.0.0"
+  # exact policy that produced it. Bumped to 1.1.0 when the envelope stopped
+  # being spent in the currency it is declared in: the allocator's rule is
+  # unchanged, but the money it applies the rule to is now converted, so an
+  # authorisation made before and after this line are not the same decision.
+  policy_version: "1.1.0"
   # Unit cost is taken from the ask by default: what it would actually cost to
   # buy. MID_DEBIT is available but assumes a fill nobody has been offered.
   price_source: ASK_DEBIT

@@ -311,7 +311,12 @@ class Settings(BaseSettings):
         return config.model_copy(update=updates) if updates else config
 
     # --- campaign override -------------------------------------------------
-    campaign_budget_eur: Money | None = None
+    #: Overrides ``campaign.budget``. The amount only: the **currency** comes
+    #: from ``campaign.budget_currency`` and is deliberately not settable here,
+    #: because an operator raising their envelope in the environment is
+    #: changing how much of their own money is at stake, not what money it is.
+    #: Redenominating a campaign is a configuration edit, where it is reviewed.
+    campaign_budget: Money | None = None
 
     # --- persistence / logging --------------------------------------------
     database_url: str = "sqlite:///./data/trading_system.db"
@@ -385,6 +390,38 @@ class _ConfigModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+def _refuse_eur_suffixed_keys(data: Any, *, file: str, renames: dict[str, str], note: str) -> Any:
+    """Refuse a configuration still declaring money with a currency in the key.
+
+    ``extra="forbid"`` would already reject these, with a message naming an
+    unexpected field and nothing else. That is loud but unhelpful: a ``_eur``
+    suffix used to *mean* something, the meaning changed, and an operator
+    editing a file needs to be told which of two currencies the value is now
+    declared in rather than left to guess and get it wrong by the exchange
+    rate.
+
+    The suffix was removed because it had become a lie. The campaign trades
+    US-listed options priced in USD while the account holds EUR; a key called
+    ``budget_eur`` holding a figure compared against dollars asserts a currency
+    it does not have. The replacement states the currency once, in its own
+    field, and every amount says which of them it belongs to.
+    """
+    if not isinstance(data, dict):
+        return data
+    found = {old: new for old, new in renames.items() if old in data}
+    if not found:
+        return data
+    lines = "\n".join(f"    {old}  ->  {new}" for old, new in sorted(found.items()))
+    raise ValueError(
+        f"{file} declares money with a currency in the key name, which is no longer how "
+        f"this system states currency:\n{lines}\n"
+        f"{note}\n"
+        f"Rename the key(s) and check the value is in the currency the new field names - "
+        f"the amount is NOT converted for you, and a figure moved between currencies "
+        f"without conversion is wrong by the exchange rate."
+    )
+
+
 class ApplicationConfig(_ConfigModel):
     name: str = "trading-system"
     config_version: str
@@ -428,23 +465,65 @@ class CampaignAccountConfig(_ConfigModel):
 
 
 class CampaignCurrencyConfig(_ConfigModel):
-    """Currency policy. No arbitrary rate is ever applied."""
+    """How this campaign's source capital reaches the currency it trades in.
 
-    allow_conversion: bool = False
-    #: Currencies accepted as the campaign currency without conversion. Empty
-    #: by default: treating USD and EUR as interchangeable would be inventing
-    #: an exchange rate, which is the same failure as inventing a price.
-    treat_as_campaign_currency: list[str] = Field(default_factory=list)
+    Three currencies, and keeping them apart is the whole of this class:
 
-    @model_validator(mode="after")
-    def _conversion_needs_a_rate_source(self) -> CampaignCurrencyConfig:
-        if self.allow_conversion:
+    .. code-block:: text
+
+        budget_currency   EUR   the account's own money, as declared
+              |
+              |  explicit FX rate, captured with the balance it converts
+              v
+        target_currency   USD   what this campaign trades in
+              ==
+        instrument        USD   what the option is quoted in
+
+    An amount is converted **once**, from the budget currency into the target
+    currency, and every risk limit, allocation and position size downstream is
+    then a single-currency comparison. An instrument's price is never converted
+    in either direction: the limit price that reaches the broker must be in the
+    contract's own currency, so a converted one would be the wrong number on
+    the wire rather than a rounding difference.
+
+    There is no switch here that makes two currencies equal. That is not an
+    omission - it is the point of the class.
+    """
+
+    #: What this campaign trades in, determined by the instruments it targets
+    #: rather than by the account's base currency. US-listed options are USD.
+    target_currency: str = Field(default="USD", min_length=3, max_length=8)
+    #: How old the rate converting the budget may be at the decision instant.
+    #: A day by default: a campaign envelope is not a limit price, and
+    #: re-authorising a whole campaign on every tick of the FX market would be
+    #: a false precision. The risk layer's market-data window is far stricter
+    #: and applies to the *quote*, which is what actually moves a trade.
+    max_rate_age_seconds: int = Field(default=86400, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _the_parity_assumption_was_removed(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if "treat_as_campaign_currency" in data:
             raise ValueError(
-                "campaign.currency_policy.allow_conversion is set, but no deterministic FX "
-                "rate source is configured. Converting at an arbitrary rate would invent a "
-                "price; a mismatched currency is a rejection until a rate source exists."
+                "campaign.currency_policy.treat_as_campaign_currency has been removed. It "
+                "accepted a foreign currency as the campaign's own WITHOUT a rate, which "
+                "asserted that one unit of each was worth the same - a 1:1 conversion "
+                "wearing the clothes of a policy setting. Set 'target_currency' to the "
+                "currency this campaign actually trades in instead; the budget is converted "
+                "into it from 'budget_currency' at a rate captured from the broker, and a "
+                "missing rate is FX_RATE_UNAVAILABLE rather than parity."
             )
-        return self
+        if "allow_conversion" in data:
+            raise ValueError(
+                "campaign.currency_policy.allow_conversion has been removed. Conversion is "
+                "no longer a switch: the budget is converted from 'budget_currency' into "
+                "'target_currency' whenever they differ, using a rate captured from the "
+                "broker with the balance it converts, and it fails closed with "
+                "FX_RATE_UNAVAILABLE when no valid rate exists."
+            )
+        return data
 
 
 class CampaignAllocationConfig(_ConfigModel):
@@ -499,14 +578,19 @@ class CampaignConfig(_ConfigModel):
     """
 
     campaign_id: str
-    currency: str = "EUR"
-    budget_eur: Money = Field(ge=0)
+    #: The currency the operator's capital is actually denominated in - the
+    #: same currency the account is based in. Every money field on this model
+    #: is in it, and none of them is converted in place: the source figure
+    #: keeps its currency for the whole life of the record, and the converted
+    #: one is derived beside it.
+    budget_currency: str = Field(default="EUR", min_length=3, max_length=8)
+    budget: Money = Field(ge=0)
     reserve_fraction: float = Field(ge=0.0, le=1.0)
-    min_allocation_eur: Money = Field(ge=0)
-    max_allocation_per_trade_eur: Money = Field(ge=0)
+    min_allocation: Money = Field(ge=0)
+    max_allocation_per_trade: Money = Field(ge=0)
     max_open_positions: int = Field(ge=0)
     min_opportunity_score: float = Field(ge=0.0, le=100.0)
-    max_risk_per_trade_eur: Money = Field(default=Decimal("1500"), ge=0)
+    max_risk_per_trade: Money = Field(default=Decimal("1500"), ge=0)
 
     limits: CampaignLimitsConfig = Field(default_factory=CampaignLimitsConfig)
     account: CampaignAccountConfig = Field(default_factory=CampaignAccountConfig)
@@ -514,35 +598,78 @@ class CampaignConfig(_ConfigModel):
     allocation: CampaignAllocationConfig = Field(default_factory=CampaignAllocationConfig)
     ranking: CampaignRankingConfig = Field(default_factory=CampaignRankingConfig)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _currency_suffixed_keys_were_replaced(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "currency" in data:
+            raise ValueError(
+                "campaign.currency was ambiguous - it named both the currency the money was "
+                "declared in and the currency the campaign was assumed to trade in, which "
+                "are different facts for an EUR account trading US options. Declare both: "
+                "'budget_currency' for the capital, and 'currency_policy.target_currency' "
+                "for what this campaign trades."
+            )
+        return _refuse_eur_suffixed_keys(
+            data,
+            file="campaign.yaml",
+            renames={
+                "budget_eur": "budget",
+                "min_allocation_eur": "min_allocation",
+                "max_allocation_per_trade_eur": "max_allocation_per_trade",
+                "max_risk_per_trade_eur": "max_risk_per_trade",
+            },
+            note=(
+                "Every one of these is in 'budget_currency' - the account's own currency. "
+                "They are converted into 'currency_policy.target_currency' at a captured "
+                "rate before any comparison against an instrument price."
+            ),
+        )
+
     @model_validator(mode="after")
     def _internal_limits_are_ordered(self) -> CampaignConfig:
-        if self.min_allocation_eur > self.max_allocation_per_trade_eur:
+        if self.min_allocation > self.max_allocation_per_trade:
             raise ValueError(
-                f"campaign: min_allocation_eur {self.min_allocation_eur} exceeds "
-                f"max_allocation_per_trade_eur {self.max_allocation_per_trade_eur}; no trade "
+                f"campaign: min_allocation {self.min_allocation} exceeds "
+                f"max_allocation_per_trade {self.max_allocation_per_trade}; no trade "
                 f"could ever satisfy both"
             )
-        if self.min_allocation_eur > self.allocatable_budget_eur:
+        if self.min_allocation > self.allocatable_budget:
             raise ValueError(
-                f"campaign: min_allocation_eur {self.min_allocation_eur} exceeds the "
-                f"allocatable budget {self.allocatable_budget_eur} (budget {self.budget_eur} "
+                f"campaign: min_allocation {self.min_allocation} exceeds the "
+                f"allocatable budget {self.allocatable_budget} (budget {self.budget} "
                 f"less a {self.reserve_fraction:.0%} reserve); no trade could ever be funded"
             )
         return self
 
     @property
-    def reserve_eur(self) -> Decimal:
-        """Capital held back by policy, exact to the cent.
+    def target_currency(self) -> str:
+        """What this campaign trades in. Read through, so there is one answer."""
+        return self.currency_policy.target_currency.upper()
+
+    @property
+    def needs_conversion(self) -> bool:
+        """Whether this campaign's capital has to cross a currency at all.
+
+        ``False`` when the account's currency and the traded currency coincide,
+        which is a real configuration and not a special case: the conversion
+        layer still runs and still records an identity conversion, so the code
+        path is the same one either way and cannot rot from disuse.
+        """
+        return self.budget_currency.upper() != self.target_currency
+
+    @property
+    def reserve(self) -> Decimal:
+        """Capital held back by policy, in ``budget_currency``, exact to the cent.
 
         Rounded *up*, so the reserve is never quietly smaller than configured.
         """
         fraction = Decimal(str(self.reserve_fraction))
-        return (self.budget_eur * fraction).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+        return (self.budget * fraction).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
 
     @property
-    def allocatable_budget_eur(self) -> Decimal:
-        """The most the allocator may ever commit across the whole campaign."""
-        return self.budget_eur - self.reserve_eur
+    def allocatable_budget(self) -> Decimal:
+        """The most the allocator may ever commit, in ``budget_currency``."""
+        return self.budget - self.reserve
 
 
 class LiquidityConfig(_ConfigModel):
@@ -640,20 +767,40 @@ class StrategyConfig(_ConfigModel):
     #: is never accepted as evidence that an option is liquid.
     require_option_liquidity: bool = True
 
-    min_option_price_eur: Money = Field(ge=0)
-    max_option_price_eur: Money = Field(ge=0)
+    #: The price band a contract must fall in, in the campaign's **target**
+    #: currency - the one the instrument is quoted in. Never a capital limit
+    #: and never converted, for the same reason risk.yaml's band is not.
+    min_option_price: Money = Field(ge=0)
+    max_option_price: Money = Field(ge=0)
     min_implied_volatility: float | None = Field(default=None, ge=0.0)
     max_implied_volatility: float | None = Field(default=None, ge=0.0)
 
     liquidity: LiquidityConfig
     exit_policy: ExitPolicyConfig
 
+    @model_validator(mode="before")
+    @classmethod
+    def _currency_suffixed_keys_were_replaced(cls, data: Any) -> Any:
+        return _refuse_eur_suffixed_keys(
+            data,
+            file="config/strategies/*.yaml",
+            renames={
+                "min_option_price_eur": "min_option_price",
+                "max_option_price_eur": "max_option_price",
+            },
+            note=(
+                "An option's price band is in the currency the contract is quoted in - the "
+                "campaign's target currency - and is never converted, so naming a currency "
+                "in the key asserted the wrong one for a US-listed contract."
+            ),
+        )
+
     @model_validator(mode="after")
     def _ranges_are_ordered(self) -> StrategyConfig:
         if self.dte_min > self.dte_max:
             raise ValueError(f"{self.name}: dte_min must not exceed dte_max")
-        if self.min_option_price_eur > self.max_option_price_eur:
-            raise ValueError(f"{self.name}: min_option_price_eur exceeds max_option_price_eur")
+        if self.min_option_price > self.max_option_price:
+            raise ValueError(f"{self.name}: min_option_price exceeds max_option_price")
         if (
             self.min_implied_volatility is not None
             and self.max_implied_volatility is not None
@@ -706,16 +853,27 @@ class RiskConfig(_ConfigModel):
 
     config_version: str
 
-    max_allocation_per_trade_eur: Money = Field(ge=0)
+    #: The currency the **capital** limits below are declared in. This is the
+    #: account's own currency - the money the operator actually holds - and it
+    #: is deliberately not the currency the system trades in. Everything from
+    #: ``max_allocation_per_trade`` down to ``max_daily_loss`` is in it.
+    capital_currency: str = Field(default="EUR", min_length=3, max_length=8)
+
+    max_allocation_per_trade: Money = Field(ge=0)
     max_open_positions: int = Field(ge=0)
-    max_total_open_risk_eur: Money = Field(ge=0)
+    max_total_open_risk: Money = Field(ge=0)
     max_underlying_concentration_pct: float = Field(ge=0.0, le=100.0)
     max_strategy_concentration_pct: float = Field(ge=0.0, le=100.0)
     max_directional_exposure_pct: float = Field(ge=0.0, le=100.0)
-    max_daily_loss_eur: Money = Field(ge=0)
+    max_daily_loss: Money = Field(ge=0)
 
-    min_option_price_eur: Money = Field(ge=0)
-    max_option_price_eur: Money = Field(ge=0)
+    #: The option price band, in the campaign's **target** currency - the one
+    #: the instrument is quoted in. It is not a capital limit and is never
+    #: converted: a USD option's price is compared against a USD band. The
+    #: split is the whole point of naming ``capital_currency`` above rather
+    #: than declaring one currency for the file.
+    min_option_price: Money = Field(ge=0)
+    max_option_price: Money = Field(ge=0)
     max_bid_ask_spread_pct: float = Field(ge=0.0)
     min_open_interest: int = Field(ge=0)
     min_daily_volume: int = Field(ge=0)
@@ -726,12 +884,33 @@ class RiskConfig(_ConfigModel):
     max_market_data_age_seconds: int = Field(ge=0)
     block_new_positions_on_reconciliation_error: bool = True
 
+    @model_validator(mode="before")
+    @classmethod
+    def _currency_suffixed_keys_were_replaced(cls, data: Any) -> Any:
+        return _refuse_eur_suffixed_keys(
+            data,
+            file="risk.yaml",
+            renames={
+                "max_allocation_per_trade_eur": "max_allocation_per_trade",
+                "max_total_open_risk_eur": "max_total_open_risk",
+                "max_daily_loss_eur": "max_daily_loss",
+                "min_option_price_eur": "min_option_price",
+                "max_option_price_eur": "max_option_price",
+            },
+            note=(
+                "The capital limits are declared in 'capital_currency' (the account's own "
+                "currency); min_option_price/max_option_price are in the campaign's target "
+                "currency, because an option's price is quoted in the instrument's currency "
+                "and is never converted."
+            ),
+        )
+
     @model_validator(mode="after")
     def _ranges_are_ordered(self) -> RiskConfig:
         if self.dte_min > self.dte_max:
             raise ValueError("risk: dte_min must not exceed dte_max")
-        if self.min_option_price_eur > self.max_option_price_eur:
-            raise ValueError("risk: min_option_price_eur exceeds max_option_price_eur")
+        if self.min_option_price > self.max_option_price:
+            raise ValueError("risk: min_option_price exceeds max_option_price")
         return self
 
 
@@ -2962,15 +3141,15 @@ class SystemConfig(_ConfigModel):
                     f"DTE window [{strategy.dte_min}, {strategy.dte_max}] falls outside "
                     f"[{risk.dte_min}, {risk.dte_max}]"
                 )
-            if strategy.min_option_price_eur < risk.min_option_price_eur:
+            if strategy.min_option_price < risk.min_option_price:
                 violations.append(
-                    f"min_option_price_eur {strategy.min_option_price_eur} is below the risk "
-                    f"floor {risk.min_option_price_eur}"
+                    f"min_option_price {strategy.min_option_price} is below the risk "
+                    f"floor {risk.min_option_price}"
                 )
-            if strategy.max_option_price_eur > risk.max_option_price_eur:
+            if strategy.max_option_price > risk.max_option_price:
                 violations.append(
-                    f"max_option_price_eur {strategy.max_option_price_eur} is above the risk "
-                    f"ceiling {risk.max_option_price_eur}"
+                    f"max_option_price {strategy.max_option_price} is above the risk "
+                    f"ceiling {risk.max_option_price}"
                 )
             if strategy.liquidity.min_open_interest < risk.min_open_interest:
                 violations.append(
@@ -3006,20 +3185,36 @@ class SystemConfig(_ConfigModel):
         risk, campaign = self.risk, self.campaign
         violations: list[str] = []
 
-        if campaign.max_allocation_per_trade_eur > risk.max_allocation_per_trade_eur:
+        # Comparing two limits declared in different currencies would need a
+        # rate, and a limit hierarchy that depended on today's exchange rate
+        # would be a hierarchy that changes when nobody edited it. The two
+        # files must therefore agree on the currency their capital limits are
+        # in; the conversion into the traded currency happens once, later,
+        # against both of them at the same rate.
+        if campaign.budget_currency.upper() != risk.capital_currency.upper():
+            raise ValueError(
+                f"campaign.budget_currency is {campaign.budget_currency} and "
+                f"risk.capital_currency is {risk.capital_currency}. Both files state limits "
+                f"on the same capital, so they must state them in the same currency - "
+                f"otherwise 'the campaign may not widen a global limit' would depend on an "
+                f"exchange rate. Convert one file's figures deliberately and change its "
+                f"currency with them."
+            )
+
+        if campaign.max_allocation_per_trade > risk.max_allocation_per_trade:
             violations.append(
-                f"max_allocation_per_trade_eur {campaign.max_allocation_per_trade_eur} is "
-                f"above the risk ceiling {risk.max_allocation_per_trade_eur}"
+                f"max_allocation_per_trade {campaign.max_allocation_per_trade} is "
+                f"above the risk ceiling {risk.max_allocation_per_trade}"
             )
         if campaign.max_open_positions > risk.max_open_positions:
             violations.append(
                 f"max_open_positions {campaign.max_open_positions} is above the risk ceiling "
                 f"{risk.max_open_positions}"
             )
-        if campaign.max_risk_per_trade_eur > risk.max_total_open_risk_eur:
+        if campaign.max_risk_per_trade > risk.max_total_open_risk:
             violations.append(
-                f"max_risk_per_trade_eur {campaign.max_risk_per_trade_eur} is above the total "
-                f"open-risk ceiling {risk.max_total_open_risk_eur}; one trade may not be "
+                f"max_risk_per_trade {campaign.max_risk_per_trade} is above the total "
+                f"open-risk ceiling {risk.max_total_open_risk}; one trade may not be "
                 f"permitted more risk than the whole book"
             )
         if campaign.limits.max_positions_per_underlying > risk.max_open_positions:

@@ -138,6 +138,11 @@ class RiskEngine:
         checks.extend(guards.check_point_in_time(candidate, campaign, account, as_of=as_of))
         checks.extend(guards.check_data_quality(candidate))
         checks.extend(guards.check_currency(candidate, limits))
+        # Before any limit is compared with any price. Every money limit below
+        # is in the campaign's traded currency only because a rate carried it
+        # there, and a candidate whose rate is missing is refused here rather
+        # than measured against figures that are still in another currency.
+        checks.extend(guards.check_currency_conversion(limits, account, as_of=as_of))
         checks.extend(guards.check_account_snapshot(account, limits, as_of=as_of))
         checks.extend(guards.check_price(candidate, limits, as_of=as_of))
 
@@ -150,13 +155,17 @@ class RiskEngine:
         checks.extend(self._position_count_checks(candidate, campaign, new_positions_this_run))
         checks.append(self._daily_loss_check(campaign))
 
-        # Capacity checks need a price and a loss model. Without them there is
-        # nothing to compare against a limit, and inventing a figure to keep
-        # the check list uniform would be the one thing this engine must never
-        # do — so they are skipped, and the preconditions above have already
-        # failed the candidate.
-        if unit_cost is not None and max_loss is not None:
-            checks.extend(self._capacity_checks(candidate, campaign, account, unit_cost, max_loss))
+        # Capacity checks need a price, a loss model, and limits that are in
+        # the same currency as the price. Without any of them there is nothing
+        # to compare against a limit, and inventing a figure to keep the check
+        # list uniform would be the one thing this engine must never do — so
+        # they are skipped, and the preconditions above have already failed the
+        # candidate.
+        comparable = limits.usable_against(candidate.price.currency)
+        if unit_cost is not None and max_loss is not None and comparable:
+            checks.extend(
+                self._capacity_checks(candidate, campaign, account, unit_cost, max_loss, as_of)
+            )
 
         failed = [check for check in checks if check.outcome is RiskCheckOutcome.FAIL]
 
@@ -194,6 +203,7 @@ class RiskEngine:
             unit_max_loss=max_loss,
             max_loss_basis=candidate.risk_profile.max_loss_basis,
             currency=candidate.price.currency,
+            fx=limits.fx,
             campaign_snapshot_as_of=campaign.as_of,
             account_snapshot_id=account.snapshot_id if account else None,
         )
@@ -442,6 +452,7 @@ class RiskEngine:
         account: AccountSnapshot | None,
         unit_cost: Decimal,
         unit_max_loss: Decimal,
+        as_of: datetime,
     ) -> list[RiskCheck]:
         """Whether there is room for *one* unit. Sizing happens elsewhere.
 
@@ -449,6 +460,12 @@ class RiskEngine:
         contract is not permitted at all, and how many contracts beyond the
         first are affordable is a question about the budget rather than about
         permission.
+
+        Every comparison here is single-currency. The caller has already
+        established that the limits reached the traded currency and that the
+        instrument is quoted in it; the only figure still in another currency
+        when this runs is the account balance, and it is converted below rather
+        than compared as it stands.
         """
         limits = self._limits
         checks: list[RiskCheck] = []
@@ -584,20 +601,42 @@ class RiskEngine:
         # The account is the other half of "the most restrictive limit wins".
         # A campaign with room to spare cannot spend money the broker says is
         # not there.
+        #
+        # The balance is in the account's own currency and the cost is in the
+        # traded one, so this is the comparison that used to read 5,000 EUR
+        # against a dollar price as though the two were the same. It is now an
+        # explicit conversion whose rate is named in the check's own detail,
+        # and a conversion that failed produces no comparison at all - the FX
+        # guard has already rejected the candidate by then.
         if account is not None and account.spendable is not None:
-            checks.append(
-                _compare(
-                    "broker_available_funds",
-                    RiskLimitScope.GLOBAL,
-                    actual=unit_cost,
-                    limit=account.spendable,
-                    reason=RiskReasonCode.INSUFFICIENT_BUYING_POWER,
-                    detail=(
-                        f"the broker reports {account.spendable} available; the campaign "
-                        f"envelope is not permission to spend money the account does not have"
-                    ),
-                )
+            conversion = account.spendable_in(
+                limits.target_currency,
+                as_of=as_of,
+                max_rate_age_seconds=float(limits.max_fx_rate_age_seconds),
             )
+            if conversion is not None and conversion.ok:
+                checks.append(
+                    _compare(
+                        "broker_available_funds",
+                        RiskLimitScope.GLOBAL,
+                        actual=unit_cost,
+                        limit=conversion.value,
+                        reason=RiskReasonCode.INSUFFICIENT_BUYING_POWER,
+                        detail=(
+                            f"the broker reports {account.spendable} {account.currency} "
+                            f"available, which is {conversion.converted_amount} "
+                            f"{conversion.to_currency} at {conversion.rate} from "
+                            f"{conversion.rate_source}; the campaign envelope is not "
+                            f"permission to spend money the account does not have"
+                        ),
+                        # The limit here is a converted figure, so the check
+                        # records the arithmetic whether it passed or not.
+                        pass_detail=(
+                            f"{account.spendable} {account.currency} available; "
+                            f"{conversion.describe()}"
+                        ),
+                    )
+                )
 
         return checks
 
@@ -610,8 +649,17 @@ def _compare(
     limit: Decimal,
     reason: RiskReasonCode,
     detail: str,
+    pass_detail: str | None = None,
 ) -> RiskCheck:
-    """One ``actual <= limit`` comparison, in exact decimal."""
+    """One ``actual <= limit`` comparison, in exact decimal.
+
+    ``pass_detail`` is recorded on a *passing* check as well as a failing one.
+    Almost no check needs it: "the campaign had room" explains itself from the
+    two numbers. The exception is a comparison whose limit was **derived** - an
+    account balance converted from another currency - where the two numbers
+    alone leave a reader unable to see where the limit came from, and a stored
+    authorisation has to be checkable by hand years later.
+    """
     if actual > limit:
         return RiskCheck(
             name=name,
@@ -628,6 +676,7 @@ def _compare(
         outcome=RiskCheckOutcome.PASS,
         actual=str(actual),
         limit=str(limit),
+        detail=pass_detail,
     )
 
 

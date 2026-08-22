@@ -127,8 +127,8 @@ class StrategySpecification:
     required_option_fields: tuple[OptionDataField, ...]
     require_option_liquidity: bool
 
-    min_option_price_eur: Decimal
-    max_option_price_eur: Decimal
+    min_option_price: Decimal
+    max_option_price: Decimal
     min_implied_volatility: float | None
     max_implied_volatility: float | None
     min_open_interest: int
@@ -310,8 +310,8 @@ def _specification(name: str, strategy: StrategyConfig, risk: RiskConfig) -> Str
         event_max_days_after=strategy.expiration_policy.event_max_days_after,
         required_option_fields=tuple(strategy.required_option_fields),
         require_option_liquidity=strategy.require_option_liquidity,
-        min_option_price_eur=max(strategy.min_option_price_eur, risk.min_option_price_eur),
-        max_option_price_eur=min(strategy.max_option_price_eur, risk.max_option_price_eur),
+        min_option_price=max(strategy.min_option_price, risk.min_option_price),
+        max_option_price=min(strategy.max_option_price, risk.max_option_price),
         min_implied_volatility=strategy.min_implied_volatility,
         max_implied_volatility=strategy.max_implied_volatility,
         min_open_interest=max(strategy.liquidity.min_open_interest, risk.min_open_interest),
@@ -352,10 +352,10 @@ def _refuse_widening(name: str, strategy: StrategyConfig, risk: RiskConfig) -> N
             f"DTE window [{strategy.dte_min}, {strategy.dte_max}] falls outside the risk "
             f"limit [{risk.dte_min}, {risk.dte_max}]"
         )
-    if strategy.min_option_price_eur < risk.min_option_price_eur:
-        violations.append("min_option_price_eur is below the risk floor")
-    if strategy.max_option_price_eur > risk.max_option_price_eur:
-        violations.append("max_option_price_eur is above the risk ceiling")
+    if strategy.min_option_price < risk.min_option_price:
+        violations.append("min_option_price is below the risk floor")
+    if strategy.max_option_price > risk.max_option_price:
+        violations.append("max_option_price is above the risk ceiling")
     if strategy.liquidity.min_open_interest < risk.min_open_interest:
         violations.append("min_open_interest is below the risk floor")
     if strategy.liquidity.min_daily_volume < risk.min_daily_volume:

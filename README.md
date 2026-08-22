@@ -525,13 +525,32 @@ CAMPAIGN ALLOCATION       an authorisation, never an order
 
 ```
 IBKR paper account:   EUR 1,000,000    <- irrelevant to what may be spent
-configured campaign:  EUR 5,000        <- the envelope
+configured campaign:  EUR 5,000        <- the envelope, in the currency held
 less a 20% reserve:   EUR 4,000        <- the most that may ever be committed
 ```
 
 A large account balance can never widen the campaign. A small one *can* narrow
 it: where the broker reports less available capital than the campaign permits,
 the account binds instead.
+
+The envelope is *declared* in the currency the operator holds and *spent* in
+the currency the campaign trades, and the step between them is explicit:
+
+```
+budget_currency   EUR 5,000     what the operator holds  (config/campaign.yaml)
+      |
+      |  x EUR/USD, read from IBKR with the balance it converts
+      v
+target_currency   USD 5,850     what this campaign may spend
+      ==
+instrument        USD           what a US-listed option is quoted in
+```
+
+Risk, allocation and position sizing all work in the target currency, so no
+comparison anywhere crosses a currency without a rate behind it. There is no
+setting that makes two currencies equal, and no rate means no trade — never
+parity. The IBKR account's own base currency stays EUR and does not need to
+change.
 
 **No AI is involved at any point in this milestone.** Neither engine has a
 parameter, a field or an import through which a model could speak. Confidence
@@ -595,10 +614,13 @@ Known limitations, stated rather than hidden:
   releasing stale reservations belongs to the milestone that learns whether an
   order filled — and Milestone 8 records *submission*, not settlement, so the
   gap is narrower but still open;
-- the shipped EUR campaign refuses a USD-quoted contract with
-  `CURRENCY_MISMATCH`, because no FX rate is invented. Either denominate the
-  campaign in the currency it trades, or list the currency explicitly in
-  `campaign.currency_policy.treat_as_campaign_currency`;
+- the campaign declares its capital in the currency the operator holds (EUR)
+  and trades in the currency the instruments are quoted in (USD). The two are
+  connected by an explicit rate read from IBKR with the account balance, so a
+  missing or stale rate is `FX_RATE_UNAVAILABLE` / `FX_RATE_STALE` and nothing
+  is authorised — never a dollar accounted as a euro. An instrument price is
+  never converted in either direction, because the limit price that reaches the
+  broker has to be in the contract's own currency;
 - correlation is not modelled. Concentration is explicit and countable: per
   underlying, per strategy, per direction, plus a position count.
 

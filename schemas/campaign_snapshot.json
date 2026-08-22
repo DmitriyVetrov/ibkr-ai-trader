@@ -62,7 +62,7 @@
       "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
     },
     "daily_pnl_status": {
-      "description": "How far the realised figure can be relied on (Milestone 11). TRACKED means every position that closed today produced a usable result. UNKNOWN means positions closed and at least one did not — an absence of knowledge about a day on which money moved, and emphatically not zero loss. NOT_TRACKED means no profit-and-loss ledger was consulted; it is the state of every snapshot written before Milestone 11, which is why it is the default.",
+      "description": "How far the realised figure can be relied on (Milestone 11). TRACKED means every position that closed today produced a usable result. UNKNOWN means positions closed and at least one did not \u2014 an absence of knowledge about a day on which money moved, and emphatically not zero loss. NOT_TRACKED means no profit-and-loss ledger was consulted; it is the state of every snapshot written before Milestone 11, which is why it is the default.",
       "enum": [
         "TRACKED",
         "UNKNOWN",
@@ -75,6 +75,36 @@
       "items": {
         "type": "string"
       }
+    },
+    "declared_budget": {
+      "description": "The envelope as configured, in declared_currency - the currency the operator actually holds. Never converted in place: the source figure keeps its own currency for the life of the record.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/money"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "declared_currency": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 3,
+      "maxLength": 8
+    },
+    "fx": {
+      "description": "The conversion that produced the figures above from the declared ones, rate and source included, so the arithmetic can be checked by hand.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/fx_conversion"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "allOf": [
@@ -223,6 +253,123 @@
           "minLength": 1
         }
       }
+    },
+    "fx_conversion": {
+      "description": "One conversion attempt. Only a VALID status carries a figure: a number beside a failed conversion is how an unconverted amount gets spent.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "amount",
+        "from_currency",
+        "to_currency"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "VALID",
+            "UNAVAILABLE",
+            "STALE",
+            "INVALID"
+          ]
+        },
+        "amount": {
+          "$ref": "#/$defs/money"
+        },
+        "from_currency": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 8
+        },
+        "to_currency": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 8
+        },
+        "converted_amount": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rate": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rate_as_of": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "rate_origin": {
+          "oneOf": [
+            {
+              "enum": [
+                "BROKER_ACCOUNT_LEDGER",
+                "SIMULATED",
+                "CONFIGURED",
+                "IDENTITY",
+                "INVERTED"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rate_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rate_age_seconds": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "description": "A failed conversion carries no figure and no rate.",
+          "if": {
+            "properties": {
+              "status": {
+                "const": "UNAVAILABLE"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "converted_amount": {
+                "type": "null"
+              },
+              "rate": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

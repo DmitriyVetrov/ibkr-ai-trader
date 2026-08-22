@@ -52,8 +52,8 @@ required_option_fields:
 
 require_option_liquidity: true
 
-min_option_price_eur: "0.50"
-max_option_price_eur: "25.00"
+min_option_price: "0.50"
+max_option_price: "25.00"
 # Entering a straddle into already-elevated IV is how these lose money even
 # when the move happens; cap it tighter than the directional strategies.
 min_implied_volatility: 0.15

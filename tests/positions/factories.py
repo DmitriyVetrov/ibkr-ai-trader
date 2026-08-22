@@ -66,6 +66,10 @@ def versions() -> SystemVersions:
 def broker_account(
     *,
     account_id: str = ACCOUNT,
+    # The account's BASE currency, which is deliberately not the currency the
+    # instruments below are quoted in. A European account holding euro and
+    # trading US-listed options priced in dollars is the ordinary case, and
+    # every factory here reflects it rather than tidying it away.
     currency: str = "EUR",
     as_of: datetime = NOW,
     cash: Decimal | None = Decimal("100000.00"),
@@ -95,7 +99,7 @@ def option_position(
     unrealized_pnl: Decimal | None = Decimal("60.00"),
     as_of: datetime = NOW,
     account_id: str = ACCOUNT,
-    currency: str | None = "EUR",
+    currency: str | None = "USD",
     multiplier: int | None = 100,
 ) -> BrokerPosition:
     return BrokerPosition(
@@ -188,7 +192,7 @@ def broker_execution(
     commission: Decimal | None = Decimal("1.30"),
     executed_at: datetime = NOW,
     security_type: SecurityType = SecurityType.OPTION,
-    currency: str | None = "EUR",
+    currency: str | None = "USD",
 ) -> BrokerExecution:
     return BrokerExecution(
         execution_id=execution_id,
@@ -222,7 +226,7 @@ def execution_leg(
     expiration: date = EXPIRATION,
     multiplier: int = 100,
     ratio: int = 1,
-    currency: str | None = "EUR",
+    currency: str | None = "USD",
 ) -> ExecutionLeg:
     return ExecutionLeg(
         leg_index=leg_index,
@@ -263,7 +267,7 @@ def execution_record(
     multiplier: int = 100,
     underlying: str = "NVDA",
     strategy: StrategyType = StrategyType.LONG_CALL,
-    currency: str | None = "EUR",
+    currency: str | None = "USD",
     capital_commitment: Decimal = Decimal("1190.00"),
     created_at: datetime = NOW,
     reason_codes: list[ExecutionReasonCode] | None = None,
@@ -326,7 +330,7 @@ def reservation(
     campaign_id: str = "campaign-001",
     authorized: Decimal = Decimal("1190.00"),
     quantity: int = 2,
-    currency: str = "EUR",
+    currency: str = "USD",
     state: ReservationState = ReservationState.RESERVED,
     created_at: datetime = NOW,
     symbol: str = "NVDA",

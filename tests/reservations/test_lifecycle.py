@@ -271,9 +271,17 @@ def test_a_release_is_never_applied_twice(policy) -> None:
 # Currency (brief section 57)
 # ---------------------------------------------------------------------------
 def test_a_fill_in_another_currency_is_reported_not_converted(policy) -> None:
+    """The reservation is in the campaign's traded currency; the fill is not.
+
+    No FX here, deliberately, and this is not the same question the campaign's
+    envelope answers. The envelope is converted once, at authorisation, against
+    a rate captured with the account balance. This is the moment the number
+    becomes permanent, there is no captured rate at hand, and consuming at one
+    fetched now would undo the authorisation's arithmetic.
+    """
     outcome = resolve_reservation(
         _held(),
-        [execution_record(state=ExecutionState.FILLED, filled_quantity=2, currency="USD")],
+        [execution_record(state=ExecutionState.FILLED, filled_quantity=2, currency="GBP")],
         policy=policy,
     )
     assert outcome.reason_code is ReservationReasonCode.CURRENCY_MISMATCH

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://trading-system.local/schemas/account_snapshot.json",
   "title": "AccountSnapshot",
-  "description": "What the broker said about the account at one instant, captured once and stored. The single boundary between broker reality and deterministic risk: the engines read this, never a broker. Every monetary field the broker may omit is null, which is not zero. orders_submitted must be 0 — capturing an account reads and does nothing else.",
+  "description": "What the broker said about the account at one instant, captured once and stored. The single boundary between broker reality and deterministic risk: the engines read this, never a broker. Every monetary field the broker may omit is null, which is not zero. orders_submitted must be 0 \u2014 capturing an account reads and does nothing else.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -124,6 +124,17 @@
     },
     "simulated": {
       "type": "boolean"
+    },
+    "cash_by_currency": {
+      "description": "Cash held per currency, exactly as the broker reported it and never summed. An account holding EUR 5,000 and USD 0 records two figures; a total would need an exchange rate and would hide which one it applied.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/money"
+      }
+    },
+    "fx_rates": {
+      "description": "The exchange rates the broker quoted in the SAME read as the balances above. Captured together so a balance can never be converted at a rate from another instant: there is no other instant's rate on this artifact to reach for. A currency the broker did not quote is simply absent - there is no entry standing for an assumed parity, because no such entry would be true.",
+      "$ref": "#/$defs/fx_rate_table"
     }
   },
   "$defs": {
@@ -227,6 +238,67 @@
             "PUT",
             null
           ]
+        }
+      }
+    },
+    "fx_rate_table": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rates"
+      ],
+      "properties": {
+        "rates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fx_rate"
+          }
+        }
+      }
+    },
+    "fx_rate": {
+      "description": "One quoted rate: 1 base_currency = rate quote_currency.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_currency",
+        "quote_currency",
+        "rate",
+        "as_of",
+        "origin",
+        "source"
+      ],
+      "properties": {
+        "base_currency": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 8
+        },
+        "quote_currency": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 8
+        },
+        "rate": {
+          "$ref": "#/$defs/money"
+        },
+        "as_of": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "origin": {
+          "description": "Where the rate came from. There is deliberately no member meaning assumed, default or parity.",
+          "enum": [
+            "BROKER_ACCOUNT_LEDGER",
+            "SIMULATED",
+            "CONFIGURED",
+            "IDENTITY",
+            "INVERTED"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
         }
       }
     }
