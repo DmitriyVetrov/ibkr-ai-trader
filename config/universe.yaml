@@ -9,7 +9,7 @@
 # system considers research-ready shows up in a diff. Money values are quoted
 # strings or integers so they parse as exact decimals; an unquoted 5.00 is a
 # binary float and is rejected.
-config_version: "2026.08.11-1"
+config_version: "2026.08.22-2"
 
 # ---------------------------------------------------------------------------
 # Where the candidate pool comes from.
@@ -30,23 +30,111 @@ config_version: "2026.08.11-1"
 # with CONFIGURATION_ERROR naming what they would need.
 # ---------------------------------------------------------------------------
 source:
-  kind: STATIC
-  name: liquid-us-optionable-core
-  version: "2026.08.11-1"
-  # Liquid, widely optionable US underlyings. Being listed here buys nothing:
-  # each one still has to pass every filter below against real stored data, and
-  # an asset the data layer cannot vouch for is not research-ready.
+  kind: CUSTOM
+  name: liquid-us-option-underlyings-50
+  version: "2026.08.22-2"
+  # A HAND-CURATED pool of underlyings whose LISTED OPTION markets are deep and
+  # continuously traded — weekly expirations, dense strikes, quoted two-sided
+  # through the session. The system speculates in options, so the selection
+  # criterion is the option market, not the share's fame or its share volume.
+  #
+  # `CUSTOM` rather than `STATIC` is the honest label: the two behave
+  # identically and differ only in intent. This is a judgement about what is
+  # worth *considering*, deliberately NOT presented as a measured ranking of
+  # option volume or open interest — no such measurement was taken, and
+  # inventing one is what the unimplemented SP500 / NASDAQ100 kinds refuse to
+  # do. What IS measured happens later and with real data: `min_open_interest`
+  # and `max_bid_ask_spread_pct` in risk.yaml, applied per contract at M6,
+  # where `unknown_liquidity_policy: REJECT` refuses a chain nobody quoted.
+  #
+  # Two structural constraints shaped this list, and both are checkable:
+  #
+  #   1. Underlying liquidity is NOT option liquidity, and this stage cannot
+  #      judge the latter at all — it has no option-level data. Membership here
+  #      is a hypothesis that M6 tests against real quotes.
+  #   2. campaign.yaml's max_allocation_per_trade (EUR 1500, about USD 1650)
+  #      caps ONE unit of a structure at roughly $16.50 of quote, and
+  #      risk.yaml's max_option_price caps it at $25.00 outright. An ATM 21-DTE
+  #      premium runs near 0.096 x price x IV, so an underlying is only usable
+  #      when price x IV stays under about 172 — and under about 86 for a
+  #      straddle or strangle, which pays for two legs. Measured against the
+  #      stored 2026-08-21 quotes that already rules a SPY straddle out at
+  #      roughly $2,200 a unit. Very high priced or very high IV names are
+  #      therefore absent: they would pass every filter here and then be
+  #      rejected MAX_ALLOCATION_PER_TRADE_EXCEEDED with a contract in hand.
+  #
+  # Index products (SPX, NDX, RUT, VIX) are absent for a third reason: IBKR
+  # reports them as INDEX and `allowed_security_types` admits STOCK only, so
+  # each would be a guaranteed SECURITY_TYPE_NOT_ALLOWED. Leveraged and inverse
+  # ETFs (TQQQ, SQQQ, UVXY) are absent for a fourth: their path dependence
+  # makes a 2-4 week long-premium thesis a different instrument from the one
+  # the shipped strategies describe.
+  #
+  # Being listed here buys nothing. Every symbol still has to pass every filter
+  # below against real stored data.
   symbols:
+    # ETFs. Not "ETF speculation" — these are the deepest listed option books
+    # that exist, and the system buys the option, never the fund.
     - SPY
     - QQQ
     - IWM
-    - DIA
-    - AAPL
-    - MSFT
+    - TLT
+    - SMH
+    - XLF
+    - XLE
+    - GLD
+    # Mega-caps, where single-name option flow concentrates.
     - NVDA
+    - TSLA
+    - AAPL
     - AMZN
     - META
+    - MSFT
     - GOOGL
+    - PLTR
+    # Semiconductors.
+    - AMD
+    - INTC
+    - MU
+    - AVGO
+    - QCOM
+    - TSM
+    # Software, internet and platforms, kept to the mid-priced end.
+    - ORCL
+    - CRM
+    - UBER
+    - PYPL
+    - SNAP
+    - SHOP
+    # Crypto-linked. High IV is wanted here; high IV on a high price is not,
+    # which is why MSTR is absent and the miners are present.
+    - COIN
+    - MARA
+    - RIOT
+    - HOOD
+    - SOFI
+    # Electric vehicles and the retail speculation names, cheap premium.
+    - RIVN
+    - LCID
+    - NIO
+    - GME
+    # Financials, at the liquid and inexpensive end of the sector.
+    - JPM
+    - BAC
+    - C
+    - WFC
+    # Consumer, telecom and other high option turnover at a low share price.
+    - F
+    - T
+    - WMT
+    - DIS
+    - BABA
+    # Healthcare.
+    - PFE
+    - UNH
+    # Energy and industrials.
+    - XOM
+    - BA
 
 # ---------------------------------------------------------------------------
 # Deterministic filters.

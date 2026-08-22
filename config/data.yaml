@@ -6,24 +6,131 @@
 #
 # Monetary and price values are quoted strings or integers so they parse as
 # exact decimals. An unquoted 0.50 is a binary float and is rejected.
-config_version: "2026.08.11-1"
+config_version: "2026.08.22-2"
 
 # ---------------------------------------------------------------------------
 # What to collect.
 #
-# A hand-maintained watchlist until Milestone 4 delivers universe selection.
-# The data layer must be able to accumulate history before there is an agent
-# to decide what is interesting.
+# These two lists are what `data collect` with no --symbol, and the scheduled
+# `data_collection` job, actually retrieve. They are deliberately SEPARATE from
+# config/universe.yaml's candidate pool: this file says what history the data
+# layer accumulates, that one says what the selector is allowed to consider.
+#
+# Keep them in step, though, and in this direction: a symbol the universe pool
+# names but this file does not collect is rejected DATA_UNAVAILABLE — or
+# OPTIONABILITY_UNKNOWN when only its chain is missing — however liquid it
+# really is. Both lists therefore carry the same 50 underlyings as the
+# `liquid-us-option-underlyings-50` source.
+#
+# The cost is real and worth knowing: one short-lived broker connection per
+# symbol per data type, measured at roughly 2 seconds each, so a full sweep of
+# 50 quotes and 50 chains takes about four minutes against the paper gateway.
+# That fits inside the data_collection job's 600s timeout and its 30-minute
+# cadence, with margin but not a large one.
 # ---------------------------------------------------------------------------
 collection:
   symbols:
     - SPY
     - QQQ
+    - IWM
+    - TLT
+    - SMH
+    - XLF
+    - XLE
+    - GLD
+    - NVDA
+    - TSLA
+    - AAPL
+    - AMZN
+    - META
+    - MSFT
+    - GOOGL
+    - PLTR
+    - AMD
+    - INTC
+    - MU
+    - AVGO
+    - QCOM
+    - TSM
+    - ORCL
+    - CRM
+    - UBER
+    - PYPL
+    - SNAP
+    - SHOP
+    - COIN
+    - MARA
+    - RIOT
+    - HOOD
+    - SOFI
+    - RIVN
+    - LCID
+    - NIO
+    - GME
+    - JPM
+    - BAC
+    - C
+    - WFC
+    - F
+    - T
+    - WMT
+    - DIS
+    - BABA
+    - PFE
+    - UNH
+    - XOM
+    - BA
   option_chain_symbols:
     - SPY
-  # A single snapshot larger than this is refused rather than silently
-  # truncated: a truncated option chain that looks complete is worse than a
-  # failed collection.
+    - QQQ
+    - IWM
+    - TLT
+    - SMH
+    - XLF
+    - XLE
+    - GLD
+    - NVDA
+    - TSLA
+    - AAPL
+    - AMZN
+    - META
+    - MSFT
+    - GOOGL
+    - PLTR
+    - AMD
+    - INTC
+    - MU
+    - AVGO
+    - QCOM
+    - TSM
+    - ORCL
+    - CRM
+    - UBER
+    - PYPL
+    - SNAP
+    - SHOP
+    - COIN
+    - MARA
+    - RIOT
+    - HOOD
+    - SOFI
+    - RIVN
+    - LCID
+    - NIO
+    - GME
+    - JPM
+    - BAC
+    - C
+    - WFC
+    - F
+    - T
+    - WMT
+    - DIS
+    - BABA
+    - PFE
+    - UNH
+    - XOM
+    - BA
   max_records_per_snapshot: 20000
 
   # Which option contracts a collection run asks the broker to quote.

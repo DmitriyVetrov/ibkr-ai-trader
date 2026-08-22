@@ -49,11 +49,20 @@ def test_the_shipped_configuration_loads(shipped_config) -> None:
     assert universe.filters.max_selected_assets > 0
 
 
-def test_the_shipped_universe_is_conservative_and_liquid(shipped_config) -> None:
-    """Brief section 9: start with liquid, optionable US underlyings."""
-    symbols = shipped_config.universe.source.symbols
+def test_the_shipped_universe_is_liquid_and_fits_the_candidate_cap(shipped_config) -> None:
+    """Brief section 9: start with liquid, optionable US underlyings.
 
-    assert 5 <= len(symbols) <= 25, "a validation universe, not a discovery sweep"
+    The upper bound is ``max_candidates`` rather than a fixed number, because
+    that is the size the pool actually has to respect. A source listing more
+    symbols than the agent may be shown is not a wider search: the moment every
+    one of them passes the filters, the tail is dropped in the source's own
+    order and recorded as ``CANDIDATE_LIMIT_EXCEEDED`` — a cut nobody chose,
+    made by list position rather than by any property of the asset.
+    """
+    symbols = shipped_config.universe.source.symbols
+    cap = shipped_config.universe.filters.max_candidates
+
+    assert 5 <= len(symbols) <= cap, "a curated pool, not a discovery sweep"
     assert "SPY" in symbols
     assert len(set(symbols)) == len(symbols)
 
