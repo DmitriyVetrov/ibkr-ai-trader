@@ -63,6 +63,7 @@ class FakeIB:
         self.generic_tick_list: str | None = None
         self.market_data_requests: list[Any] = []
         self.cancelled_market_data: list[Any] = []
+        self.account_summary_requests: list[str] = []
 
     def isConnected(self) -> bool:  # noqa: N802 - mirrors the ib_async API
         return self.connected
@@ -103,7 +104,18 @@ class FakeIB:
         return None
 
     def accountSummary(self, account: str = "") -> list[Any]:  # noqa: N802
-        return self._summary
+        """Filtered exactly as ``ib_async`` filters it.
+
+        The library compares each row's own ``account`` field against the
+        argument and returns everything when the argument is blank. A fake that
+        ignored the argument would hide the bug that a ledger row — whose
+        account field is the group name, not an id — is discarded by an
+        account-scoped request.
+        """
+        self.account_summary_requests.append(account)
+        if account:
+            return [row for row in self._summary if str(getattr(row, "account", "")) == account]
+        return list(self._summary)
 
     def portfolio(self, account: str = "") -> list[Any]:
         return self._portfolio
@@ -507,26 +519,38 @@ def test_reading_a_quote_submits_no_orders(broker_clock: FixedClock) -> None:
 # ``ib_async`` puts ``$LEDGER:ALL`` in its account-summary tag list, so IBKR
 # returns the cash tags once per currency alongside the account-level ones.
 # Everything below is about not letting those two kinds of row be confused.
+def ledger_value(tag: str, value: str, currency: str = "USD") -> SimpleNamespace:
+    """A ``$LEDGER:ALL`` row, with the account field IBKR actually sends.
+
+    The ledger is a *group*, so IBKR echoes the group's name back in place of an
+    account id. Measured against a paper account on 2026-08-22: of 96 summary
+    rows, 21 carried ``DU...`` and 75 carried this literal — every
+    ``ExchangeRate``, ``CashBalance`` and ``RealCurrency`` row among them.
+    """
+    return SimpleNamespace(account="All", tag=tag, value=value, currency=currency, modelCode="")
+
+
 def ledger_summary() -> list[SimpleNamespace]:
     """A EUR-based account holding euro and no dollars, as IBKR reports it.
 
-    ``TotalCashValue`` appears three times — once for the account (BASE) and
-    once per currency — which is exactly the shape that used to leave
+    ``TotalCashValue`` appears three times — once for the account and once per
+    currency in the ledger group — which is exactly the shape that used to leave
     ``BrokerAccount.cash`` holding whichever currency arrived last.
     """
     return [
         account_value("NetLiquidation", "5000.00", "EUR"),
         account_value("BuyingPower", "20000.00", "EUR"),
         account_value("AvailableFunds", "5000.00", "EUR"),
-        account_value("TotalCashValue", "5000.00", "BASE"),
         account_value("TotalCashValue", "5000.00", "EUR"),
-        account_value("TotalCashValue", "0.00", "USD"),
-        account_value("CashBalance", "5000.00", "EUR"),
-        account_value("CashBalance", "0.00", "USD"),
-        account_value("CashBalance", "5000.00", "BASE"),
-        account_value("ExchangeRate", "1.00", "EUR"),
-        account_value("ExchangeRate", "0.855", "USD"),
-        account_value("ExchangeRate", "1.00", "BASE"),
+        ledger_value("TotalCashValue", "5000.00", "BASE"),
+        ledger_value("TotalCashValue", "5000.00", "EUR"),
+        ledger_value("TotalCashValue", "0.00", "USD"),
+        ledger_value("CashBalance", "5000.00", "EUR"),
+        ledger_value("CashBalance", "0.00", "USD"),
+        ledger_value("CashBalance", "5000.00", "BASE"),
+        ledger_value("ExchangeRate", "1.00", "EUR"),
+        ledger_value("ExchangeRate", "0.855", "USD"),
+        ledger_value("ExchangeRate", "1.00", "BASE"),
     ]
 
 
@@ -600,3 +624,83 @@ def test_an_account_quoting_no_rates_reports_none_rather_than_one(broker_clock: 
     account = broker.get_account()
 
     assert account.exchange_rates == {}
+
+
+# ---------------------------------------------------------------------------
+# The ledger group's account field
+# ---------------------------------------------------------------------------
+# A ledger row's ``account`` field is the group name ``All``, not the account
+# id, and ``ib_async.accountSummary(account)`` filters on equality with the
+# argument. Asking for the account by name therefore discards every ledger row —
+# and with them every FX rate, which makes each USD candidate FX_RATE_UNAVAILABLE
+# and blocks all allocation. The two tests below pin both halves of the fix:
+# the group's rows must arrive, and no other account's rows may arrive with them.
+@pytest.mark.unit
+def test_the_ledger_group_rows_survive_the_account_filter(broker_clock: FixedClock) -> None:
+    """The regression. An account-scoped request drops every ``ExchangeRate``.
+
+    The rows are there — they simply do not carry an account id, because the
+    ledger is a group. Reading the summary by account name is what loses them.
+    """
+    ib = FakeIB(
+        summary=[
+            account_value("NetLiquidation", "5000.00", "EUR"),
+            account_value("BuyingPower", "20000.00", "EUR"),
+            ledger_value("ExchangeRate", "0.8562416", "USD"),
+            ledger_value("CashBalance", "-120698.87", "USD"),
+        ]
+    )
+    broker = connect_fake(make_broker(broker_clock), ib)
+
+    account = broker.get_account()
+
+    assert account.exchange_rates == {"USD": Decimal("0.8562416")}
+    assert account.cash_by_currency == {"USD": Decimal("-120698.87")}
+    assert account.currency == "EUR", "the base still comes from the account-level row"
+
+
+@pytest.mark.unit
+def test_another_accounts_rows_are_never_mixed_into_this_account(broker_clock: FixedClock) -> None:
+    """Widening the read is not the same as dropping the filter.
+
+    A multi-account login answers an unscoped request with every account's rows.
+    Admitting them all would sum two portfolios into one ``BrokerAccount`` —
+    a wrong balance, reported with total confidence.
+    """
+    other = SimpleNamespace(
+        account="DU7654321", tag="NetLiquidation", value="999999.00", currency="GBP", modelCode=""
+    )
+    other_cash = SimpleNamespace(
+        account="DU7654321", tag="CashBalance", value="12345.00", currency="GBP", modelCode=""
+    )
+    ib = FakeIB(summary=[*ledger_summary(), other, other_cash])
+    broker = connect_fake(make_broker(broker_clock), ib)
+
+    account = broker.get_account()
+
+    assert account.currency == "EUR"
+    assert account.net_liquidation == Decimal("5000.00")
+    assert "GBP" not in account.cash_by_currency
+
+
+@pytest.mark.unit
+def test_the_raw_summary_keeps_one_row_per_tag(broker_clock: FixedClock) -> None:
+    """``get_account_summary`` is keyed on the bare tag, so the group stays out.
+
+    Its contract is one value per tag, taken from the account's own rows. The
+    per-currency rows share those tag names; letting them in would leave
+    ``TotalCashValue`` reporting whichever currency happened to arrive last.
+    ``get_account`` reads them instead, where each keeps its own qualified key.
+    """
+    broker = connect_fake(make_broker(broker_clock), FakeIB(summary=ledger_summary()))
+
+    summary = broker.get_account_summary()
+
+    assert summary["TotalCashValue"] == "5000.00", "not the USD ledger row's 0.00"
+    assert "ExchangeRate" not in summary
+    assert set(summary) == {
+        "NetLiquidation",
+        "BuyingPower",
+        "AvailableFunds",
+        "TotalCashValue",
+    }

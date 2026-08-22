@@ -1806,10 +1806,24 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   quoted in something other than `target_currency` is `CURRENCY_MISMATCH` with a fix an
   operator can act on, and `risk.yaml`'s `min_option_price`/`max_option_price` are in the
   **target** currency while everything under `capital_currency` is in the account's.
-- **The rate comes from the broker, in the read that already happens.** `ib_async` asks for
-  `$LEDGER:ALL`, so IBKR's per-currency `ExchangeRate` rows arrive with the account summary
-  `risk capture-account` already reads — no new round trip, no new provider, and the rate is
-  bound to the very balance it converts. It rides on `AccountSnapshot`, so the engines stay
+- **The rate comes from the broker, in the read that already happens — but only if the
+  summary is asked for *unscoped*.** `ib_async` asks for `$LEDGER:ALL`, so IBKR's
+  per-currency `ExchangeRate` rows arrive with the account summary `risk capture-account`
+  already reads: no new round trip, no new provider, and the rate is bound to the very
+  balance it converts. The trap is the **account field on those rows**. `$LEDGER:ALL` is a
+  *group*, so IBKR echoes back the literal string `'All'` rather than an account id, and
+  `ib_async.accountSummary(account)` filters on `v.account == account`. Measured against the
+  paper account on 2026-08-22: `accountSummary()` returned **96** rows and
+  `accountSummary(acct)` returned **21**, because the other 75 — every `ExchangeRate`, every
+  `CashBalance`, every `RealCurrency` — are filed under `'All'`. Passing the account id
+  therefore discarded the entire FX ledger, and every candidate came back
+  `FX_RATE_UNAVAILABLE` with no capital ever authorised. `IBKRBroker._account_summary_rows`
+  now calls `accountSummary()` with **no argument** and filters in Python, admitting the
+  account's own id and `'All'` and nothing else — dropping the argument outright would be
+  wrong in the other direction, since a multi-account login would then mix a second account's
+  balances into one `BrokerAccount`. `get_account_summary` keeps its one-value-per-tag
+  contract by excluding the group rows, which share their tag names with the account-level
+  rows they accompany. It rides on `AccountSnapshot`, so the engines stay
   pure and a stored authorisation records the rate it rested on. **A missing, stale or
   unusable rate is `FX_RATE_UNAVAILABLE` / `FX_RATE_STALE` / `FX_RATE_INVALID`**, the
   candidate is rejected before any capacity check runs, no quantity is computed and no order
@@ -1917,6 +1931,16 @@ use interfaces and mocks, and keep mock / simulator / Paper / Live behavior clea
   Milestone 9 a developer who has actually run `risk capture-account` or `reconciliation
   run` against their paper gateway has a legitimate `data/accounts/history.jsonl`, and a
   test that failed because the CLI had been *used* is measuring the wrong thing.
+- **A fake that ignores an argument the real library honours cannot fail.**
+  `tests/broker/test_ibkr_adapter.py::FakeIB.accountSummary` returned its whole row list
+  whatever account it was handed, so the entire FX suite passed against a client whose
+  account-scoped request discarded every `ExchangeRate` row at the gateway. Four tests that
+  looked like coverage of the ledger were testing a code path the real `ib_async` never
+  takes. The fake now filters exactly as the library does — `v.account == account`, or
+  everything when the argument is blank — and the fixtures stamp the ledger rows with the
+  `'All'` account field IBKR actually sends. This is the same rule the rest of
+  `tests/broker/conftest.py` already follows for `NaN` prices and `YYYYMMDD` dates: a fake
+  reproduces the quirk, or it is testing something other than the code.
 - **A closing execution stores the legs it *sent*, not the legs it closed.** The position
   ledger reads each leg's `action` to decide whether a fill adds or subtracts, so a `CLOSE`
   record carrying the entry's `BUY` legs would net an exit fill onto the position as though

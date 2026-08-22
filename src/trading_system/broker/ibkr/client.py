@@ -136,6 +136,19 @@ LEDGER_TAGS = frozenset(
 #: account's base currency.
 _BASE_LEDGER_CURRENCY = "BASE"
 
+#: The value IBKR puts in a ledger row's **account** field. ``$LEDGER:ALL`` is a
+#: *group*, not an account, so IBKR echoes the group's name back rather than the
+#: account id — measured against a paper account on 2026-08-22, a 96-row summary
+#: split 21 rows under ``DU...`` and 75 under this literal, with every
+#: ``ExchangeRate``, ``CashBalance`` and ``RealCurrency`` row in the second set.
+#: ``ib_async.accountSummary(account)`` filters on ``v.account == account``, so
+#: passing the account id discards all 75 and the FX rates never arrive. Both
+#: readers below therefore ask for the whole summary and filter here, on the
+#: account id **or** this group name. Dropping the argument without filtering
+#: would be wrong in the other direction: on a multi-account login it would mix
+#: a second account's balances into one :class:`BrokerAccount`.
+_LEDGER_ACCOUNT_GROUP = "All"
+
 #: The per-currency tag that answers *what is one unit of this currency worth
 #: in the account's base currency?*. This is the system's FX rate source: it
 #: arrives with the account summary, which ``ib_async`` serves from its startup
@@ -553,19 +566,48 @@ class IBKRBroker(Broker):
         )
 
     # --- read-only state ---------------------------------------------------
-    def get_account_summary(self) -> dict[str, str]:
-        """Raw tag/value pairs exactly as IBKR reported them."""
-        ib = self._require_connection()
+    def _account_summary_rows(self, ib: Any) -> list[Any]:
+        """This account's summary rows **and** the ``$LEDGER:ALL`` group's.
+
+        Asked for without an argument on purpose. ``ib_async`` serves the whole
+        summary from its startup handshake cache and then filters in process, so
+        this costs no additional round trip whichever way it is called — but the
+        library's own filter compares against the account id, and the per-currency
+        ledger rows do not carry one (see :data:`_LEDGER_ACCOUNT_GROUP`). The
+        filter is therefore ours, and it admits exactly two account fields: this
+        account's id, and the ledger group's name.
+        """
         try:
-            values = ib.accountSummary(self._account_id or "")
+            values = ib.accountSummary()
         except TimeoutError as exc:
             raise self._timed_out("account summary") from exc
         except Exception as exc:
             raise BrokerResponseError(f"could not read the account summary: {exc}") from exc
+
+        if not self._account_id:
+            # Identity is unknown, so there is nothing to filter against.
+            # Reporting what arrived is honest; guessing which account it
+            # belongs to would not be.
+            return list(values)
+        permitted = {self._account_id, _LEDGER_ACCOUNT_GROUP, ""}
+        return [row for row in values if str(getattr(row, "account", "") or "") in permitted]
+
+    def get_account_summary(self) -> dict[str, str]:
+        """Raw tag/value pairs exactly as IBKR reported them."""
+        ib = self._require_connection()
+        values = self._account_summary_rows(ib)
         summary = {
             str(v.tag): str(v.value)
             for v in values
-            if getattr(v, "tag", None) and not getattr(v, "modelCode", "")
+            if getattr(v, "tag", None)
+            and not getattr(v, "modelCode", "")
+            # This dict is keyed on the bare tag, which only one row per tag can
+            # own. A ledger row shares its tag name with the account-level row
+            # it accompanies, so admitting the group here would leave whichever
+            # currency arrived last standing in for the account — the hazard
+            # :data:`LEDGER_TAGS` exists to name. ``get_account`` consumes those
+            # rows instead, where each one keeps a currency-qualified key.
+            and str(getattr(v, "account", "") or "") != _LEDGER_ACCOUNT_GROUP
         }
         if not summary:
             raise BrokerResponseError("IBKR returned an empty account summary")
@@ -577,12 +619,7 @@ class IBKRBroker(Broker):
         if self._account_id is None:
             raise BrokerAuthenticationError("account identity is unknown")
 
-        try:
-            values = ib.accountSummary(self._account_id)
-        except TimeoutError as exc:
-            raise self._timed_out("account summary") from exc
-        except Exception as exc:
-            raise BrokerResponseError(f"could not read the account summary: {exc}") from exc
+        values = self._account_summary_rows(ib)
 
         from trading_system.broker.ibkr.conversion import to_decimal
 
