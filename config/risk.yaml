@@ -6,7 +6,7 @@
 #
 # A strategy in config/strategies/ may NARROW the DTE window below, never
 # widen it; loading refuses to start if one tries.
-config_version: "2026.08.22-1"
+config_version: "2026.08.22-2"
 
 # --- capital ---------------------------------------------------------------
 #
@@ -18,10 +18,10 @@ config_version: "2026.08.22-1"
 # comparison of 1500 EUR against a dollar price as though they were the same.
 capital_currency: EUR
 
-max_allocation_per_trade: "1500"
+max_allocation_per_trade: "2250"
 max_open_positions: 5
-max_total_open_risk: "4000"
-max_daily_loss: "750"
+max_total_open_risk: "6000"
+max_daily_loss: "1125"
 
 # --- concentration (percent of campaign budget) ----------------------------
 max_underlying_concentration_pct: 30.0

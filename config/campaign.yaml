@@ -16,7 +16,7 @@
 #
 # Monetary values are quoted strings or integers so they parse as exact
 # decimals. An unquoted 0.50 would be a binary float and is rejected.
-campaign_id: campaign-001
+campaign_id: campaign-002
 
 # --- the money the operator actually has -----------------------------------
 #
@@ -25,15 +25,15 @@ campaign_id: campaign-001
 # figure is never converted in place and never loses its currency: a converted
 # equivalent is derived beside it, per run, at a rate captured from the broker.
 budget_currency: EUR
-budget: "5000"
+budget: "7500"
 
 # Fraction of the budget held back and never allocated. The allocator must not
 # spend the whole budget merely because candidates exist. Maximum campaign
 # utilisation is the complement of this and is deliberately not stated twice.
 reserve_fraction: 0.20
 
-min_allocation: "250"
-max_allocation_per_trade: "1500"
+min_allocation: "375"
+max_allocation_per_trade: "2250"
 max_open_positions: 5
 
 # Opportunities scoring below this never reach allocation.
@@ -45,7 +45,7 @@ min_opportunity_score: 70.0
 # can we afford to lose". For a long-debit structure the two coincide, but the
 # engine keeps them separate so the first strategy where they diverge does not
 # quietly inherit the wrong limit.
-max_risk_per_trade: "1500"
+max_risk_per_trade: "2250"
 
 # --- position and concentration limits -------------------------------------
 limits:
@@ -54,7 +54,7 @@ limits:
   max_positions_per_underlying: 1
   # Ceiling on contract count regardless of price. A very cheap option would
   # otherwise buy a position of a size nobody intended.
-  max_contracts_per_trade: 20
+  max_contracts_per_trade: 30
   # New authorisations per run, so one run cannot commit the whole campaign
   # before an operator has seen any of it.
   max_new_positions_per_run: 3
